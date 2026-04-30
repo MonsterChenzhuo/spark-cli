@@ -1,6 +1,7 @@
 package fs
 
 import (
+	"fmt"
 	"io"
 	"net/url"
 	"os"
@@ -13,14 +14,17 @@ type Local struct{}
 func NewLocal() *Local { return &Local{} }
 
 func uriToPath(uri string) (string, error) {
-	if !strings.HasPrefix(uri, "file://") {
-		return uri, nil
+	if i := strings.Index(uri, "://"); i >= 0 {
+		if uri[:i] != "file" {
+			return "", fmt.Errorf("Local: unsupported URI scheme %q", uri[:i])
+		}
+		u, err := url.Parse(uri)
+		if err != nil {
+			return "", err
+		}
+		return u.Path, nil
 	}
-	u, err := url.Parse(uri)
-	if err != nil {
-		return "", err
-	}
-	return u.Path, nil
+	return uri, nil
 }
 
 func (l *Local) Open(uri string) (io.ReadCloser, error) {

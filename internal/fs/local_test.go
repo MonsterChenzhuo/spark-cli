@@ -43,3 +43,16 @@ func TestLocalOpenStatList(t *testing.T) {
 		t.Fatalf("matches = %v", matches)
 	}
 }
+
+func TestLocalRejectsNonFileScheme(t *testing.T) {
+	l := NewLocal()
+	if _, err := l.Open("hdfs://nn/x"); err == nil {
+		t.Fatal("Open: expected error for hdfs:// scheme")
+	}
+	if _, err := l.Stat("s3://bucket/k"); err == nil {
+		t.Fatal("Stat: expected error for s3:// scheme")
+	}
+	if _, err := l.List("hdfs://nn/dir", ""); err == nil {
+		t.Fatal("List: expected error for hdfs:// scheme")
+	}
+}
