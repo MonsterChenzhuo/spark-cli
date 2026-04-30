@@ -105,6 +105,10 @@ func (a *Aggregator) OnTaskEnd(t TaskEnd) {
 	if dur == 0 && t.FinishMs > t.LaunchMs {
 		dur = t.FinishMs - t.LaunchMs
 	}
+	if dur < 0 {
+		dur = 0
+	}
+	firstTask := s.TaskDurations.Count() == 0
 	s.TaskDurations.Add(float64(dur))
 	s.TaskInputBytes.Add(float64(t.Metrics.InputBytes))
 	s.TotalRunMs += dur
@@ -116,7 +120,7 @@ func (a *Aggregator) OnTaskEnd(t TaskEnd) {
 	if dur > s.MaxTaskMs {
 		s.MaxTaskMs = dur
 	}
-	if s.MinTaskMs == 0 || dur < s.MinTaskMs {
+	if firstTask || dur < s.MinTaskMs {
 		s.MinTaskMs = dur
 	}
 	if t.Metrics.InputBytes > s.MaxInputBytes {
