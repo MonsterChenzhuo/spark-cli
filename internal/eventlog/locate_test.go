@@ -123,6 +123,42 @@ func TestResolveV2(t *testing.T) {
 	}
 }
 
+func TestResolveV2InprogressLastPart(t *testing.T) {
+	dir := t.TempDir()
+	v2dir := filepath.Join(dir, "eventlog_v2_application_1_a")
+	if err := os.MkdirAll(v2dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(v2dir, "appstatus_application_1_a"))
+	writeFile(t, filepath.Join(v2dir, "events_1_application_1_a.zstd"))
+	writeFile(t, filepath.Join(v2dir, "events_2_application_1_a.zstd.inprogress"))
+	loc := NewLocator(map[string]fs.FS{"file": fs.NewLocal()}, []string{"file://" + dir})
+	src, err := loc.Resolve("application_1_a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !src.Incomplete {
+		t.Errorf("expected Incomplete=true, got %+v", src)
+	}
+	if src.Compression != CompressionZstd {
+		t.Errorf("expected zstd, got %v", src.Compression)
+	}
+}
+
+func TestResolveV2MixedCodecs(t *testing.T) {
+	dir := t.TempDir()
+	v2dir := filepath.Join(dir, "eventlog_v2_application_1_a")
+	if err := os.MkdirAll(v2dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(v2dir, "events_1_application_1_a.zstd"))
+	writeFile(t, filepath.Join(v2dir, "events_2_application_1_a.lz4"))
+	loc := NewLocator(map[string]fs.FS{"file": fs.NewLocal()}, []string{"file://" + dir})
+	if _, err := loc.Resolve("application_1_a"); err == nil {
+		t.Fatal("want LOG_INCOMPLETE for mixed codecs")
+	}
+}
+
 func TestResolveV2MissingParts(t *testing.T) {
 	dir := t.TempDir()
 	v2dir := filepath.Join(dir, "eventlog_v2_application_1_a")

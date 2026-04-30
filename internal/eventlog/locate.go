@@ -159,11 +159,13 @@ func (l *Locator) resolveV2(fsys fs.FS, dirURI, appID string) (LogSource, bool, 
 		return LogSource{}, false, cerrors.New(cerrors.CodeLogUnreadable, err.Error(), "")
 	}
 	type indexed struct {
-		idx int
-		uri string
+		idx         int
+		uri         string
+		base        string
+		compression Compression
 	}
-	var indexed_ []indexed
-	var compression Compression
+	var entries []indexed
+	incomplete := false
 	for _, p := range parts {
 		base := path.Base(p)
 		stripped := stripEventLogSuffixes(base)
@@ -172,23 +174,39 @@ func (l *Locator) resolveV2(fsys fs.FS, dirURI, appID string) (LogSource, bool, 
 			continue
 		}
 		n, _ := strconv.Atoi(m[1])
-		indexed_ = append(indexed_, indexed{idx: n, uri: p})
-		compression = DetectCompression(base)
+		entries = append(entries, indexed{
+			idx:         n,
+			uri:         p,
+			base:        base,
+			compression: DetectCompression(base),
+		})
+		if strings.HasSuffix(base, ".inprogress") {
+			incomplete = true
+		}
 	}
-	if len(indexed_) == 0 {
+	if len(entries) == 0 {
 		return LogSource{}, false, nil
 	}
-	sort.Slice(indexed_, func(i, j int) bool { return indexed_[i].idx < indexed_[j].idx })
-	for i, it := range indexed_ {
+	sort.Slice(entries, func(i, j int) bool { return entries[i].idx < entries[j].idx })
+	for i, it := range entries {
 		if it.idx != i+1 {
 			return LogSource{}, false, cerrors.New(cerrors.CodeLogIncomplete,
 				fmt.Sprintf("V2 EventLog %s missing part %d", appID, i+1),
 				"check if upload is complete")
 		}
 	}
+	compression := entries[0].compression
+	for _, it := range entries[1:] {
+		if it.compression != compression {
+			return LogSource{}, false, cerrors.New(cerrors.CodeLogIncomplete,
+				fmt.Sprintf("V2 EventLog %s has mixed codecs: part 1 is %s, %s is %s",
+					appID, compression, it.base, it.compression),
+				"all parts must share a single codec")
+		}
+	}
 	var totalSize int64
-	urls := make([]string, 0, len(indexed_))
-	for _, it := range indexed_ {
+	urls := make([]string, 0, len(entries))
+	for _, it := range entries {
 		urls = append(urls, it.uri)
 		if st, err := fsys.Stat(it.uri); err == nil {
 			totalSize += st.Size
@@ -198,6 +216,7 @@ func (l *Locator) resolveV2(fsys fs.FS, dirURI, appID string) (LogSource, bool, 
 		URI:         v2URI,
 		Format:      "v2",
 		Compression: compression,
+		Incomplete:  incomplete,
 		Parts:       urls,
 		SizeBytes:   totalSize,
 	}, true, nil
