@@ -3,6 +3,7 @@ package errors
 
 import (
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"io"
 )
@@ -49,8 +50,8 @@ func ExitCode(err error) int {
 	if err == nil {
 		return ExitOK
 	}
-	e, ok := err.(*Error)
-	if !ok {
+	var e *Error
+	if !stderrors.As(err, &e) || e == nil {
 		return ExitInternal
 	}
 	switch e.Code {
@@ -71,8 +72,8 @@ func WriteJSON(w io.Writer, err error) {
 	if err == nil {
 		return
 	}
-	e, ok := err.(*Error)
-	if !ok {
+	var e *Error
+	if !stderrors.As(err, &e) || e == nil {
 		e = &Error{Code: CodeInternal, Message: err.Error()}
 	}
 	b, _ := json.Marshal(envelope{Error: e})
