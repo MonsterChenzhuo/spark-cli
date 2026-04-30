@@ -1,11 +1,11 @@
 module github.com/opay-bigdata/spark-cli
 
-go 1.24
+go 1.22
 
 require (
 	github.com/colinmarc/hdfs/v2 v2.4.0
 	github.com/golang/snappy v1.0.0
-	github.com/klauspost/compress v1.18.5
+	github.com/klauspost/compress v1.17.11
 	github.com/pierrec/lz4/v4 v4.1.26
 	github.com/spf13/cobra v1.8.1
 	gopkg.in/yaml.v3 v3.0.1
