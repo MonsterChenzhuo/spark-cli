@@ -11,6 +11,9 @@ import (
 	cerrors "github.com/opay-bigdata/spark-cli/internal/errors"
 )
 
+// LogSource describes a resolved EventLog. Format == "v1" means URI points at
+// a single file and Parts is nil; Format == "v2" means URI points at the
+// rolling-format directory and Parts holds the ordered events_N_* URIs.
 type LogSource struct {
 	URI         string
 	Format      string // "v1" | "v2"
@@ -18,6 +21,21 @@ type LogSource struct {
 	Incomplete  bool
 	Parts       []string // V2 ordered URIs; V1 nil
 	SizeBytes   int64
+}
+
+// stripEventLogSuffixes peels .inprogress (possibly repeated) and a single
+// trailing codec extension. Shared between normalizeAppID and resolveV1 so the
+// two stay in lockstep when codec extensions are added.
+func stripEventLogSuffixes(s string) string {
+	for strings.HasSuffix(s, ".inprogress") {
+		s = strings.TrimSuffix(s, ".inprogress")
+	}
+	for _, ext := range []string{".zstd", ".lz4", ".snappy"} {
+		if strings.HasSuffix(s, ext) {
+			return strings.TrimSuffix(s, ext)
+		}
+	}
+	return s
 }
 
 type Locator struct {
@@ -30,16 +48,16 @@ func NewLocator(fsByScheme map[string]fs.FS, logDirs []string) *Locator {
 }
 
 func normalizeAppID(s string) string {
-	s = strings.TrimSuffix(s, ".inprogress")
-	for _, ext := range []string{".zstd", ".lz4", ".snappy"} {
-		s = strings.TrimSuffix(s, ext)
-	}
+	s = stripEventLogSuffixes(s)
 	if !strings.HasPrefix(s, "application_") && !strings.HasPrefix(s, "eventlog_v2_application_") {
 		s = "application_" + s
 	}
 	return s
 }
 
+// Resolve walks logDirs in order and returns the first match. Within a single
+// dir, multiple matches surface as APP_AMBIGUOUS; across dirs, the earlier
+// dir wins silently — config order is treated as priority.
 func (l *Locator) Resolve(appIDInput string) (LogSource, error) {
 	appID := normalizeAppID(appIDInput)
 	for _, dir := range l.logDirs {
@@ -77,12 +95,7 @@ func (l *Locator) resolveV1(fsys fs.FS, dirURI, appID string) (LogSource, bool, 
 	}
 	var matches []string
 	for _, uri := range all {
-		base := path.Base(uri)
-		stripped := strings.TrimSuffix(base, ".inprogress")
-		stripped = strings.TrimSuffix(stripped, ".zstd")
-		stripped = strings.TrimSuffix(stripped, ".lz4")
-		stripped = strings.TrimSuffix(stripped, ".snappy")
-		if stripped == appID {
+		if stripEventLogSuffixes(path.Base(uri)) == appID {
 			matches = append(matches, uri)
 		}
 	}

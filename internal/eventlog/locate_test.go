@@ -17,11 +17,13 @@ func writeFile(t *testing.T, p string) {
 
 func TestNormalizeAppID(t *testing.T) {
 	cases := map[string]string{
-		"application_1735000000_0001":          "application_1735000000_0001",
-		"1735000000_0001":                      "application_1735000000_0001",
-		"application_1735000000_0001.zstd":     "application_1735000000_0001",
-		"application_1735000000_0001.inprogress": "application_1735000000_0001",
-		"application_1735000000_0001.zstd.inprogress": "application_1735000000_0001",
+		"application_1735000000_0001":                            "application_1735000000_0001",
+		"1735000000_0001":                                        "application_1735000000_0001",
+		"application_1735000000_0001.zstd":                       "application_1735000000_0001",
+		"application_1735000000_0001.inprogress":                 "application_1735000000_0001",
+		"application_1735000000_0001.zstd.inprogress":            "application_1735000000_0001",
+		"application_1735000000_0001.snappy":                     "application_1735000000_0001",
+		"application_1735000000_0001.zstd.inprogress.inprogress": "application_1735000000_0001",
 	}
 	for in, want := range cases {
 		if got := normalizeAppID(in); got != want {
@@ -84,5 +86,16 @@ func TestResolveNotFound(t *testing.T) {
 	loc := NewLocator(map[string]fs.FS{"file": fs.NewLocal()}, []string{"file://" + dir})
 	if _, err := loc.Resolve("application_1_a"); err == nil {
 		t.Fatal("want APP_NOT_FOUND")
+	}
+}
+
+// Regression: List(prefix) returns substring-prefix matches, so a longer
+// appId that shares the searched prefix must not be picked up.
+func TestResolveDoesNotMatchPrefixSibling(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "application_1_a_other"))
+	loc := NewLocator(map[string]fs.FS{"file": fs.NewLocal()}, []string{"file://" + dir})
+	if _, err := loc.Resolve("application_1_a"); err == nil {
+		t.Fatal("want APP_NOT_FOUND, got match for sibling appID")
 	}
 }
