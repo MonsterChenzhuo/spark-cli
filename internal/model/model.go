@@ -16,6 +16,24 @@ type Application struct {
 	Executors map[string]*Executor
 	Jobs      map[int]*Job
 	Stages    map[StageKey]*Stage
+
+	ExecutorsAdded         int
+	ExecutorsRemoved       int
+	MaxConcurrentExecutors int
+
+	JobsTotal  int
+	JobsFailed int
+
+	TasksTotal  int64
+	TasksFailed int64
+
+	TotalInputBytes        int64
+	TotalOutputBytes       int64
+	TotalShuffleReadBytes  int64
+	TotalShuffleWriteBytes int64
+	TotalSpillDisk         int64
+	TotalRunMs             int64
+	TotalGCMs              int64
 }
 
 func NewApplication() *Application {

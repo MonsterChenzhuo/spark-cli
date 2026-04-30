@@ -20,14 +20,11 @@ type TaskEnd struct {
 }
 
 type Aggregator struct {
-	app            *Application
-	concurrentNow  int
-	concurrentPeak int
+	app           *Application
+	concurrentNow int
 }
 
 func NewAggregator(app *Application) *Aggregator { return &Aggregator{app: app} }
-
-func (a *Aggregator) PeakConcurrentExecutors() int { return a.concurrentPeak }
 
 func (a *Aggregator) OnAppStart(id, name, user string, ts int64) {
 	a.app.ID = id
@@ -45,9 +42,10 @@ func (a *Aggregator) OnAppEnd(ts int64) {
 
 func (a *Aggregator) OnExecutorAdded(id, host string, cores int, ts int64) {
 	a.app.Executors[id] = &Executor{ID: id, Host: host, Cores: cores, AddMs: ts}
+	a.app.ExecutorsAdded++
 	a.concurrentNow++
-	if a.concurrentNow > a.concurrentPeak {
-		a.concurrentPeak = a.concurrentNow
+	if a.concurrentNow > a.app.MaxConcurrentExecutors {
+		a.app.MaxConcurrentExecutors = a.concurrentNow
 	}
 }
 
@@ -56,6 +54,7 @@ func (a *Aggregator) OnExecutorRemoved(id string, ts int64, reason string) {
 		e.RemoveMs = ts
 		e.RemoveReason = reason
 	}
+	a.app.ExecutorsRemoved++
 	if a.concurrentNow > 0 {
 		a.concurrentNow--
 	}
@@ -63,6 +62,7 @@ func (a *Aggregator) OnExecutorRemoved(id string, ts int64, reason string) {
 
 func (a *Aggregator) OnJobStart(id int, stageIDs []int, submitMs int64) {
 	a.app.Jobs[id] = &Job{ID: id, StageIDs: stageIDs, StartMs: submitMs}
+	a.app.JobsTotal++
 }
 
 func (a *Aggregator) OnJobEnd(id int, endMs int64, result string) {
@@ -73,6 +73,9 @@ func (a *Aggregator) OnJobEnd(id int, endMs int64, result string) {
 		} else {
 			j.Result = "failed"
 		}
+	}
+	if result != "JobSucceeded" {
+		a.app.JobsFailed++
 	}
 }
 
@@ -132,6 +135,17 @@ func (a *Aggregator) OnTaskEnd(t TaskEnd) {
 	if t.Killed {
 		s.KilledTasks++
 	}
+
+	a.app.TasksTotal++
+	if t.Failed {
+		a.app.TasksFailed++
+	}
+	a.app.TotalRunMs += dur
+	a.app.TotalGCMs += t.Metrics.GCMs
+	a.app.TotalInputBytes += t.Metrics.InputBytes
+	a.app.TotalShuffleReadBytes += t.Metrics.ShuffleReadBytes
+	a.app.TotalShuffleWriteBytes += t.Metrics.ShuffleWriteBytes
+	a.app.TotalSpillDisk += t.Metrics.SpillDisk
 
 	if e, ok := a.app.Executors[t.ExecutorID]; ok {
 		e.TotalRunMs += dur
