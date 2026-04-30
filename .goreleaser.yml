@@ -1,0 +1,31 @@
+version: 2
+project_name: spark-cli
+before:
+  hooks:
+    - go mod tidy
+builds:
+  - id: spark-cli
+    main: .
+    binary: spark-cli
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X github.com/opay-bigdata/spark-cli/cmd.version={{.Version}}
+      - -X github.com/opay-bigdata/spark-cli/cmd.commit={{.Commit}}
+      - -X github.com/opay-bigdata/spark-cli/cmd.date={{.Date}}
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+      - .claude/skills/spark/SKILL.md
+checksum:
+  name_template: "checksums.txt"
+changelog:
+  use: github
+release:
+  draft: false
