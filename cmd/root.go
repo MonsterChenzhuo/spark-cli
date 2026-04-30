@@ -5,6 +5,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	cerrors "github.com/opay-bigdata/spark-cli/internal/errors"
 )
 
 var version = "dev"
@@ -44,8 +46,8 @@ func Execute() int {
 	root := newRootCmd()
 	root.AddCommand(newVersionCmd())
 	if err := root.Execute(); err != nil {
-		_, _ = os.Stderr.WriteString(err.Error() + "\n")
-		return 1
+		cerrors.WriteJSON(os.Stderr, err)
+		return cerrors.ExitCode(err)
 	}
-	return 0
+	return cerrors.ExitOK
 }
