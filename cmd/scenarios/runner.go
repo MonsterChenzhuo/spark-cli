@@ -1,0 +1,248 @@
+// Package scenarios glues cobra commands to the scenario pipeline.
+package scenarios
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net/url"
+	"path"
+	"strings"
+	"time"
+
+	"github.com/opay-bigdata/spark-cli/internal/config"
+	cerrors "github.com/opay-bigdata/spark-cli/internal/errors"
+	"github.com/opay-bigdata/spark-cli/internal/eventlog"
+	"github.com/opay-bigdata/spark-cli/internal/fs"
+	"github.com/opay-bigdata/spark-cli/internal/model"
+	"github.com/opay-bigdata/spark-cli/internal/output"
+	"github.com/opay-bigdata/spark-cli/internal/scenario"
+)
+
+type Options struct {
+	Scenario string
+	AppID    string
+	LogDirs  []string
+	HDFSUser string
+	Timeout  time.Duration
+	Format   string
+	Top      int
+	DryRun   bool
+	Stdout   io.Writer
+	Stderr   io.Writer
+}
+
+func Run(ctx context.Context, opts Options) int {
+	if opts.Stdout == nil {
+		opts.Stdout = io.Discard
+	}
+	if opts.Stderr == nil {
+		opts.Stderr = io.Discard
+	}
+
+	cfg, err := buildConfig(opts)
+	if err != nil {
+		return writeErr(opts.Stderr, err)
+	}
+
+	fsByScheme, closers, err := buildFS(cfg)
+	if err != nil {
+		return writeErr(opts.Stderr, err)
+	}
+	defer func() {
+		for _, c := range closers {
+			_ = c.Close()
+		}
+	}()
+
+	loc := eventlog.NewLocator(fsByScheme, cfg.LogDirs)
+	src, err := loc.Resolve(opts.AppID)
+	if err != nil {
+		return writeErr(opts.Stderr, err)
+	}
+
+	logPath := src.URI
+	resolvedAppID := deriveAppID(opts.AppID, src)
+
+	env := scenario.Envelope{
+		Scenario:    opts.Scenario,
+		AppID:       resolvedAppID,
+		LogPath:     logPath,
+		LogFormat:   src.Format,
+		Compression: string(src.Compression),
+		Incomplete:  src.Incomplete,
+	}
+
+	if opts.DryRun {
+		env.Columns = []string{"app_id", "log_path", "log_format", "compression", "incomplete", "size_mb"}
+		env.Data = []any{map[string]any{
+			"app_id":      resolvedAppID,
+			"log_path":    logPath,
+			"log_format":  src.Format,
+			"compression": string(src.Compression),
+			"incomplete":  src.Incomplete,
+			"size_mb":     bytesToMB(src.SizeBytes),
+		}}
+		return render(opts, env)
+	}
+
+	start := time.Now()
+	app, parsed, err := parseApp(fsByScheme, src, resolvedAppID)
+	if err != nil {
+		return writeErr(opts.Stderr, err)
+	}
+	env.AppName = app.Name
+	env.ParsedEvents = parsed
+	env.ElapsedMs = time.Since(start).Milliseconds()
+
+	if err := buildScenarioBody(opts, app, &env); err != nil {
+		return writeErr(opts.Stderr, err)
+	}
+	return render(opts, env)
+}
+
+func parseApp(fsByScheme map[string]fs.FS, src eventlog.LogSource, appID string) (*model.Application, int64, error) {
+	fsys, err := fsForURI(fsByScheme, src.URI)
+	if err != nil {
+		return nil, 0, err
+	}
+	r, err := eventlog.Open(src, fsys)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer r.Close()
+	app := model.NewApplication()
+	app.ID = appID
+	agg := model.NewAggregator(app)
+	count, err := eventlog.Decode(r, agg)
+	if err != nil {
+		return nil, int64(count), err
+	}
+	return app, int64(count), nil
+}
+
+func render(opts Options, env scenario.Envelope) int {
+	var err error
+	switch opts.Format {
+	case "", "json":
+		err = output.WriteJSON(opts.Stdout, env)
+	case "table":
+		err = output.WriteTable(opts.Stdout, env)
+	case "markdown":
+		err = output.WriteMarkdown(opts.Stdout, env)
+	default:
+		err = cerrors.New(cerrors.CodeFlagInvalid, fmt.Sprintf("unknown --format %q", opts.Format), "use json|table|markdown")
+	}
+	if err != nil {
+		return writeErr(opts.Stderr, err)
+	}
+	return 0
+}
+
+func writeErr(w io.Writer, err error) int {
+	cerrors.WriteJSON(w, err)
+	return cerrors.ExitCode(err)
+}
+
+func buildConfig(opts Options) (*config.Config, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, cerrors.New(cerrors.CodeConfigMissing, err.Error(), "")
+	}
+	config.ApplyEnv(cfg)
+	if len(opts.LogDirs) > 0 {
+		cfg.LogDirs = opts.LogDirs
+	}
+	if opts.HDFSUser != "" {
+		cfg.HDFS.User = opts.HDFSUser
+	}
+	if opts.Timeout > 0 {
+		cfg.Timeout = opts.Timeout
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, cerrors.New(cerrors.CodeFlagInvalid, err.Error(), "")
+	}
+	return cfg, nil
+}
+
+func buildFS(cfg *config.Config) (map[string]fs.FS, []io.Closer, error) {
+	out := map[string]fs.FS{}
+	var closers []io.Closer
+	hdfsAddr := ""
+	for _, dir := range cfg.LogDirs {
+		u, err := url.Parse(dir)
+		if err != nil {
+			return nil, nil, cerrors.New(cerrors.CodeFlagInvalid, "bad log_dir: "+dir, "use file:// or hdfs://")
+		}
+		switch u.Scheme {
+		case "file":
+			if _, ok := out["file"]; !ok {
+				lf := fs.NewLocal()
+				out["file"] = lf
+				closers = append(closers, lf)
+			}
+		case "hdfs":
+			if hdfsAddr == "" {
+				hdfsAddr = u.Host
+			}
+			if _, ok := out["hdfs"]; !ok {
+				h, err := fs.NewHDFS(hdfsAddr, cfg.HDFS.User)
+				if err != nil {
+					return nil, closers, cerrors.New(cerrors.CodeHDFSUnreachable, err.Error(), "check hdfs:// addr and credentials")
+				}
+				out["hdfs"] = h
+				closers = append(closers, h)
+			}
+		default:
+			return nil, closers, cerrors.New(cerrors.CodeFlagInvalid, "unsupported scheme: "+u.Scheme, "use file:// or hdfs://")
+		}
+	}
+	return out, closers, nil
+}
+
+func fsForURI(fsByScheme map[string]fs.FS, uri string) (fs.FS, error) {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return nil, cerrors.New(cerrors.CodeInternal, "bad URI: "+uri, "")
+	}
+	fsys, ok := fsByScheme[u.Scheme]
+	if !ok {
+		return nil, cerrors.New(cerrors.CodeInternal, "no FS for scheme "+u.Scheme, "")
+	}
+	return fsys, nil
+}
+
+func deriveAppID(input string, src eventlog.LogSource) string {
+	base := path.Base(src.URI)
+	for strings.HasSuffix(base, ".inprogress") {
+		base = strings.TrimSuffix(base, ".inprogress")
+	}
+	for _, ext := range []string{".zstd", ".lz4", ".snappy"} {
+		if strings.HasSuffix(base, ext) {
+			base = strings.TrimSuffix(base, ext)
+			break
+		}
+	}
+	if strings.HasPrefix(base, "eventlog_v2_") {
+		base = strings.TrimPrefix(base, "eventlog_v2_")
+	}
+	if strings.HasPrefix(base, "application_") {
+		return base
+	}
+	if input != "" {
+		return input
+	}
+	return base
+}
+
+const mbBytes = 1024 * 1024
+
+func bytesToMB(b int64) float64 {
+	x := float64(b) / float64(mbBytes) * 1000
+	if x < 0 {
+		x -= 0.5
+	} else {
+		x += 0.5
+	}
+	return float64(int64(x)) / 1000
+}

@@ -2,27 +2,18 @@
 package cmd
 
 import (
+	"context"
+	"io"
 	"os"
 
 	"github.com/spf13/cobra"
 
 	"github.com/opay-bigdata/spark-cli/cmd/configcmd"
+	"github.com/opay-bigdata/spark-cli/cmd/scenarios"
 	cerrors "github.com/opay-bigdata/spark-cli/internal/errors"
 )
 
 var version = "dev"
-
-type globalFlags struct {
-	LogDirs    string
-	HDFSUser   string
-	Timeout    string
-	Format     string
-	Top        int
-	DryRun     bool
-	NoProgress bool
-}
-
-var globals globalFlags
 
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
@@ -32,24 +23,49 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.PersistentFlags().StringVar(&globals.LogDirs, "log-dirs", "", "Comma-separated list of EventLog dirs (file:// or hdfs:// URIs)")
-	root.PersistentFlags().StringVar(&globals.HDFSUser, "hdfs-user", "", "HDFS simple-auth user (defaults to $USER)")
-	root.PersistentFlags().StringVar(&globals.Timeout, "timeout", "", "Overall parse timeout, e.g. 30s")
-	root.PersistentFlags().StringVar(&globals.Format, "format", "json", "Output format: json | table | markdown")
-	root.PersistentFlags().IntVar(&globals.Top, "top", 10, "Top N for ranked scenarios")
-	root.PersistentFlags().BoolVar(&globals.DryRun, "dry-run", false, "Locate file only; do not parse events")
-	root.PersistentFlags().BoolVar(&globals.NoProgress, "no-progress", false, "Disable stderr progress")
 	return root
 }
 
-// Execute is the package entry point invoked by main.go.
-func Execute() int {
+func buildRoot() *cobra.Command {
 	root := newRootCmd()
+	scenarios.Register(root)
 	root.AddCommand(newVersionCmd())
 	root.AddCommand(configcmd.New())
-	if err := root.Execute(); err != nil {
-		cerrors.WriteJSON(os.Stderr, err)
-		return cerrors.ExitCode(err)
-	}
-	return cerrors.ExitOK
+	return root
 }
+
+// Execute runs the root command using os stdio and returns the process exit code.
+func Execute() int {
+	root := buildRoot()
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		cerrors.WriteJSON(os.Stderr, err)
+		if rc := cerrors.ExitCode(err); rc != cerrors.ExitOK {
+			return rc
+		}
+		return cerrors.ExitInternal
+	}
+	return scenarios.ExitCode()
+}
+
+// RunWith executes the root with custom args/writers, used by E2E tests.
+func RunWith(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	scenarios.ResetForTest()
+	root := buildRoot()
+	root.SetArgs(args)
+	root.SetOut(stdout)
+	root.SetErr(stderr)
+	if err := root.ExecuteContext(ctx); err != nil {
+		cerrors.WriteJSON(stderr, err)
+		if rc := cerrors.ExitCode(err); rc != cerrors.ExitOK {
+			return rc
+		}
+		return cerrors.ExitInternal
+	}
+	return scenarios.ExitCode()
+}
+
+// ResetForTest clears global state between table-driven tests.
+func ResetForTest() { scenarios.ResetForTest() }
+
+// ExitCode returns the most recent scenario exit code.
+func ExitCode() int { return scenarios.ExitCode() }
