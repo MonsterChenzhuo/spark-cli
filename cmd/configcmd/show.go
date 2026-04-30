@@ -36,8 +36,12 @@ func newShowCmd() *cobra.Command {
 
 func detectSources(cfg *config.Config) sources {
 	src := sources{LogDirs: "default", HDFSUser: "default", Timeout: "default"}
-	home, _ := os.UserHomeDir()
-	path := filepath.Join(home, ".config", "spark-cli", "config.yaml")
+	dir := os.Getenv("SPARK_CLI_CONFIG_DIR")
+	if dir == "" {
+		home, _ := os.UserHomeDir()
+		dir = filepath.Join(home, ".config", "spark-cli")
+	}
+	path := filepath.Join(dir, "config.yaml")
 	if _, err := os.Stat(path); err == nil {
 		if len(cfg.LogDirs) > 0 {
 			src.LogDirs = "file"
