@@ -1,0 +1,72 @@
+package configcmd
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+
+	"github.com/spf13/cobra"
+
+	"github.com/opay-bigdata/spark-cli/internal/config"
+)
+
+type sources struct {
+	LogDirs  string // "flag" | "env" | "file" | "default"
+	HDFSUser string
+	Timeout  string
+}
+
+func newShowCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "show",
+		Short: "Print the effective configuration",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			src := detectSources(cfg)
+			config.ApplyEnv(cfg)
+			render(cmd.OutOrStdout(), cfg, src)
+			return nil
+		},
+	}
+}
+
+func detectSources(cfg *config.Config) sources {
+	src := sources{LogDirs: "default", HDFSUser: "default", Timeout: "default"}
+	home, _ := os.UserHomeDir()
+	path := filepath.Join(home, ".config", "spark-cli", "config.yaml")
+	if _, err := os.Stat(path); err == nil {
+		if len(cfg.LogDirs) > 0 {
+			src.LogDirs = "file"
+		}
+		if cfg.HDFS.User != "" {
+			src.HDFSUser = "file"
+		}
+		src.Timeout = "file"
+	}
+	if os.Getenv("SPARK_CLI_LOG_DIRS") != "" {
+		src.LogDirs = "env"
+	}
+	if os.Getenv("SPARK_CLI_HDFS_USER") != "" {
+		src.HDFSUser = "env"
+	}
+	if os.Getenv("SPARK_CLI_TIMEOUT") != "" {
+		src.Timeout = "env"
+	}
+	return src
+}
+
+func render(w io.Writer, cfg *config.Config, src sources) {
+	fmt.Fprintf(w, "log_dirs (%s):\n", src.LogDirs)
+	if len(cfg.LogDirs) == 0 {
+		fmt.Fprintln(w, "  (none — run `spark-cli config init`)")
+	}
+	for _, d := range cfg.LogDirs {
+		fmt.Fprintf(w, "  - %s\n", d)
+	}
+	fmt.Fprintf(w, "hdfs.user (%s): %s\n", src.HDFSUser, cfg.HDFS.User)
+	fmt.Fprintf(w, "timeout (%s): %s\n", src.Timeout, cfg.Timeout)
+}

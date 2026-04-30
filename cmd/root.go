@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/opay-bigdata/spark-cli/cmd/configcmd"
 	cerrors "github.com/opay-bigdata/spark-cli/internal/errors"
 )
 
@@ -45,6 +46,7 @@ func newRootCmd() *cobra.Command {
 func Execute() int {
 	root := newRootCmd()
 	root.AddCommand(newVersionCmd())
+	root.AddCommand(configcmd.New())
 	if err := root.Execute(); err != nil {
 		cerrors.WriteJSON(os.Stderr, err)
 		return cerrors.ExitCode(err)
