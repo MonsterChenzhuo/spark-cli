@@ -8,8 +8,52 @@ import (
 
 	"github.com/golang/snappy"
 	"github.com/klauspost/compress/zstd"
+	"github.com/opay-bigdata/spark-cli/internal/fs"
 	"github.com/pierrec/lz4/v4"
 )
+
+// Open returns a single io.ReadCloser combining all parts of a LogSource and
+// applying decompression. Caller must Close.
+func Open(src LogSource, fsys fs.FS) (io.ReadCloser, error) {
+	if src.Format == "v2" {
+		readers := make([]io.Reader, 0, len(src.Parts))
+		closers := make([]io.Closer, 0, len(src.Parts))
+		for _, uri := range src.Parts {
+			rc, err := fsys.Open(uri)
+			if err != nil {
+				for _, c := range closers {
+					_ = c.Close()
+				}
+				return nil, err
+			}
+			readers = append(readers, rc)
+			closers = append(closers, rc)
+		}
+		multi := &multiCloser{r: io.MultiReader(readers...), closers: closers}
+		return openCompressed(multi, src.Compression)
+	}
+	rc, err := fsys.Open(src.URI)
+	if err != nil {
+		return nil, err
+	}
+	return openCompressed(rc, src.Compression)
+}
+
+type multiCloser struct {
+	r       io.Reader
+	closers []io.Closer
+}
+
+func (m *multiCloser) Read(p []byte) (int, error) { return m.r.Read(p) }
+func (m *multiCloser) Close() error {
+	var first error
+	for _, c := range m.closers {
+		if err := c.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
 
 type Compression string
 
