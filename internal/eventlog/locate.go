@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"net/url"
 	"path"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/opay-bigdata/spark-cli/internal/fs"
@@ -70,6 +73,11 @@ func (l *Locator) Resolve(appIDInput string) (LogSource, error) {
 		} else if ok {
 			return src, nil
 		}
+		if src, ok, err := l.resolveV2(fsys, dir, appID); err != nil {
+			return LogSource{}, err
+		} else if ok {
+			return src, nil
+		}
 	}
 	return LogSource{}, cerrors.New(cerrors.CodeAppNotFound,
 		fmt.Sprintf("no EventLog matching %s in any log_dir", appID),
@@ -119,5 +127,78 @@ func (l *Locator) resolveV1(fsys fs.FS, dirURI, appID string) (LogSource, bool, 
 		Compression: DetectCompression(base),
 		Incomplete:  strings.HasSuffix(base, ".inprogress"),
 		SizeBytes:   st.Size,
+	}, true, nil
+}
+
+var v2PartRE = regexp.MustCompile(`^events_(\d+)_(.+)$`)
+
+func (l *Locator) resolveV2(fsys fs.FS, dirURI, appID string) (LogSource, bool, error) {
+	v2Name := "eventlog_v2_" + appID
+	dirs, err := fsys.List(dirURI, v2Name)
+	if err != nil {
+		return LogSource{}, false, cerrors.New(cerrors.CodeLogUnreadable, err.Error(), "")
+	}
+	var v2URI string
+	for _, d := range dirs {
+		if path.Base(d) == v2Name {
+			st, err := fsys.Stat(d)
+			if err != nil {
+				return LogSource{}, false, cerrors.New(cerrors.CodeLogUnreadable, err.Error(), "")
+			}
+			if st.IsDir {
+				v2URI = d
+				break
+			}
+		}
+	}
+	if v2URI == "" {
+		return LogSource{}, false, nil
+	}
+	parts, err := fsys.List(v2URI, "events_")
+	if err != nil {
+		return LogSource{}, false, cerrors.New(cerrors.CodeLogUnreadable, err.Error(), "")
+	}
+	type indexed struct {
+		idx int
+		uri string
+	}
+	var indexed_ []indexed
+	var compression Compression
+	for _, p := range parts {
+		base := path.Base(p)
+		stripped := stripEventLogSuffixes(base)
+		m := v2PartRE.FindStringSubmatch(stripped)
+		if m == nil {
+			continue
+		}
+		n, _ := strconv.Atoi(m[1])
+		indexed_ = append(indexed_, indexed{idx: n, uri: p})
+		compression = DetectCompression(base)
+	}
+	if len(indexed_) == 0 {
+		return LogSource{}, false, nil
+	}
+	sort.Slice(indexed_, func(i, j int) bool { return indexed_[i].idx < indexed_[j].idx })
+	for i, it := range indexed_ {
+		if it.idx != i+1 {
+			return LogSource{}, false, cerrors.New(cerrors.CodeLogIncomplete,
+				fmt.Sprintf("V2 EventLog %s missing part %d", appID, i+1),
+				"check if upload is complete")
+		}
+	}
+	var totalSize int64
+	urls := make([]string, 0, len(indexed_))
+	for _, it := range indexed_ {
+		urls = append(urls, it.uri)
+		if st, err := fsys.Stat(it.uri); err == nil {
+			totalSize += st.Size
+		}
+	}
+	return LogSource{
+		URI:         v2URI,
+		Format:      "v2",
+		Compression: compression,
+		Parts:       urls,
+		SizeBytes:   totalSize,
 	}, true, nil
 }

@@ -3,6 +3,7 @@ package eventlog
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/opay-bigdata/spark-cli/internal/fs"
@@ -97,5 +98,42 @@ func TestResolveDoesNotMatchPrefixSibling(t *testing.T) {
 	loc := NewLocator(map[string]fs.FS{"file": fs.NewLocal()}, []string{"file://" + dir})
 	if _, err := loc.Resolve("application_1_a"); err == nil {
 		t.Fatal("want APP_NOT_FOUND, got match for sibling appID")
+	}
+}
+
+func TestResolveV2(t *testing.T) {
+	dir := t.TempDir()
+	v2dir := filepath.Join(dir, "eventlog_v2_application_1_a")
+	if err := os.MkdirAll(v2dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(v2dir, "appstatus_application_1_a"))
+	writeFile(t, filepath.Join(v2dir, "events_2_application_1_a.zstd"))
+	writeFile(t, filepath.Join(v2dir, "events_1_application_1_a.zstd"))
+	loc := NewLocator(map[string]fs.FS{"file": fs.NewLocal()}, []string{"file://" + dir})
+	src, err := loc.Resolve("application_1_a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src.Format != "v2" || len(src.Parts) != 2 {
+		t.Fatalf("source = %+v", src)
+	}
+	if !strings.HasSuffix(src.Parts[0], "events_1_application_1_a.zstd") {
+		t.Fatalf("parts not sorted: %v", src.Parts)
+	}
+}
+
+func TestResolveV2MissingParts(t *testing.T) {
+	dir := t.TempDir()
+	v2dir := filepath.Join(dir, "eventlog_v2_application_1_a")
+	if err := os.MkdirAll(v2dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(v2dir, "appstatus_application_1_a"))
+	writeFile(t, filepath.Join(v2dir, "events_1_application_1_a.zstd"))
+	writeFile(t, filepath.Join(v2dir, "events_3_application_1_a.zstd")) // skip 2
+	loc := NewLocator(map[string]fs.FS{"file": fs.NewLocal()}, []string{"file://" + dir})
+	if _, err := loc.Resolve("application_1_a"); err == nil {
+		t.Fatal("want LOG_INCOMPLETE")
 	}
 }
