@@ -73,6 +73,7 @@ type Stage struct {
 	TaskDurations  *stats.Digest
 	TaskInputBytes *stats.Digest
 
+	TotalInputBytes        int64
 	TotalShuffleReadBytes  int64
 	TotalShuffleWriteBytes int64
 	TotalSpillDisk         int64

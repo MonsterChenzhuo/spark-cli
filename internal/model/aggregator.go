@@ -116,6 +116,7 @@ func (a *Aggregator) OnTaskEnd(t TaskEnd) {
 	s.TaskInputBytes.Add(float64(t.Metrics.InputBytes))
 	s.TotalRunMs += dur
 	s.TotalGCMs += t.Metrics.GCMs
+	s.TotalInputBytes += t.Metrics.InputBytes
 	s.TotalShuffleReadBytes += t.Metrics.ShuffleReadBytes
 	s.TotalShuffleWriteBytes += t.Metrics.ShuffleWriteBytes
 	s.TotalSpillDisk += t.Metrics.SpillDisk
