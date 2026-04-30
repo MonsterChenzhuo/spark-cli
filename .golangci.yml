@@ -1,0 +1,20 @@
+version: "2"
+run:
+  timeout: 3m
+  go: "1.22"
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    - gocyclo
+  settings:
+    gocyclo:
+      min-complexity: 18
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
