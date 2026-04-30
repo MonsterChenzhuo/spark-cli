@@ -1,0 +1,104 @@
+# CLAUDE.md
+
+Guidance for Claude Code (and other AI agents) working in this repository.
+
+## What this is
+
+`spark-cli` —— 单二进制 Go CLI,解析 Apache Spark EventLog,输出结构化 JSON 信封,面向 AI agent 的 Spark 性能诊断流程。Go 1.22,模块路径 `github.com/opay-bigdata/spark-cli`。
+
+## 顶层契约
+
+每条场景命令 (`app-summary` / `slow-stages` / `data-skew` / `gc-pressure` / `diagnose`) 在 stdout 输出**一个** `scenario.Envelope` JSON 对象;错误统一走 stderr,格式 `{"error":{"code","message","hint"}}`,退出码 `0/1/2/3`。改动任何场景或输出层时**不要破坏这个信封形状** —— `tests/e2e/e2e_test.go` 是契约守门人。
+
+特例:
+- `gc-pressure` 的 `data` 是数组 (与其他场景一致),非对象 —— 早期 spec 设想的双段已收敛为单段
+- `diagnose` 的信封额外带 `summary: {critical, warn, ok}`
+
+## 仓库布局
+
+| 路径 | 用途 |
+|---|---|
+| `cmd/` | cobra 根命令 + version + config 子命令 |
+| `cmd/scenarios/` | 5 个场景命令 + `runner.Run()` 主管线 + `dispatch.go` 分发 |
+| `internal/config/` | YAML 配置加载、环境变量、flag 覆盖 |
+| `internal/errors/` | `cerrors.Error` 结构 + 退出码映射 |
+| `internal/fs/` | `file://` / `hdfs://` 抽象 (FS 接口) |
+| `internal/eventlog/` | 日志定位 (V1/V2)、解压、JSONL 解码、事件分发 |
+| `internal/model/` | Application/Stage/Executor/Job 聚合模型 + Aggregator |
+| `internal/stats/` | t-digest 分位数封装 |
+| `internal/scenario/` | 场景纯函数 + Envelope 类型 |
+| `internal/rules/` | Rule 接口 + 5 条规则 (skew/gc/spill/failed/tiny) |
+| `internal/output/` | JSON / Table / Markdown formatter |
+| `tests/e2e/` | 通过 `cmd.RunWith` 跑全场景 + 错误路径 |
+| `tests/testdata/tiny_app.json` | 10 行合成 EventLog,所有 E2E 共用 |
+| `.claude/skills/spark/SKILL.md` | 内置 agent skill — 教 Claude Code 「先 diagnose 再下钻」 |
+
+## 关键数据流
+
+```
+appId (CLI) → config → fs.FS map → eventlog.Locator.Resolve → LogSource
+LogSource → eventlog.Open (decompress + V2 拼接) → eventlog.Decode → model.Aggregator → *model.Application
+*model.Application → scenario.<X>(app) → Envelope.{Columns, Data, Summary}
+Envelope → output.Write{JSON|Table|Markdown}
+```
+
+`runner.Run` 是唯一入口 (`cmd/scenarios/runner.go`);所有 cobra 命令通过 `register.go` 收敛到它。
+
+## 开发约定
+
+- **Go 1.22 锁定**: `go.mod` 显式 `go 1.22`,不要被工具链自动 bump (有依赖如 tdigest 想要更高版本,但本仓库限定 1.22)。
+- **TDD**: 新场景/规则先写失败测试再写实现,见每个 `*_test.go`。
+- **回应中文**: 仓库内交互、commit 信息可中英混合,但解释/讨论默认中文。
+- **Commit 信息格式**: `type(scope): subject` —— `feat(scenario):`、`feat(output):`、`fix(model):`、`test(e2e):`、`docs(skill):`、`ci:`、`style:` 等。每个 commit 末尾带 `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`。
+- **不要随手扩功能**: 任务/bug 只动相关代码,别顺手重构 (除非任务即重构)。
+- **Envelope 改动需同步**: 改 `scenario.Envelope` JSON tag 或字段时,务必跑 `tests/e2e` + 更新 `.claude/skills/spark/SKILL.md` 的 envelope 文档 + `README.md` / `CHANGELOG.md`。
+
+## 常用命令
+
+```bash
+go test ./...                     # 跑全部包
+go test -race -count=1 ./...      # CI 模式
+go vet ./...
+gofmt -l .                        # 应该没有输出
+go build -o spark-cli .
+
+# 烟囱
+mkdir -p /tmp/spark-cli-smoke
+cp tests/testdata/tiny_app.json /tmp/spark-cli-smoke/application_1_1
+go run . diagnose application_1_1 --log-dirs file:///tmp/spark-cli-smoke
+go run . app-summary application_1_1 --log-dirs file:///tmp/spark-cli-smoke --format table
+```
+
+## 添加新场景的标准步骤
+
+1. `internal/scenario/<name>.go` + `<name>_test.go` —— 纯函数,输入 `*model.Application`,输出 row 列表 + `Columns()` 函数
+2. 若需新模型字段 —— 同步扩 `internal/model/{model.go,aggregator.go}` + 加单元测试 (`OnTaskEnd` 累计逻辑别打破现有)
+3. `cmd/scenarios/dispatch.go` 加 `case` 分支,把 row 转 `[]any` 装进 `env.Data`
+4. `cmd/scenarios/register.go` 加一行 `newScenarioCmd("<name>", "<short>")`
+5. `tests/e2e/e2e_test.go` 加一个 case
+6. `.claude/skills/spark/SKILL.md` 与 `README.md` 同步说明
+7. `CHANGELOG.md` / `CHANGELOG.zh.md` 写一条
+
+## 添加新诊断规则
+
+1. `internal/rules/<x>_rule.go` 实现 `Rule` 接口 (`ID()`、`Title()`、`Eval(*model.Application) Finding`)
+2. `internal/rules/rule.go` 的 `All()` 列表追加
+3. `internal/rules/rule_test.go` 加触发 + 静默测试
+4. `tests/e2e` 自动覆盖 (因为 `diagnose` 跑全部规则)
+
+## 发版
+
+打 tag `vX.Y.Z` 触发 `.github/workflows/release.yml` → goreleaser 出 4 平台 tarball (linux/darwin × amd64/arm64),包含 `LICENSE`、`README.md`、`CHANGELOG.md`、`.claude/skills/spark/SKILL.md`。`scripts/install.sh` 拉最新 tag。
+
+## 已知踩坑
+
+- **MinTaskMs 哨兵 bug 历史**: `Aggregator.OnTaskEnd` 不能用 `if s.MinTaskMs == 0 { ... }` 当初始化哨兵 —— 真实 0ms 任务会被覆盖。已用 `firstTask := s.TaskDurations.Count() == 0` 修复 (commit `4ada8eb`),不要回退。
+- **负任务时长**: 某些 EventLog 的 `RunMs` 可能为负 (clock skew),`OnTaskEnd` 已 clamp 到 0,不要去掉。
+- **V2 解码空 Parts**: `eventlog.Open` 拒绝 `Parts == nil` 的 V2 LogSource,`multiCloser.Close` 是幂等的 —— 见 commit `5a98097`。
+- **Top-level App ID vs CLI App ID**: Envelope 顶层 `app_id` 来自 CLI 输入 + 文件名归一化;`data[].app_id` 来自 EventLog `SparkListenerApplicationStart` 事件。两者可能不同 (尤其当 fixture 与文件名不一致时),这是预期行为。
+
+## 文档与计划
+
+- `docs/superpowers/specs/2026-04-29-spark-cli-design.md` —— 设计 spec (8 章节)
+- `docs/superpowers/plans/2026-04-29-spark-cli-mvp.md` —— 31 任务实施计划 (本仓库的施工蓝图)
+- `docs/examples/diagnose-walkthrough.md` —— 给 agent 看的标准下钻流程
