@@ -36,12 +36,15 @@ func TestOpenZstd(t *testing.T) {
 
 func TestDetectCompressionFromName(t *testing.T) {
 	cases := map[string]Compression{
-		"application_1_a":              CompressionNone,
-		"application_1_a.zstd":         CompressionZstd,
-		"application_1_a.lz4":          CompressionLZ4,
-		"application_1_a.snappy":       CompressionSnappy,
-		"application_1_a.zstd.inprogress": CompressionZstd,
-		"application_1_a.inprogress":   CompressionNone,
+		"application_1_a":                            CompressionNone,
+		"application_1_a.zstd":                       CompressionZstd,
+		"application_1_a.lz4":                        CompressionLZ4,
+		"application_1_a.snappy":                     CompressionSnappy,
+		"application_1_a.zstd.inprogress":            CompressionZstd,
+		"application_1_a.inprogress":                 CompressionNone,
+		"application_1_a.ZSTD":                       CompressionZstd,
+		"application_1_a.zstd.inprogress.inprogress": CompressionZstd,
+		"events_1_application_X":                     CompressionNone,
 	}
 	for name, want := range cases {
 		if got := DetectCompression(name); got != want {
@@ -49,3 +52,21 @@ func TestDetectCompressionFromName(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenCompressedRejectsUnknown(t *testing.T) {
+	rc := &trackingCloser{Reader: bytes.NewReader([]byte("x"))}
+	_, err := openCompressed(rc, Compression("bogus"))
+	if err == nil {
+		t.Fatal("expected error for unknown compression")
+	}
+	if !rc.closed {
+		t.Fatal("expected rc to be closed on error")
+	}
+}
+
+type trackingCloser struct {
+	io.Reader
+	closed bool
+}
+
+func (t *trackingCloser) Close() error { t.closed = true; return nil }

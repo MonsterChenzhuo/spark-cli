@@ -2,6 +2,7 @@
 package eventlog
 
 import (
+	"fmt"
 	"io"
 	"strings"
 
@@ -19,9 +20,16 @@ const (
 	CompressionSnappy Compression = "snappy"
 )
 
-// DetectCompression strips trailing .inprogress then matches the next extension.
+// DetectCompression strips trailing .inprogress (repeatedly, in case of
+// staggered restarts) then matches the next extension case-insensitively.
+// Files with no recognized codec extension — including V2 rolling-format
+// parts like events_N_application_X — return CompressionNone, matching
+// Spark's default of writing uncompressed unless EVENT_LOG_COMPRESS is set.
 func DetectCompression(name string) Compression {
-	n := strings.TrimSuffix(name, ".inprogress")
+	n := strings.ToLower(name)
+	for strings.HasSuffix(n, ".inprogress") {
+		n = strings.TrimSuffix(n, ".inprogress")
+	}
 	switch {
 	case strings.HasSuffix(n, ".zstd"):
 		return CompressionZstd
@@ -35,7 +43,8 @@ func DetectCompression(name string) Compression {
 }
 
 // openCompressed wraps the underlying reader with the appropriate decompressor.
-// Caller must Close the returned reader.
+// On success the caller must Close the returned reader, which releases both
+// the decoder and rc. On error rc has already been closed.
 func openCompressed(rc io.ReadCloser, c Compression) (io.ReadCloser, error) {
 	switch c {
 	case CompressionNone:
@@ -52,7 +61,8 @@ func openCompressed(rc io.ReadCloser, c Compression) (io.ReadCloser, error) {
 	case CompressionSnappy:
 		return &readClose{r: snappy.NewReader(rc), raw: rc}, nil
 	}
-	return rc, nil
+	_ = rc.Close()
+	return nil, fmt.Errorf("eventlog: unsupported compression %q", c)
 }
 
 type zstdCloser struct {
