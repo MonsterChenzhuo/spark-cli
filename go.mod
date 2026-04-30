@@ -5,6 +5,7 @@ go 1.22
 require (
 	github.com/colinmarc/hdfs/v2 v2.4.0
 	github.com/golang/snappy v1.0.0
+	github.com/influxdata/tdigest v0.0.1
 	github.com/klauspost/compress v1.17.11
 	github.com/pierrec/lz4/v4 v4.1.26
 	github.com/spf13/cobra v1.8.1
