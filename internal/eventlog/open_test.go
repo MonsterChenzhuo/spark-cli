@@ -47,3 +47,33 @@ func TestOpenLogSourceV2Concat(t *testing.T) {
 		t.Fatalf("body = %q", body)
 	}
 }
+
+func TestOpenV2EmptyPartsRejected(t *testing.T) {
+	src := LogSource{Format: "v2", Compression: CompressionNone, Parts: nil}
+	if _, err := Open(src, fs.NewLocal()); err == nil {
+		t.Fatal("expected error for empty v2 Parts")
+	}
+}
+
+func TestOpenV2CloseIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	p1 := filepath.Join(dir, "evt1")
+	p2 := filepath.Join(dir, "evt2")
+	_ = os.WriteFile(p1, []byte("a"), 0644)
+	_ = os.WriteFile(p2, []byte("b"), 0644)
+	src := LogSource{
+		Format:      "v2",
+		Compression: CompressionNone,
+		Parts:       []string{"file://" + p1, "file://" + p2},
+	}
+	rc, err := Open(src, fs.NewLocal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rc.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := rc.Close(); err != nil {
+		t.Fatalf("second Close should be a no-op, got: %v", err)
+	}
+}

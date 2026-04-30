@@ -13,9 +13,14 @@ import (
 )
 
 // Open returns a single io.ReadCloser combining all parts of a LogSource and
-// applying decompression. Caller must Close.
+// applying decompression. Incomplete sources (.inprogress) are opened normally;
+// it is the parser's job to handle truncation. Caller must Close exactly once,
+// though Close is idempotent for safety.
 func Open(src LogSource, fsys fs.FS) (io.ReadCloser, error) {
 	if src.Format == "v2" {
+		if len(src.Parts) == 0 {
+			return nil, fmt.Errorf("eventlog: v2 source has no parts")
+		}
 		readers := make([]io.Reader, 0, len(src.Parts))
 		closers := make([]io.Closer, 0, len(src.Parts))
 		for _, uri := range src.Parts {
@@ -42,16 +47,23 @@ func Open(src LogSource, fsys fs.FS) (io.ReadCloser, error) {
 type multiCloser struct {
 	r       io.Reader
 	closers []io.Closer
+	closed  bool
+	err     error
 }
 
 func (m *multiCloser) Read(p []byte) (int, error) { return m.r.Read(p) }
 func (m *multiCloser) Close() error {
+	if m.closed {
+		return m.err
+	}
+	m.closed = true
 	var first error
 	for _, c := range m.closers {
 		if err := c.Close(); err != nil && first == nil {
 			first = err
 		}
 	}
+	m.err = first
 	return first
 }
 
