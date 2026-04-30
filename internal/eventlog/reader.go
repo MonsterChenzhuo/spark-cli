@@ -135,4 +135,4 @@ type readClose struct {
 }
 
 func (r *readClose) Read(p []byte) (int, error) { return r.r.Read(p) }
-func (r *readClose) Close() error                { return r.raw.Close() }
+func (r *readClose) Close() error               { return r.raw.Close() }
