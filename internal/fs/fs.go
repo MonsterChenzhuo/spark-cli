@@ -14,4 +14,5 @@ type FS interface {
 	Open(uri string) (io.ReadCloser, error)
 	Stat(uri string) (FileInfo, error)
 	List(dirURI, prefix string) ([]string, error) // returns full URIs
+	Close() error
 }

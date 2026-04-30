@@ -9,9 +9,13 @@ import (
 	"strings"
 )
 
+var _ FS = (*Local)(nil)
+
 type Local struct{}
 
 func NewLocal() *Local { return &Local{} }
+
+func (l *Local) Close() error { return nil }
 
 func uriToPath(uri string) (string, error) {
 	if i := strings.Index(uri, "://"); i >= 0 {

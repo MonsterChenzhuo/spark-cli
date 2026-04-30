@@ -1,6 +1,7 @@
 package fs
 
 import (
+	"fmt"
 	"io"
 	"net/url"
 	"os"
@@ -9,6 +10,8 @@ import (
 
 	hdfs "github.com/colinmarc/hdfs/v2"
 )
+
+var _ FS = (*HDFS)(nil)
 
 type HDFS struct {
 	client *hdfs.Client
@@ -32,10 +35,13 @@ func (h *HDFS) Close() error { return h.client.Close() }
 func uriHDFSPath(uri string) (string, error) {
 	u, err := url.Parse(uri)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("HDFS: parse %q: %w", uri, err)
 	}
 	if u.Scheme != "hdfs" {
-		return "", os.ErrInvalid
+		return "", fmt.Errorf("HDFS: unsupported URI scheme %q", u.Scheme)
+	}
+	if u.Path == "" {
+		return "/", nil
 	}
 	return u.Path, nil
 }
@@ -72,7 +78,7 @@ func (h *HDFS) List(dirURI, prefix string) ([]string, error) {
 	var out []string
 	for _, e := range entries {
 		if strings.HasPrefix(e.Name(), prefix) {
-			out = append(out, "hdfs://"+h.addr+path.Join(p, e.Name()))
+			out = append(out, "hdfs://"+h.addr+path.Join("/", p, e.Name()))
 		}
 	}
 	return out, nil
