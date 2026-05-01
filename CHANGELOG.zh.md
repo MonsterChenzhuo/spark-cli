@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Application 缓存层
+
+- `internal/cache` 把解析后的 `*model.Application` 用 `gob+zstd` 序列化到 `$XDG_CACHE_HOME/spark-cli/`(或 `~/.cache/spark-cli/`)。同一 `appId` 的首条命令照常解析;之后的命令绕过 Open + Decode + Aggregate,<300 ms 返回(信封 `parsed_events=0` 标识命中)。
+- 新增 flag `--cache-dir <path>`、`--no-cache`(本次执行不读不写);环境变量 `SPARK_CLI_CACHE_DIR`;YAML 字段 `cache.dir`。
+- 缓存失效条件: V1 源文件 mtime/size 改变;V2 任一分片 mtime / 总 size / 分片数变化。`.inprogress` 日志永不缓存。`spark-cli config show` 输出 `cache.dir` 及其来源(flag/env/file/default)。
+- 缓存失败(损坏文件、schema 不匹配、写盘失败)静默退化为 "miss + 重新解析",绝不向用户报错。
+- `internal/stats.Digest` 新增 `gob.GobEncoder` / `GobDecoder`,缓存中的 `*Application` 完整保留分位数状态。
+- `internal/fs.FileInfo` 新增 `ModTime`(UnixNano),作为缓存 key 失效判定的依据。
+
 ### 诊断规则 —— 携带 SparkConf 的建议
 - `internal/eventlog` 新增解析 `SparkListenerEnvironmentUpdate`,把运行时 Spark Properties 写入 `Application.SparkConf`。
 - `disk_spill` / `gc_pressure` / `data_skew` 规则在 evidence 和 suggestion 中带出当前真实配置(`spark.sql.shuffle.partitions`、`spark.executor.memory`、`spark.sql.adaptive.skewJoin.enabled` 等)。skew 规则在检测到 AQE skewJoin 已开启仍长尾时,建议改为调整 `skewedPartitionFactor`,而不是再喊"启用 AQE"。

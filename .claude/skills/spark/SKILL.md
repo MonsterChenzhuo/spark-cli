@@ -71,6 +71,8 @@ Errors go to **stderr** as `{"error": {"code": "...", "message": "...", "hint": 
 - `--format json|table|markdown` — default `json`; use `markdown` when embedding in chat
 - `--top N` — for `slow-stages` / `data-skew` / `gc-pressure`
 - `--dry-run` — locate the log without parsing (fast sanity check)
+- `--cache-dir <path>` — persistent cache dir (default `~/.cache/spark-cli`); cached runs report `parsed_events: 0`
+- `--no-cache` — bypass the parsed-application cache for this invocation (no read, no write)
 
 ## Setup if missing
 

@@ -79,6 +79,27 @@ Override per-invocation via `--log-dirs`, env var `SPARK_CLI_LOG_DIRS`.
 - HDFS user resolution: `--hdfs-user` → `SPARK_CLI_HDFS_USER` → `hdfs.user` → `$USER`. Note: it reads `$USER`, **not** Hadoop's `$HADOOP_USER_NAME`.
 - Kerberos / SASL / TLS are **not supported**; this targets simple-auth clusters only.
 
+### Cache
+
+The first invocation on a new EventLog persists the parsed `*model.Application`
+to `<cache_dir>/<appId>.gob.zst`. Subsequent commands on the same `appId` skip
+parsing and return in <300 ms regardless of source size (the envelope's
+`parsed_events` is `0` on a hit).
+
+| Source | Cache dir |
+|---|---|
+| `--cache-dir` flag | (highest priority) |
+| `SPARK_CLI_CACHE_DIR` env var | |
+| `config.yaml: cache.dir` | |
+| `$XDG_CACHE_HOME/spark-cli` | |
+| `~/.cache/spark-cli` | (default) |
+
+`--no-cache` bypasses both the read and the write for the current invocation.
+`.inprogress` logs are never cached. The cache invalidates automatically when
+the source file's mtime or size changes (V1) or when any part's mtime / total
+size / part count changes (V2). All cache failures (corrupt files, schema
+mismatch, write errors) degrade silently to "miss + reparse".
+
 ## Commands
 
 | Command | Purpose |

@@ -79,6 +79,20 @@ timeout: 30s
 - HDFS 用户名优先级 (高 → 低): `--hdfs-user` → `SPARK_CLI_HDFS_USER` → `hdfs.user` → `$USER`。注意是 `$USER`,**不是** Hadoop 原生的 `$HADOOP_USER_NAME`。
 - **暂不支持** Kerberos / SASL / TLS,仅适用于 simple-auth 集群。
 
+### 缓存
+
+第一次解析某个 EventLog 后,`*model.Application` 会以 `gob+zstd` 形式写到 `<cache_dir>/<appId>.gob.zst`。同一 appId 的后续命令直接读缓存,无论日志多大都能 <300 ms 返回(信封 `parsed_events=0` 标识命中)。
+
+| 来源 | 缓存目录 |
+|---|---|
+| `--cache-dir` flag | (最高优先级) |
+| `SPARK_CLI_CACHE_DIR` 环境变量 | |
+| `config.yaml: cache.dir` | |
+| `$XDG_CACHE_HOME/spark-cli` | |
+| `~/.cache/spark-cli` | (默认) |
+
+`--no-cache` 让本次执行不读不写缓存。`.inprogress` 日志永远不缓存。源文件 mtime/size(V1)或任一分片 mtime / 总 size / 分片数(V2)变化都会自动失效。所有缓存失败(损坏文件、schema 不匹配、写盘失败)都静默退化为 "miss + 重新解析"。
+
 ## 命令
 
 | 命令 | 用途 |

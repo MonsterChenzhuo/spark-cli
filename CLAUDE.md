@@ -86,6 +86,7 @@ go run . app-summary application_1_1 --log-dirs file:///tmp/spark-cli-smoke --fo
 5. `tests/e2e/e2e_test.go` 加一个 case
 6. `.claude/skills/spark/SKILL.md` 与 `README.md` 同步说明
 7. `CHANGELOG.md` / `CHANGELOG.zh.md` 写一条
+8. 若 step 2 改了 `model` 现有字段的**类型**或**名称**,bump `internal/cache/envelope.go` 的 `currentSchemaVersion` —— 仅新增字段则不需要
 
 ## 添加新诊断规则
 
@@ -124,6 +125,31 @@ HDFS 用户名优先级 (高 → 低): `--hdfs-user` flag → `SPARK_CLI_HDFS_US
 
 **关键约束**: `internal/fs/hdfs.go` 的 `HDFS.addr` 字段保存的是用户在 URI 里写的字面 host (例如 `mycluster` 或 `nn1:8020`),**不是**实际连接的 NameNode 地址。`List()` 用它拼回 `hdfs://<addr>/...` URI,这套 URI 会回流到 `eventlog.Locator` 做 prefix matching 对照 `cfg.LogDirs`。改造时不要把 `addr` 替换成 `opts.Addresses[0]`,否则 HA 场景下 Locator 直接匹配不上。
 
+## Application 缓存
+
+`internal/cache` 把首次解析得到的 `*model.Application` 用 `gob+zstd` 序列化到磁盘,让同一 appId 的后续命令绕过 `Open + Decode + Aggregate`,目标是把多 GB EventLog 的二次访问从秒级降到 <300 ms。
+
+**缓存目录优先级**(高 → 低):
+
+1. `--cache-dir <path>` flag
+2. `SPARK_CLI_CACHE_DIR` 环境变量
+3. `config.yaml` 的 `cache.dir` 字段
+4. `$XDG_CACHE_HOME/spark-cli/`
+5. `~/.cache/spark-cli/`
+
+`runner.Run` 在 `Locator.Resolve` 之后、`parseApp` 之前调 `Cache.Get`;命中时直接走 `buildScenarioBody`,信封里 `parsed_events=0`,首条 `--format json` 仍然能区分 cold/warm。
+
+**失效规则**:
+
+- V1: `{URI, mtime, size}` 任一变化触发 miss
+- V2: `{URI, max(part_mtime), sum(part_size), part_count}` 任一变化触发 miss
+- `.inprogress` 日志整体跳过缓存(不读不写)
+- `--no-cache` 旁路缓存(不读不写),仍可与 `--cache-dir` 共存(后者只决定写盘位置,本次执行依然不写)
+
+**Schema 版本**: `internal/cache/envelope.go` 的 `currentSchemaVersion` 是手动维护的整型常量。**字段加/删** gob 天然容忍,**不需要** bump;**字段改类型或重命名时**必须 bump,否则用户拿到的是用零值/老结构填充的 `*Application`。bump 后旧缓存自动作废重建,对用户透明。
+
+**关键约束**: 缓存层永远不能让 CLI 失败 —— 所有错误(写盘失败、损坏文件、解码错误)都退化为 "miss + 重新解析"。损坏文件读到时直接 `os.Remove` 删除,下次 `Put` 写盘清白。
+
 ## 已知踩坑
 
 - **MinTaskMs 哨兵 bug 历史**: `Aggregator.OnTaskEnd` 不能用 `if s.MinTaskMs == 0 { ... }` 当初始化哨兵 —— 真实 0ms 任务会被覆盖。已用 `firstTask := s.TaskDurations.Count() == 0` 修复 (commit `4ada8eb`),不要回退。
@@ -135,6 +161,8 @@ HDFS 用户名优先级 (高 → 低): `--hdfs-user` flag → `SPARK_CLI_HDFS_US
 - **V1/V2 attempt 后缀匹配**: Spark 实际写出的日志(无论 V1 单文件 `application_<id>_<attempt>` 还是 V2 滚动目录 `eventlog_v2_<appId>_<attempt>`)经常带 `_<attempt>` 计数器后缀,**不是**裸 appId。`resolveV1` / `resolveV2` 都用 `^<appID>(?:_(\d+))?$` 容忍可选 attempt,多 attempt 共存时取最大 (Spark History Server 行为)。V1 路径还保留一条短路:同时存在裸名 + attempt 命名时,裸名优先(对应 `spark.eventLog.rolling.enabled=false` 的旧行为)。**别**把任何一边改回精确等值 —— 真实 EventLog 几乎都带 attempt,改回去会全线 APP_NOT_FOUND。
 - **dispatch 复杂度上限**: `internal/eventlog/decoder.go` 的事件分发被拆成 `dispatchAppLifecycle` / `dispatchSQLAndBlacklist` / `dispatchStageAndTask` 三组,每组独立 switch 返回 `(handled, err)`。原因:`gocyclo` lint 在单 switch 阈值 22,塞下全部事件后会触线。新增事件类型时按业务归类追加到对应分组;不要把所有 case 重新塞回一个大 switch。
 - **SparkConf / SQLExecutions / Blacklists 模型**: `Application.SparkConf`(来自 `EnvironmentUpdate` 的 Spark Properties)、`SQLExecutions`(`SQLExecutionStart`)、`StageToSQL`(`JobStart.Properties[spark.sql.execution.id]`)、`Blacklists`(`Node/Executor{Blacklisted,Excluded}ForStage`)是规则给 LLM 输出"具体可执行建议"的依赖来源。改造规则时优先从这些字段取上下文:`disk_spill` / `gc_pressure` / `data_skew` 引用 SparkConf 当前值,`failed_tasks` 用 `Blacklists` 检测节点级故障(同一 host ≥2 次自动升级 critical)。`slow-stages` / `data-skew` 行通过 `StageToSQL` → `SQLExecutions` 关联 `sql_execution_id` + `sql_description`,非 SQL job 输出 `-1` + 空串。
+- **缓存 schema 不 bump 的隐性 bug**: `internal/cache/envelope.go` 的 `currentSchemaVersion` 是手动维护的整型常量。改 `model.Application` / `Stage` / `Executor` / `BlacklistEvent` 等的字段**类型**或**重命名**字段时**必须** bump 一档,否则旧缓存会被当成有效,反序列化结果可能字段错位(gob 对类型不匹配会报错被当成 miss,但对兼容类型(如 int → int64)可能静默错位)。**只新增字段不需要 bump**。每次走完上面"添加新场景的标准步骤"之后,自检一下是否动了字段类型,动了就 bump。
+- **缓存层 tmp 文件并发**: `Cache.Put` 用 `os.CreateTemp(dir, base+".tmp.*")` 拿到独占 tmp 文件再 `os.Rename`,**不要**改回 `<file>.tmp.<pid>` 的旧方案 —— 同进程多 goroutine 会撞同一个 tmp 名,出现 "rename: no such file or directory" 警告 spam。
 
 ## 文档与计划
 

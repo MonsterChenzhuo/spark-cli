@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Application cache layer
+
+- `internal/cache` persists the parsed `*model.Application` as `gob+zstd` blobs under `$XDG_CACHE_HOME/spark-cli/` (or `~/.cache/spark-cli/`). The first command on a given `appId` parses normally; subsequent commands skip Open + Decode + Aggregate and return in <300 ms (envelope `parsed_events=0` on hit).
+- New flags `--cache-dir <path>` and `--no-cache` (bypass read+write). New env var `SPARK_CLI_CACHE_DIR`. New YAML key `cache.dir`.
+- Cache invalidates on V1 source mtime/size change or any V2 part change. `.inprogress` logs are never cached. `spark-cli config show` reports the resolved `cache.dir` and its source (flag/env/file/default).
+- Cache failures (corrupt files, schema mismatch, write errors) degrade silently to "miss + reparse" — never surfaced as CLI errors.
+- `internal/stats.Digest` now implements `gob.GobEncoder` / `GobDecoder` so the cached `*Application` round-trips quantile state.
+- `internal/fs.FileInfo` exposes `ModTime` (UnixNano) for cache-key invalidation.
+
 ### Diagnostic rules — SparkConf-aware suggestions
 - `internal/eventlog` now decodes `SparkListenerEnvironmentUpdate`, populating `Application.SparkConf` with the runtime Spark Properties.
 - `disk_spill` / `gc_pressure` / `data_skew` rules surface the relevant configs (`spark.sql.shuffle.partitions`, `spark.executor.memory`, `spark.sql.adaptive.skewJoin.enabled`, etc.) in both `evidence` and `suggestion`. The skew rule's hint flips when AQE skewJoin is already enabled — instead of "enable AQE", it suggests tuning `skewedPartitionFactor`.
