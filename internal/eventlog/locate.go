@@ -101,21 +101,50 @@ func (l *Locator) resolveV1(fsys fs.FS, dirURI, appID string) (LogSource, bool, 
 	if err != nil {
 		return LogSource{}, false, cerrors.New(cerrors.CodeLogUnreadable, err.Error(), "")
 	}
-	var matches []string
+	// V1 single-file logs may carry an `_<attempt>` suffix when
+	// `spark.eventLog.rolling.enabled=false` and Spark assigns an attempt
+	// counter. Match both `application_<id>` and `application_<id>_<n>`
+	// against the bare appID input. When multiple attempts coexist, pick the
+	// highest, mirroring Spark History Server behavior.
+	attemptRE := regexp.MustCompile(`^` + regexp.QuoteMeta(appID) + `_(\d+)$`)
+	var exactMatches []string
+	type attemptMatch struct {
+		uri     string
+		attempt int
+	}
+	var attemptMatches []attemptMatch
 	for _, uri := range all {
-		if stripEventLogSuffixes(path.Base(uri)) == appID {
-			matches = append(matches, uri)
+		base := path.Base(uri)
+		stripped := stripEventLogSuffixes(base)
+		switch {
+		case stripped == appID:
+			exactMatches = append(exactMatches, uri)
+		case attemptRE.MatchString(stripped):
+			m := attemptRE.FindStringSubmatch(stripped)
+			n, _ := strconv.Atoi(m[1])
+			attemptMatches = append(attemptMatches, attemptMatch{uri: uri, attempt: n})
 		}
 	}
-	if len(matches) == 0 {
-		return LogSource{}, false, nil
-	}
-	if len(matches) > 1 {
+	if len(exactMatches) > 1 {
 		return LogSource{}, false, cerrors.New(cerrors.CodeAppAmbiguous,
-			fmt.Sprintf("multiple matches for %s: %v", appID, matches),
+			fmt.Sprintf("multiple matches for %s: %v", appID, exactMatches),
 			"give the full applicationId including timestamp")
 	}
-	uri := matches[0]
+	var uri string
+	switch {
+	case len(exactMatches) == 1:
+		uri = exactMatches[0]
+	case len(attemptMatches) > 0:
+		sort.Slice(attemptMatches, func(i, j int) bool {
+			if attemptMatches[i].attempt != attemptMatches[j].attempt {
+				return attemptMatches[i].attempt > attemptMatches[j].attempt
+			}
+			return attemptMatches[i].uri < attemptMatches[j].uri
+		})
+		uri = attemptMatches[0].uri
+	default:
+		return LogSource{}, false, nil
+	}
 	st, err := fsys.Stat(uri)
 	if err != nil {
 		return LogSource{}, false, cerrors.New(cerrors.CodeLogUnreadable, err.Error(), "")

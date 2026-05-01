@@ -16,6 +16,7 @@
 
 ### EventLog locator
 - `internal/eventlog/locate.go` now matches V2 directories with an optional `_<attempt>` suffix (`eventlog_v2_<appId>` or `eventlog_v2_<appId>_<n>`). When multiple attempts coexist the highest is selected, mirroring Spark History Server. Previously the locator required strict equality and could not find Spark-written rolling logs whose directory name carried the attempt counter.
+- `resolveV1` now applies the same attempt-suffix tolerance to V1 single-file logs (`application_<id>_<attempt>`), produced when `spark.eventLog.rolling.enabled=false`. Bare-name files still beat attempt-suffixed siblings; otherwise the highest attempt wins. Codec / `.inprogress` suffixes continue to work on top.
 
 ### HDFS
 - `internal/fs/hdfs.go` + new `internal/fs/hdfs_conf.go` — load Hadoop XML config (`core-site.xml` / `hdfs-site.xml`) and resolve HA NameService addresses via `hadoopconf.Load` + `hdfs.ClientOptionsFromConf`.

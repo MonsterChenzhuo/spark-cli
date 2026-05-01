@@ -16,6 +16,7 @@
 
 ### EventLog 定位
 - `internal/eventlog/locate.go` 支持 V2 目录的可选 `_<attempt>` 后缀(`eventlog_v2_<appId>` 或 `eventlog_v2_<appId>_<n>`),多 attempt 共存时自动取最大,与 Spark History Server 行为一致。此前严格等值匹配,无法识别 Spark 实际写出的带 attempt 计数器的滚动日志目录。
+- `resolveV1` 同样容忍 V1 单文件的 `_<attempt>` 后缀(`application_<id>_<attempt>`,对应 `spark.eventLog.rolling.enabled=false` 时 Spark 写出的命名)。裸名仍优先于带 attempt 的兄弟文件;裸名不存在时取最大 attempt。codec / `.inprogress` 后缀正常叠加。
 
 ### HDFS 配置
 - `internal/fs/hdfs.go` + 新增 `internal/fs/hdfs_conf.go` —— 通过 `hadoopconf.Load` + `hdfs.ClientOptionsFromConf` 加载 `core-site.xml` / `hdfs-site.xml`,支持 HA NameService 地址解析。

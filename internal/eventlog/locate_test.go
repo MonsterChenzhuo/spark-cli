@@ -101,6 +101,82 @@ func TestResolveDoesNotMatchPrefixSibling(t *testing.T) {
 	}
 }
 
+// V1 single-file logs can also carry an `_<attempt>` suffix (e.g. when
+// `spark.eventLog.rolling.enabled=false`). The bare appId must still match.
+func TestResolveV1WithAttemptSuffix(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "application_1_a_1"))
+	loc := NewLocator(map[string]fs.FS{"file": fs.NewLocal()}, []string{"file://" + dir})
+	src, err := loc.Resolve("application_1_a")
+	if err != nil {
+		t.Fatalf("expected attempt-suffixed file to resolve: %v", err)
+	}
+	if src.Format != "v1" {
+		t.Errorf("format = %s want v1", src.Format)
+	}
+	if !strings.HasSuffix(src.URI, "application_1_a_1") {
+		t.Errorf("URI = %s, want suffix application_1_a_1", src.URI)
+	}
+}
+
+func TestResolveV1PicksHighestAttempt(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"1", "3", "2"} {
+		writeFile(t, filepath.Join(dir, "application_1_a_"+n))
+	}
+	loc := NewLocator(map[string]fs.FS{"file": fs.NewLocal()}, []string{"file://" + dir})
+	src, err := loc.Resolve("application_1_a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(src.URI, "application_1_a_3") {
+		t.Errorf("expected highest attempt _3, got %s", src.URI)
+	}
+}
+
+// Bare-name file beats attempt-suffixed siblings: matches Spark History
+// Server's behavior of preferring the un-attempted form when present.
+func TestResolveV1ExactBeatsAttempt(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "application_1_a"))
+	writeFile(t, filepath.Join(dir, "application_1_a_1"))
+	loc := NewLocator(map[string]fs.FS{"file": fs.NewLocal()}, []string{"file://" + dir})
+	src, err := loc.Resolve("application_1_a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(src.URI, "application_1_a") || strings.HasSuffix(src.URI, "application_1_a_1") {
+		t.Errorf("expected exact match to win, got %s", src.URI)
+	}
+}
+
+func TestResolveV1ExplicitAttemptInput(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "application_1_a_1"))
+	writeFile(t, filepath.Join(dir, "application_1_a_2"))
+	loc := NewLocator(map[string]fs.FS{"file": fs.NewLocal()}, []string{"file://" + dir})
+	src, err := loc.Resolve("application_1_a_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(src.URI, "application_1_a_1") {
+		t.Errorf("explicit attempt _1 not honored, got %s", src.URI)
+	}
+}
+
+func TestResolveV1AttemptWithCompression(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "application_1_a_1.zstd"))
+	loc := NewLocator(map[string]fs.FS{"file": fs.NewLocal()}, []string{"file://" + dir})
+	src, err := loc.Resolve("application_1_a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src.Compression != CompressionZstd {
+		t.Errorf("compression = %v want zstd", src.Compression)
+	}
+}
+
 func TestResolveV2(t *testing.T) {
 	dir := t.TempDir()
 	v2dir := filepath.Join(dir, "eventlog_v2_application_1_a")
