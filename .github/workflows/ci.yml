@@ -1,38 +1,38 @@
-name: CI
-on:
-  push:
-    branches: [main]
-  pull_request:
+name: ci
+on: [push, pull_request]
 
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with: { go-version: '1.22' }
-      - uses: golangci/golangci-lint-action@v6
-        with: { version: v2.1.6 }
-
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go: ['1.22']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version: ${{ matrix.go }} }
-      - run: go test -race -count=1 ./...
-
-  build:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with: { go-version: '1.22' }
-      - run: go build -o spark-cli .
-      - run: ./spark-cli version
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go mod download
+      - name: tidy is clean
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - run: go vet ./...
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+      - name: golangci-lint
+        run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6 run
+      - name: unit tests
+        run: go test -race -count=1 ./...
+      - name: build
+        run: go build -ldflags "-s -w -X github.com/opay-bigdata/spark-cli/cmd.version=ci" -o spark-cli .
+      - name: smoke
+        run: |
+          ./spark-cli --help
+          ./spark-cli version
+      - name: e2e dry-run
+        run: go test -race -count=1 -tags=e2e ./tests/e2e/...
+      - name: lint skill
+        run: |
+          f=.claude/skills/spark/SKILL.md
+          test -f "$f" || (echo "missing $f"; exit 1)
+          head -n 20 "$f" | grep -q '^name: ' || (echo "missing name in $f"; exit 1)
+          head -n 20 "$f" | grep -q '^description: ' || (echo "missing description in $f"; exit 1)

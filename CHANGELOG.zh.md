@@ -1,5 +1,18 @@
 # 变更日志
 
+## Unreleased
+
+### CI / Release
+- `ci.yml` 改为单 job 全流程：用 `go.mod` 锁定 Go 版本、`go mod tidy` 清洁度校验、gofmt、`go run` 调起 golangci-lint v2、`-race` 单测、带版本 ldflag 的 build、烟囱测试、`-tags=e2e` 的 e2e dry-run，以及 SKILL.md 前置元数据校验。
+- `release.yml` 同时响应 `push` 到 `main`（自动 bump patch tag）和 `v*` tag 推送；由 `release` concurrency group 串行化。
+- `.goreleaser.yml` 归档现在同时打包 `README.zh.md` 与 `CHANGELOG.zh.md`，与英文版及内置 skill 并列。
+- `.golangci.yml` 新增 `formatters`（gofmt + goimports）、errcheck 排除函数集、并把 `dist/` 排除在扫描之外。
+
+### 安装脚本
+- `scripts/install.sh` 重写为 hbase-metrics-cli 同款：SHA-256 校验、redirect+API 双路解析最新 tag、sudo 兜底、skill 目录树镜像，环境变量改为 `VERSION` / `PREFIX` / `SKILL_DIR` / `NO_SUDO` / `NO_SKILL` / `REPO`。
+- **不兼容变更：** 旧的 `SPARK_CLI_BIN_DIR` / `SPARK_CLI_VERSION` / `SPARK_CLI_SKILL_DIR` 分别更名为 `PREFIX` / `VERSION` / `SKILL_DIR`；默认安装目录由 `~/.local/bin` 改为 `/usr/local/bin`，通过 `PREFIX=...` 覆盖。
+- 默认仓库 slug 修正为 `MonsterChenzhuo/spark-cli`；README 同步更新。
+
 ## v0.1.0 — 2026-04-29
 
 MVP 首版。

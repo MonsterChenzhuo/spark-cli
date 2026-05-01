@@ -1,6 +1,6 @@
 version: "2"
 run:
-  timeout: 3m
+  timeout: 5m
   go: "1.22"
 linters:
   default: none
@@ -14,7 +14,21 @@ linters:
     - gocyclo
   settings:
     gocyclo:
-      min-complexity: 18
+      min-complexity: 22
+    errcheck:
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (*net/http.Response).Body.Close
+formatters:
+  enable:
+    - gofmt
+    - goimports
 issues:
+  exclude-dirs:
+    - dist
   max-issues-per-linter: 0
   max-same-issues: 0

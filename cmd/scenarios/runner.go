@@ -223,9 +223,7 @@ func deriveAppID(input string, src eventlog.LogSource) string {
 			break
 		}
 	}
-	if strings.HasPrefix(base, "eventlog_v2_") {
-		base = strings.TrimPrefix(base, "eventlog_v2_")
-	}
+	base = strings.TrimPrefix(base, "eventlog_v2_")
 	if strings.HasPrefix(base, "application_") {
 		return base
 	}

@@ -5,10 +5,10 @@ before:
     - go mod tidy
 builds:
   - id: spark-cli
-    main: .
+    main: ./
     binary: spark-cli
     env: [CGO_ENABLED=0]
-    goos: [linux, darwin]
+    goos: [darwin, linux]
     goarch: [amd64, arm64]
     ldflags:
       - -s -w
@@ -16,12 +16,15 @@ builds:
       - -X github.com/opay-bigdata/spark-cli/cmd.commit={{.Commit}}
       - -X github.com/opay-bigdata/spark-cli/cmd.date={{.Date}}
 archives:
-  - format: tar.gz
+  - id: default
+    formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
-      - LICENSE
       - README.md
+      - README.zh.md
       - CHANGELOG.md
+      - CHANGELOG.zh.md
+      - LICENSE
       - .claude/skills/spark/SKILL.md
 checksum:
   name_template: "checksums.txt"

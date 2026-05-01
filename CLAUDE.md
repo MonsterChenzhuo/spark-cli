@@ -55,14 +55,21 @@ Envelope → output.Write{JSON|Table|Markdown}
 
 ## 常用命令
 
-```bash
-go test ./...                     # 跑全部包
-go test -race -count=1 ./...      # CI 模式
-go vet ./...
-gofmt -l .                        # 应该没有输出
-go build -o spark-cli .
+所有 gate 都从仓库根执行；提交前必须 `make tidy && make lint && make unit-test` 全绿（CI 同款）。
 
-# 烟囱
+```bash
+make tidy            # go mod tidy —— go.mod / go.sum 不能产生 diff
+make lint            # go vet + gofmt -l + golangci-lint v2 (含 formatters)
+make unit-test       # go test -race -count=1 ./...
+make e2e             # build 后跑 -tags=e2e 的 tests/e2e/...
+make build           # 出 ./spark-cli，带 git describe ldflag
+make release-snapshot  # goreleaser snapshot —— 4 平台 tarball 进 dist/
+```
+
+CI（`.github/workflows/ci.yml`）单 job 串行跑：`go.mod` 锁版本 → `go mod download` → tidy 清洁 → `go vet` → gofmt → `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6 run` → race 单测 → 带 `cmd.version=ci` ldflag 的 build → `--help` / `version` 烟囱 → `-tags=e2e` 的 e2e dry-run → SKILL.md 前置元数据校验。
+
+```bash
+# 烟囱（手动验证 envelope 形状）
 mkdir -p /tmp/spark-cli-smoke
 cp tests/testdata/tiny_app.json /tmp/spark-cli-smoke/application_1_1
 go run . diagnose application_1_1 --log-dirs file:///tmp/spark-cli-smoke
@@ -88,7 +95,14 @@ go run . app-summary application_1_1 --log-dirs file:///tmp/spark-cli-smoke --fo
 
 ## 发版
 
-打 tag `vX.Y.Z` 触发 `.github/workflows/release.yml` → goreleaser 出 4 平台 tarball (linux/darwin × amd64/arm64),包含 `LICENSE`、`README.md`、`CHANGELOG.md`、`.claude/skills/spark/SKILL.md`。`scripts/install.sh` 拉最新 tag。
+`.github/workflows/release.yml` 同时响应两类事件，由 `release` concurrency group 串行化：
+
+1. **`push` 到 `main`**：runner 自动从 `git tag -l 'v*'` 找出最大 tag，bump patch 段（`v0.1.0` → `v0.1.1`），打 annotated tag 推回 origin —— 这一步会再次触发本 workflow 进入下面的 tag 分支。
+2. **`v*` tag 推送**：跑 `goreleaser release --clean`，出 4 平台 tarball（linux/darwin × amd64/arm64），打包 `LICENSE`、`README.md`、`README.zh.md`、`CHANGELOG.md`、`CHANGELOG.zh.md`、`.claude/skills/spark/SKILL.md`，并附 `checksums.txt`。
+
+> 想跳过自动 bump、自己控制版本号？直接 `git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z`，main 分支别动即可。
+
+`scripts/install.sh` 通过 GitHub `releases/latest` redirect 解析最新 tag（API 限流时回落到 `/repos/.../releases/latest`），下载归档后用 `checksums.txt` 做 sha256 校验，再把 binary 装到 `PREFIX` (默认 `/usr/local/bin`，必要时 `sudo`)、把 skill 树镜像到 `SKILL_DIR` (默认 `~/.claude/skills/spark`)。环境变量：`VERSION` / `PREFIX` / `SKILL_DIR` / `NO_SUDO` / `NO_SKILL` / `REPO`，详见脚本头部注释。
 
 ## 已知踩坑
 

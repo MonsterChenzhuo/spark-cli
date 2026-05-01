@@ -16,15 +16,35 @@ spark-cli data-skew application_1735000000_0001 --top 10
 
 ## 安装
 
+### 一键脚本（推荐）
+
+将最新 release 二进制安装到 `/usr/local/bin`，并把内置 Claude Code skill 安装到 `~/.claude/skills/spark/`。重复执行该命令即可升级。
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/opay-bigdata/spark-cli/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/MonsterChenzhuo/spark-cli/main/scripts/install.sh | bash
 ```
 
-或:
+常用覆盖：
+
+```bash
+# 锁定版本
+curl -fsSL https://raw.githubusercontent.com/MonsterChenzhuo/spark-cli/main/scripts/install.sh | VERSION=v0.1.0 bash
+
+# 装到无需 sudo 的路径，跳过 skill
+curl -fsSL https://raw.githubusercontent.com/MonsterChenzhuo/spark-cli/main/scripts/install.sh | PREFIX="$HOME/.local/bin" NO_SKILL=1 bash
+```
+
+支持的环境变量：`VERSION`、`PREFIX`、`SKILL_DIR`、`NO_SUDO`、`NO_SKILL`、`REPO`，详见 `scripts/install.sh` 头部注释。
+
+### 源码安装
 
 ```bash
 go install github.com/opay-bigdata/spark-cli@latest
 ```
+
+### 从 Release 手动安装
+
+从 GitHub Releases 下载对应平台的归档，再 `tar -xzf … && mv spark-cli /usr/local/bin/` 即可。
 
 ## 配置
 

@@ -16,15 +16,35 @@ spark-cli data-skew application_1735000000_0001 --top 10
 
 ## Install
 
+### One-liner (recommended)
+
+Installs the latest release binary into `/usr/local/bin` and the bundled Claude Code skill into `~/.claude/skills/spark/`. Re-run the same command to upgrade.
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/opay-bigdata/spark-cli/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/MonsterChenzhuo/spark-cli/main/scripts/install.sh | bash
 ```
 
-Or:
+Common overrides:
+
+```bash
+# pin a version
+curl -fsSL https://raw.githubusercontent.com/MonsterChenzhuo/spark-cli/main/scripts/install.sh | VERSION=v0.1.0 bash
+
+# install to a non-sudo path, skip the skill
+curl -fsSL https://raw.githubusercontent.com/MonsterChenzhuo/spark-cli/main/scripts/install.sh | PREFIX="$HOME/.local/bin" NO_SKILL=1 bash
+```
+
+Supported envs: `VERSION`, `PREFIX`, `SKILL_DIR`, `NO_SUDO`, `NO_SKILL`, `REPO`. See `scripts/install.sh` header for details.
+
+### From source
 
 ```bash
 go install github.com/opay-bigdata/spark-cli@latest
 ```
+
+### From release (manual)
+
+Download the archive for your OS from GitHub Releases, then `tar -xzf … && mv spark-cli /usr/local/bin/`.
 
 ## Configure
 

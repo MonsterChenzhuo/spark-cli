@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### CI / Release
+- Single-job `ci.yml` now enforces `go.mod` Go version, `go mod tidy` cleanliness, gofmt, golangci-lint v2 (via `go run`), race-tested unit suite, ldflag-versioned build, smoke checks, e2e dry-run with `-tags=e2e`, and SKILL.md frontmatter lint.
+- `release.yml` triggers on `push` to `main` (auto-bumps the patch tag) and on `v*` tag pushes; serialised by a `release` concurrency group.
+- `.goreleaser.yml` archive now bundles `README.zh.md` and `CHANGELOG.zh.md` alongside the existing English copies and the bundled skill.
+- `.golangci.yml` adds the `formatters` block (gofmt + goimports), errcheck function exclusions, and excludes `dist/` from issue scanning.
+
+### Installer
+- `scripts/install.sh` rewritten to match the hbase-metrics-cli installer: SHA-256 checksum verification, redirect-then-API latest-tag resolution, sudo fallback, skill-tree mirroring, and env overrides `VERSION` / `PREFIX` / `SKILL_DIR` / `NO_SUDO` / `NO_SKILL` / `REPO`.
+- **Breaking:** previous env vars `SPARK_CLI_BIN_DIR`, `SPARK_CLI_VERSION`, and `SPARK_CLI_SKILL_DIR` were renamed to `PREFIX`, `VERSION`, and `SKILL_DIR` respectively. Default install dir moved from `~/.local/bin` to `/usr/local/bin` (override with `PREFIX=...`).
+- Default repo slug fixed to `MonsterChenzhuo/spark-cli`; README install snippets updated.
+
 ## v0.1.0 — 2026-04-29
 
 Initial MVP release.
