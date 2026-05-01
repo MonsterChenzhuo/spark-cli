@@ -7,9 +7,10 @@ import (
 )
 
 type TopStage struct {
-	StageID    int    `json:"stage_id"`
-	Name       string `json:"name"`
-	DurationMs int64  `json:"duration_ms"`
+	StageID    int     `json:"stage_id"`
+	Name       string  `json:"name"`
+	DurationMs int64   `json:"duration_ms"`
+	BusyRatio  float64 `json:"busy_ratio"`
 }
 
 type AppSummaryRow struct {
@@ -85,6 +86,7 @@ func AppSummary(app *model.Application) AppSummaryRow {
 		id   int
 		name string
 		dur  int64
+		busy float64
 	}
 	var all []sd
 	for _, s := range app.Stages {
@@ -98,7 +100,7 @@ func AppSummary(app *model.Application) AppSummaryRow {
 		if dur < 0 {
 			dur = 0
 		}
-		all = append(all, sd{id: s.ID, name: s.Name, dur: dur})
+		all = append(all, sd{id: s.ID, name: s.Name, dur: dur, busy: stageBusyRatio(s, app.MaxConcurrentExecutors)})
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i].dur > all[j].dur })
 	n := 3
@@ -107,10 +109,32 @@ func AppSummary(app *model.Application) AppSummaryRow {
 	}
 	for i := 0; i < n; i++ {
 		row.TopStagesByDuration = append(row.TopStagesByDuration, TopStage{
-			StageID: all[i].id, Name: all[i].name, DurationMs: all[i].dur,
+			StageID: all[i].id, Name: all[i].name, DurationMs: all[i].dur, BusyRatio: all[i].busy,
 		})
 	}
 	return row
+}
+
+// stageBusyRatio = TotalRunMs / (wall * effective_slots), clamped to [0,1].
+// effective_slots = min(NumTasks, MaxConcurrentExecutors), matching IdleStageRule.
+// Returns 0 when wall <= 0, slots <= 0, or TotalRunMs <= 0.
+func stageBusyRatio(s *model.Stage, maxExec int) float64 {
+	wall := s.CompleteMs - s.SubmitMs
+	if wall <= 0 || s.TotalRunMs <= 0 {
+		return 0
+	}
+	slots := int64(s.NumTasks)
+	if lim := int64(maxExec); lim > 0 && lim < slots {
+		slots = lim
+	}
+	if slots <= 0 {
+		return 0
+	}
+	r := float64(s.TotalRunMs) / float64(wall*slots)
+	if r > 1.0 {
+		r = 1.0
+	}
+	return round3(r)
 }
 
 const gb = 1024 * 1024 * 1024

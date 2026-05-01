@@ -66,3 +66,50 @@ func TestAppSummaryComputesGCRatioAndTopStages(t *testing.T) {
 		t.Errorf("top stage order wrong: %+v", row.TopStagesByDuration)
 	}
 }
+
+func TestAppSummaryTopStagesIncludeBusyRatio(t *testing.T) {
+	app := model.NewApplication()
+	app.MaxConcurrentExecutors = 10
+
+	idle := model.NewStage(1, 0, "idle", 100, 0)
+	idle.SubmitMs = 0
+	idle.CompleteMs = 100_000
+	idle.TotalRunMs = 2_000
+	idle.Status = "succeeded"
+	app.Stages[model.StageKey{ID: 1}] = idle
+
+	busy := model.NewStage(2, 0, "busy", 100, 0)
+	busy.SubmitMs = 0
+	busy.CompleteMs = 10_000
+	busy.TotalRunMs = 80_000
+	busy.Status = "succeeded"
+	app.Stages[model.StageKey{ID: 2}] = busy
+
+	row := AppSummary(app)
+	tops := map[int]TopStage{}
+	for _, ts := range row.TopStagesByDuration {
+		tops[ts.StageID] = ts
+	}
+	if got := tops[1].BusyRatio; got < 0.001 || got > 0.003 {
+		t.Errorf("idle stage busy_ratio=%v want ~0.002", got)
+	}
+	if got := tops[2].BusyRatio; got < 0.79 || got > 0.81 {
+		t.Errorf("busy stage busy_ratio=%v want ~0.8", got)
+	}
+}
+
+func TestAppSummaryBusyRatioClampsToOne(t *testing.T) {
+	app := model.NewApplication()
+	app.MaxConcurrentExecutors = 1
+	s := model.NewStage(1, 0, "weird", 1, 0)
+	s.SubmitMs = 0
+	s.CompleteMs = 1_000
+	s.TotalRunMs = 5_000
+	s.Status = "succeeded"
+	app.Stages[model.StageKey{ID: 1}] = s
+
+	row := AppSummary(app)
+	if got := row.TopStagesByDuration[0].BusyRatio; got != 1.0 {
+		t.Errorf("busy_ratio=%v want clamped to 1.0", got)
+	}
+}
