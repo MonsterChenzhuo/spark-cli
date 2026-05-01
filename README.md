@@ -14,6 +14,8 @@ If `diagnose` flags `data_skew`:
 spark-cli data-skew application_1735000000_0001 --top 10
 ```
 
+Each row carries `input_skew_factor` alongside `skew_factor`; verdicts are downgraded to `warn` when input is uniform (`input_skew_factor < 1.2`) and `p99/p50 < 20` so jitter on idle stages stops triggering false `severe`. `slow-stages` rows expose `gc_ratio` (sum(task_gc) / sum(task_run)); `app-summary` exposes `top_stages_by_duration[].busy_ratio` so driver-side idle stages are visible at a glance.
+
 ## Install
 
 ### One-liner (recommended)

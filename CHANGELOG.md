@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Diagnostic accuracy & readability fixes
+
+- `slow-stages` rows now expose `gc_ratio` (`sum(task_gc) / sum(task_run)`) so callers stop computing `gc_ms / duration_ms` and getting >100% values from multi-executor concurrency.
+- `app-summary.top_stages_by_duration[]` rows now expose `busy_ratio` so driver-side idle stages (broadcast / planning / file listing) are visible at a glance instead of masquerading as the slowest "real" stages.
+- `data_skew` rule downgrades critical → warn when input is uniform (`input_skew_factor < 1.2`) and `p99/p50 < 20`. Extreme ratios (≥ 20) still report critical regardless of input distribution. Same gate applies to `data-skew` row verdicts.
+- `data_skew` rule skips stages that match `idle_stage` criteria (wall ≥ 30s and `busy_ratio < 0.2`) — task-time long tails on idle stages are scheduling jitter, not skew.
+- `data_skew` finding evidence now includes `input_skew_factor`.
+- `stageSQL` falls back to `details` first line when `description` is Spark's default `getCallSite at SQLExecution.scala:74` callsite or empty (typical DataFrame API submission). `data-skew` and `slow-stages` row `sql_description` becomes useful for DataFrame jobs.
+
 ### Spark History Server EventLog source
 
 - New `shs://host:port` scheme for `--log-dirs`. spark-cli pulls `GET /api/v1/applications/<id>/<attempt>/logs` (a zip body) and exposes its entries through the existing `fs.FS` abstraction, so the locator, decoder, rules, and parsed-application cache all work transparently against a Spark History Server.

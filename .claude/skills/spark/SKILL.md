@@ -20,7 +20,7 @@ The user must provide a Spark `applicationId` (e.g. `application_1735000000_0001
    Read `summary.critical` and `summary.warn`. Even `severity: "ok"` rows are meaningful — they confirm a check ran.
 
 2. **Drill down based on findings**:
-   - `data_skew` critical → `spark-cli data-skew <appId> --top 10`. Each row carries `sql_execution_id` + `sql_description` so you can quote the SQL that owns the skewed stage.
+   - `data_skew` critical → `spark-cli data-skew <appId> --top 10`. 每行带 `sql_execution_id` + `sql_description`(对 DataFrame 作业会自动回退到 `details` 首行,通常是用户调用位置)。**注意**:`evidence.input_skew_factor < 1.2` 时(数据均匀)即使 `skew_factor` 很高也常被降级为 warn —— 这种长尾多半是 task 抖动而非真倾斜;同时,候选 stage 若同时满足 `idle_stage` 条件(wall ≥ 30s 且 busy_ratio < 0.2),`data_skew` 会跳过它选下一个 hot stage。
    - `gc_pressure` critical → `spark-cli gc-pressure <appId>` (look at `by_executor`). The `gc_pressure` finding now embeds `spark_executor_memory` in evidence — quote it before suggesting tuning.
    - `disk_spill` triggered → `spark-cli slow-stages <appId>` and read `spill_disk_gb`. The finding's evidence already includes `spark_sql_shuffle_partitions` and `spark_executor_memory` — anchor your suggestion to the actual configured values, not generic advice.
    - `failed_tasks` triggered → if `evidence.blacklisted_hosts` is non-empty, those hosts have been excluded ≥2 times; report them by name and tell the user the failure looks node-level (hardware/network/disk), not random task flakiness. Otherwise ask for driver logs.
@@ -28,7 +28,17 @@ The user must provide a Spark `applicationId` (e.g. `application_1735000000_0001
    - `idle_stage` triggered → stage wall-clock 远大于 executor 实际工作时间(driver 端 broadcast/串行计算/调度等待),用 `spark-cli slow-stages <appId>` 看具体 stage,然后排查执行计划
    - All `ok` but user reports slowness → `spark-cli slow-stages <appId> --top 5`
 
-3. **For overview**: `spark-cli app-summary <appId>`
+3. **For overview**: `spark-cli app-summary <appId>`。`top_stages_by_duration[]` 每行带 `busy_ratio`,接近 0 的 stage 是 driver 端 idle 等待(broadcast/planning/listing),不是 executor 优化目标 —— 读 top 时**先看 busy_ratio** 再决定是否下钻。
+
+### GC ratio 三层口径
+
+三层 `gc_ratio` 分母都是 task 累加,不是 wall —— 不要用 `gc_ms / duration_ms`,多 executor 并发场景下会得到 >100% 的诡异值。
+
+| 层级 | 字段 | 公式 |
+|---|---|---|
+| 应用全局 | `envelope.gc_ratio`(`app-summary` 顶层) | `total_gc_ms / total_run_ms` |
+| stage 内 | `slow-stages[].gc_ratio` | `sum(task_gc) / sum(task_run)` |
+| executor 累加 | `gc-pressure.by_executor[].gc_ratio` | `executor.TotalGCMs / executor.TotalRunMs` |
 
 ## Envelope contract
 

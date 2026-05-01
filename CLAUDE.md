@@ -50,7 +50,6 @@ Envelope → output.Write{JSON|Table|Markdown}
 - **TDD**: 新场景/规则先写失败测试再写实现,见每个 `*_test.go`。
 - **回应中文**: 仓库内交互、commit 信息可中英混合,但解释/讨论默认中文。
 - **Commit 信息格式**: `type(scope): subject` —— `feat(scenario):`、`feat(output):`、`fix(model):`、`test(e2e):`、`docs(skill):`、`ci:`、`style:` 等。每个 commit 末尾带 `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`。
-- **不要随手扩功能**: 任务/bug 只动相关代码,别顺手重构 (除非任务即重构)。
 - **Envelope 改动需同步**: 改 `scenario.Envelope` JSON tag 或字段时,务必跑 `tests/e2e` + 更新 `.claude/skills/spark/SKILL.md` 的 envelope 文档 + `README.md` / `CHANGELOG.md`。
 - **CLAUDE.md 同步规则**: 每次新增/修改用户可见功能(CLI flag、环境变量、配置项、命令行为、输出契约、依赖发现路径)或调整开发流程时,**必须**同步更新本文件相关章节(常见入口:开发约定、HDFS 连接、添加新场景/规则、已知踩坑),并在同一 commit 中带上 README/CHANGELOG 的对应变更。原因:本仓库的 AI agent 工作流强依赖 CLAUDE.md 作为唯一权威上下文,文档漂移会让后续会话直接做错事。
 
@@ -180,9 +179,17 @@ HDFS 用户名优先级 (高 → 低): `--hdfs-user` flag → `SPARK_CLI_HDFS_US
 - **缓存 schema 不 bump 的隐性 bug**: `internal/cache/envelope.go` 的 `currentSchemaVersion` 是手动维护的整型常量。改 `model.Application` / `Stage` / `Executor` / `BlacklistEvent` 等的字段**类型**或**重命名**字段时**必须** bump 一档,否则旧缓存会被当成有效,反序列化结果可能字段错位(gob 对类型不匹配会报错被当成 miss,但对兼容类型(如 int → int64)可能静默错位)。**只新增字段不需要 bump**。每次走完上面"添加新场景的标准步骤"之后,自检一下是否动了字段类型,动了就 bump。
 - **缓存层 tmp 文件并发**: `Cache.Put` 用 `os.CreateTemp(dir, base+".tmp.*")` 拿到独占 tmp 文件再 `os.Rename`,**不要**改回 `<file>.tmp.<pid>` 的旧方案 —— 同进程多 goroutine 会撞同一个 tmp 名,出现 "rename: no such file or directory" 警告 spam。
 - **shs 缓存命中仍要下载 zip**: `internal/cache` 命中只是跳过 `Open + Decode + Aggregate`,但 `Locator.Resolve` 仍要 `List + Stat`,这两步会触发 `internal/fs.SHS.bundleFor` 从 SHS 拉一次完整 zip 来判断 V1/V2 layout。不要把 SHS 的 zip 下载移到 cache 命中之后 —— Locator 在 cache 之前就需要确切的 LogSource。修这个意味着持久化 zip 到磁盘缓存,目前**不做**。
+- **sql_description 对 DataFrame 作业默认是 callsite**: `SparkListenerSQLExecutionStart.description` 在 DataFrame API 提交时是 `getCallSite at SQLExecution.scala:74`,几乎没有信息量。`stageSQL` 在 `internal/scenario/result.go` 已实现 fallback:description 是该 callsite 或为空时,改取 `SQLExecution.Details` 的首行(通常是用户实际调用位置)。**不要**回退到只读 description,否则 data-skew / slow-stages 的 sql_description 列对绝大多数生产作业完全无用。判定窗口刻意收窄到 `getCallSite ` 前缀,不做模糊匹配,以免误判真 SQL。
+- **data_skew 双闸门**: `SkewRule` 与 `DataSkew` 在 `input_skew_factor < 1.2` 且 `p99/p50 < 20` 时,把 critical 降为 warn(数据均匀的长尾几乎都是抖动);候选 stage 同时命中 `IdleStageRule`(wall>=30s + busy_ratio<0.2)时整个跳过。两道闸门的阈值与 `IdleStageRule` 同口径,**改 idle 阈值时记得回头改 `SkewRule.isIdleStage`**(目前两边各保一份内联实现,故意不抽 helper —— 让两条规则可以独立演进)。极端 ratio (≥ 20) 仍保留 critical,不被闸门遮蔽。
+- **三层 gc_ratio 口径**: `Envelope.gc_ratio`(`app-summary` 顶层)= `app.TotalGCMs / app.TotalRunMs`;`SlowStageRow.gc_ratio` = `stage.TotalGCMs / stage.TotalRunMs`;`GCExecRow.gc_ratio` = `executor.TotalGCMs / executor.TotalRunMs`。**三层分母都是 task 累加**,**不要**用 wall(`duration_ms`)做分母,否则多 executor 并发场景下会出现 >100% 的诡异值。SKILL.md 已显式列出三层口径表,改任何一层时记得同步。
+- **app-summary top stages 的 busy_ratio**: `TopStage.BusyRatio` = `TotalRunMs / (wall * effective_slots)`,clamp 到 [0,1]。`effective_slots = min(NumTasks, MaxConcurrentExecutors)`(与 `IdleStageRule` 同口径)。接近 0 的 stage 在 top 列表里是 driver-side idle stage(broadcast/planning/listing 等),按 wall 排序会把它们推到前面但优化方向完全不同 —— agent / 用户读 top 时**必须**先看 `busy_ratio` 再决定是否值得动 stage 本身。
 
 ## 文档与计划
 
 - `docs/superpowers/specs/2026-04-29-spark-cli-design.md` —— 设计 spec (8 章节)
 - `docs/superpowers/plans/2026-04-29-spark-cli-mvp.md` —— 31 任务实施计划 (本仓库的施工蓝图)
+- `docs/superpowers/specs/2026-05-02-application-cache-design.md` —— Application 缓存层设计
+- `docs/superpowers/plans/2026-05-02-application-cache.md` —— Application 缓存实施计划
+- `docs/superpowers/specs/2026-05-02-spark-cli-diagnostic-fixes-design.md` —— 诊断精度修复设计
+- `docs/superpowers/plans/2026-05-02-spark-cli-diagnostic-fixes.md` —— 诊断精度修复实施计划
 - `docs/examples/diagnose-walkthrough.md` —— 给 agent 看的标准下钻流程

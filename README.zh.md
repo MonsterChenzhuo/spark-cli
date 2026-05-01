@@ -14,6 +14,8 @@ spark-cli diagnose application_1735000000_0001
 spark-cli data-skew application_1735000000_0001 --top 10
 ```
 
+每行除 `skew_factor` 外还带 `input_skew_factor`;输入均匀(`input_skew_factor < 1.2`)且 `p99/p50 < 20` 时 verdict 自动降为 `warn`,避免 idle stage 上的抖动误报 `severe`。`slow-stages` 行带 `gc_ratio`(口径 `sum(task_gc) / sum(task_run)`);`app-summary` 的 `top_stages_by_duration[]` 带 `busy_ratio`,driver 端 idle 等待 stage 一眼可辨。
+
 ## 安装
 
 ### 一键脚本（推荐）

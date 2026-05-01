@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### 诊断精度与可读性修复
+
+- `slow-stages` 行新增 `gc_ratio` 字段(`sum(task_gc) / sum(task_run)`),解决调用方用 `gc_ms / duration_ms` 在多 executor 并发下得到 >100% 的诡异值。
+- `app-summary.top_stages_by_duration[]` 行新增 `busy_ratio` 字段,driver 端 idle stage(broadcast / planning / 文件 listing)在 top 列表里一眼可辨,不再伪装成"最慢真实 stage"。
+- `data_skew` 规则在输入均匀(`input_skew_factor < 1.2`)且 `p99/p50 < 20` 时,把 critical 降为 warn —— 数据均匀的长尾通常是抖动而非真倾斜。极端 ratio(≥ 20)仍保留 critical。`data-skew` 行 verdict 同口径降级。
+- `data_skew` 规则跳过命中 `idle_stage` 条件的候选 stage(wall ≥ 30s 且 `busy_ratio < 0.2`)—— idle stage 上的 task 长尾本质是调度噪音,不应报数据倾斜。
+- `data_skew` finding 的 `evidence` 新增 `input_skew_factor`。
+- `stageSQL` 在 `description` 是 Spark 默认 callsite (`getCallSite at SQLExecution.scala:74`) 或为空时,回退到 `details` 首行(典型 DataFrame API 作业行为)。`data-skew` / `slow-stages` 行的 `sql_description` 对 DataFrame 作业终于有可用输出。
+
 ### Spark History Server EventLog 源
 
 - 新增 `shs://host:port` scheme,可写入 `--log-dirs`。spark-cli 通过 `GET /api/v1/applications/<id>/<attempt>/logs`(返回 zip 包)拉日志,把 zip 内部条目以现有 `fs.FS` 抽象暴露,定位器、解码器、规则、应用解析缓存全部透明工作。
