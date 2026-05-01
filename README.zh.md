@@ -58,9 +58,12 @@ log_dirs:
   - file:///var/log/spark-history
   - hdfs://mycluster/spark-history     # 写 HA NameService 逻辑名 (推荐)
   # - hdfs://nn:8020/spark-history     # 或写具体 host:port
+  # - shs://history.example.com:18081  # Spark History Server REST API
 hdfs:
   user: hadoop
   conf_dir: /etc/hadoop/conf           # 可选; 留空则按 HADOOP_CONF_DIR / HADOOP_HOME 自动发现
+shs:
+  timeout: 60s
 timeout: 30s
 ```
 
@@ -78,6 +81,27 @@ timeout: 30s
   6. 都没拿到 conf 时,退回 `--log-dirs` 里 `hdfs://host:port/...` 的字面 `host:port` (此时不支持 HA 逻辑名)
 - HDFS 用户名优先级 (高 → 低): `--hdfs-user` → `SPARK_CLI_HDFS_USER` → `hdfs.user` → `$USER`。注意是 `$USER`,**不是** Hadoop 原生的 `$HADOOP_USER_NAME`。
 - **暂不支持** Kerberos / SASL / TLS,仅适用于 simple-auth 集群。
+
+### Spark History Server
+
+把 `--log-dirs` 指向 SHS REST 端点,spark-cli 会通过
+`GET /api/v1/applications/<id>/<attempt>/logs`(返回 zip 包)拉取 EventLog,
+然后让定位器、解码器、规则、应用解析缓存全部透明工作 —— 跟读 `file://` /
+`hdfs://` 没有区别。
+
+```bash
+spark-cli diagnose application_1771556836054_861265 \
+  --log-dirs shs://history.example.com:18081
+```
+
+- 自动选择数值最大的 `attemptId`。
+- 仅 HTTP;**不支持** TLS、Basic Auth、Bearer Token、Kerberos。
+- 超时优先级(高 → 低):`--shs-timeout` flag → `SPARK_CLI_SHS_TIMEOUT` 环境变量
+  → `config.yaml` 的 `shs.timeout` → 默认 `60s`。
+- `Content-Length` ≤ 256 MiB 时整包读到内存;更大或长度未知时落到 `os.CreateTemp`,
+  进程退出时自动清理。
+- **已知限制**:即使应用解析缓存命中,每次调用仍要下载 zip ——
+  Locator 必须读 zip 内容才能判定 V1 / V2 布局。持久化 zip 缓存在 roadmap 上。
 
 ### 缓存
 

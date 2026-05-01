@@ -58,9 +58,12 @@ log_dirs:
   - file:///var/log/spark-history
   - hdfs://mycluster/spark-history     # HA NameService logical name (recommended)
   # - hdfs://nn:8020/spark-history     # or an explicit host:port
+  # - shs://history.example.com:18081  # Spark History Server REST API
 hdfs:
   user: hadoop
   conf_dir: /etc/hadoop/conf           # optional; auto-discovered via HADOOP_CONF_DIR / HADOOP_HOME if empty
+shs:
+  timeout: 60s
 timeout: 30s
 ```
 
@@ -78,6 +81,27 @@ Override per-invocation via `--log-dirs`, env var `SPARK_CLI_LOG_DIRS`.
   6. Falls back to the literal `host:port` from `--log-dirs` (no HA logical-name support in this mode)
 - HDFS user resolution: `--hdfs-user` → `SPARK_CLI_HDFS_USER` → `hdfs.user` → `$USER`. Note: it reads `$USER`, **not** Hadoop's `$HADOOP_USER_NAME`.
 - Kerberos / SASL / TLS are **not supported**; this targets simple-auth clusters only.
+
+### Spark History Server
+
+Point `--log-dirs` at a Spark History Server REST endpoint and spark-cli will
+fetch the EventLog over `GET /api/v1/applications/<id>/<attempt>/logs` (a zip
+body) and treat it like any other source — locator, decoder, rules, and the
+parsed-application cache all work transparently.
+
+```bash
+spark-cli diagnose application_1771556836054_861265 \
+  --log-dirs shs://history.example.com:18081
+```
+
+- The latest numeric `attemptId` is auto-selected.
+- HTTP only; **no** TLS, Basic Auth, Bearer token, or Kerberos in v1.
+- Timeout precedence (highest → lowest): `--shs-timeout` flag → `SPARK_CLI_SHS_TIMEOUT` env → `shs.timeout` in YAML → default `60s`.
+- Zip bodies up to 256 MiB are decoded in memory; larger or unknown-length
+  responses spill to a tempfile that is removed when the process exits.
+- **Known caveat:** even a parsed-application cache hit still downloads the
+  zip on every invocation, because the locator must inspect zip contents to
+  decide V1 vs V2 layout. A persistent on-disk zip cache is on the roadmap.
 
 ### Cache
 

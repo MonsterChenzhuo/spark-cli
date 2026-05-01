@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Spark History Server EventLog source
+
+- New `shs://host:port` scheme for `--log-dirs`. spark-cli pulls `GET /api/v1/applications/<id>/<attempt>/logs` (a zip body) and exposes its entries through the existing `fs.FS` abstraction, so the locator, decoder, rules, and parsed-application cache all work transparently against a Spark History Server.
+- The largest numeric `attemptId` reported by `/api/v1/applications/<id>` is auto-selected.
+- New flag `--shs-timeout`, env var `SPARK_CLI_SHS_TIMEOUT`, and YAML key `shs.timeout` (default `60s`). `spark-cli config show` reports the resolved value and its source.
+- HTTP only — TLS, Basic Auth, Bearer Token, and Kerberos are out of scope for v1.
+- Zip bodies up to 256 MiB are decoded in memory; larger or unknown-length responses spill to a `os.CreateTemp` file that is removed when the process exits.
+- **Known caveat**: even when the parsed-application cache hits, every invocation still downloads the zip — `Locator.Resolve` must read zip contents to decide V1 vs V2 layout. A persistent on-disk zip cache is on the roadmap.
+
 ### Application cache layer
 
 - `internal/cache` persists the parsed `*model.Application` as `gob+zstd` blobs under `$XDG_CACHE_HOME/spark-cli/` (or `~/.cache/spark-cli/`). The first command on a given `appId` parses normally; subsequent commands skip Open + Decode + Aggregate and return in <300 ms (envelope `parsed_events=0` on hit).

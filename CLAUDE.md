@@ -125,6 +125,22 @@ HDFS 用户名优先级 (高 → 低): `--hdfs-user` flag → `SPARK_CLI_HDFS_US
 
 **关键约束**: `internal/fs/hdfs.go` 的 `HDFS.addr` 字段保存的是用户在 URI 里写的字面 host (例如 `mycluster` 或 `nn1:8020`),**不是**实际连接的 NameNode 地址。`List()` 用它拼回 `hdfs://<addr>/...` URI,这套 URI 会回流到 `eventlog.Locator` 做 prefix matching 对照 `cfg.LogDirs`。改造时不要把 `addr` 替换成 `opts.Addresses[0]`,否则 HA 场景下 Locator 直接匹配不上。
 
+## Spark History Server 接入
+
+`internal/fs/shs.go` 把 Spark History Server 的 REST API (`GET /api/v1/applications/<id>/<attempt>/logs` 返回 zip) 包成第三种 `fs.FS` backend。用户在 `--log-dirs` 写 `shs://host:port`,Locator / decoder / 规则 / 缓存层都不需要改 —— SHS 把 zip 内文件暴露成 `shs://host:port/<appID>/<inner-zip-path>` 形式的合成 URI,FileInfo 的 `ModTime` 取自 attempt.lastUpdated(毫秒 → 纳秒),让 `cache.computeSourceKey` 的失效逻辑天然生效。
+
+**HTTP 行为**(全部不可配,简单粗暴):
+- 仅支持匿名 HTTP,**不支持** HTTPS / Basic Auth / Bearer Token / Kerberos
+- attempt 自动取 `attempts[]` 里数字 attemptId 最大那个(对齐 Spark History Server UI 默认行为)
+- HTTP timeout 由 `cfg.SHS.Timeout` 控制,优先级:`--shs-timeout` flag → `SPARK_CLI_SHS_TIMEOUT` 环境变量 → `config.yaml` `shs.timeout` → 默认 60s
+- zip body ≤ 256 MiB(由 `Content-Length` 判定)走 `bytes.Reader` 全内存解析;> 256 MiB 或 `Content-Length` 缺失时落 `os.CreateTemp`,`SHS.Close()` 删除 tmp 文件
+- 同一 appID 的 zip 在 SHS 实例生命周期内只下载一次(`bundles map[appID]*shsBundle`),之后所有 List/Stat/Open 都走内存索引
+
+**关键约束**:
+- `splitSHSURI` 把 `shs://host[:port][/appID[/inner...]]` 解析成 `(host, appID, inner)`;新增的 URI 路径段都要走它,**不要**自己 sprintf 凑路径,否则 `appIDFromListPrefix` 的还原逻辑会和 List 的入参对不上。
+- Locator 调 `List(base, prefix)` 时,我们从 prefix 反推 appID(剥 `eventlog_v2_` 前缀)——所以 prefix **必须**是 `application_<id>` 或 `eventlog_v2_application_<id>`;新增带 attempt 后缀的 prefix 时记得回头改 `appIDFromListPrefix`。
+- 缓存命中仍要下载 zip:`internal/cache` 命中只是跳过 `Open + Decode + Aggregate`,但 `Locator.Resolve` 仍要 List + Stat,这两步触发 SHS 下载 zip 来判断 V1/V2 layout。预算评估按"每条 SHS 命令至少一次 zip 下载"算。后续优化方向:把 zip 持久化到 `<cache_dir>/shs/<host>/<appID>_<lastUpdated>.zip` 让 warm 命令变成 HTTP HEAD + 本地读盘,**当前 PR 不做**。
+
 ## Application 缓存
 
 `internal/cache` 把首次解析得到的 `*model.Application` 用 `gob+zstd` 序列化到磁盘,让同一 appId 的后续命令绕过 `Open + Decode + Aggregate`,目标是把多 GB EventLog 的二次访问从秒级降到 <300 ms。
@@ -163,6 +179,7 @@ HDFS 用户名优先级 (高 → 低): `--hdfs-user` flag → `SPARK_CLI_HDFS_US
 - **SparkConf / SQLExecutions / Blacklists 模型**: `Application.SparkConf`(来自 `EnvironmentUpdate` 的 Spark Properties)、`SQLExecutions`(`SQLExecutionStart`)、`StageToSQL`(`JobStart.Properties[spark.sql.execution.id]`)、`Blacklists`(`Node/Executor{Blacklisted,Excluded}ForStage`)是规则给 LLM 输出"具体可执行建议"的依赖来源。改造规则时优先从这些字段取上下文:`disk_spill` / `gc_pressure` / `data_skew` 引用 SparkConf 当前值,`failed_tasks` 用 `Blacklists` 检测节点级故障(同一 host ≥2 次自动升级 critical)。`slow-stages` / `data-skew` 行通过 `StageToSQL` → `SQLExecutions` 关联 `sql_execution_id` + `sql_description`,非 SQL job 输出 `-1` + 空串。
 - **缓存 schema 不 bump 的隐性 bug**: `internal/cache/envelope.go` 的 `currentSchemaVersion` 是手动维护的整型常量。改 `model.Application` / `Stage` / `Executor` / `BlacklistEvent` 等的字段**类型**或**重命名**字段时**必须** bump 一档,否则旧缓存会被当成有效,反序列化结果可能字段错位(gob 对类型不匹配会报错被当成 miss,但对兼容类型(如 int → int64)可能静默错位)。**只新增字段不需要 bump**。每次走完上面"添加新场景的标准步骤"之后,自检一下是否动了字段类型,动了就 bump。
 - **缓存层 tmp 文件并发**: `Cache.Put` 用 `os.CreateTemp(dir, base+".tmp.*")` 拿到独占 tmp 文件再 `os.Rename`,**不要**改回 `<file>.tmp.<pid>` 的旧方案 —— 同进程多 goroutine 会撞同一个 tmp 名,出现 "rename: no such file or directory" 警告 spam。
+- **shs 缓存命中仍要下载 zip**: `internal/cache` 命中只是跳过 `Open + Decode + Aggregate`,但 `Locator.Resolve` 仍要 `List + Stat`,这两步会触发 `internal/fs.SHS.bundleFor` 从 SHS 拉一次完整 zip 来判断 V1/V2 layout。不要把 SHS 的 zip 下载移到 cache 命中之后 —— Locator 在 cache 之前就需要确切的 LogSource。修这个意味着持久化 zip 到磁盘缓存,目前**不做**。
 
 ## 文档与计划
 
