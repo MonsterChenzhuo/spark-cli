@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/opay-bigdata/spark-cli/internal/cache"
 	"github.com/opay-bigdata/spark-cli/internal/config"
 	cerrors "github.com/opay-bigdata/spark-cli/internal/errors"
 	"github.com/opay-bigdata/spark-cli/internal/eventlog"
@@ -25,6 +26,8 @@ type Options struct {
 	LogDirs       []string
 	HDFSUser      string
 	HadoopConfDir string
+	CacheDir      string
+	NoCache       bool
 	Timeout       time.Duration
 	Format        string
 	Top           int
@@ -87,11 +90,27 @@ func Run(ctx context.Context, opts Options) int {
 		return render(opts, env)
 	}
 
-	start := time.Now()
-	app, parsed, err := parseApp(fsByScheme, src, resolvedAppID)
+	fsys, err := fsForURI(fsByScheme, src.URI)
 	if err != nil {
 		return writeErr(opts.Stderr, err)
 	}
+	ch := buildCache(cfg, opts.NoCache)
+
+	start := time.Now()
+	if cached, hit := ch.Get(src, fsys); hit {
+		env.AppName = cached.Name
+		env.ParsedEvents = 0
+		env.ElapsedMs = time.Since(start).Milliseconds()
+		if err := buildScenarioBody(opts, cached, &env); err != nil {
+			return writeErr(opts.Stderr, err)
+		}
+		return render(opts, env)
+	}
+	app, parsed, err := parseApp(fsys, src, resolvedAppID)
+	if err != nil {
+		return writeErr(opts.Stderr, err)
+	}
+	ch.Put(src, fsys, app)
 	env.AppName = app.Name
 	env.ParsedEvents = parsed
 	env.ElapsedMs = time.Since(start).Milliseconds()
@@ -102,11 +121,7 @@ func Run(ctx context.Context, opts Options) int {
 	return render(opts, env)
 }
 
-func parseApp(fsByScheme map[string]fs.FS, src eventlog.LogSource, appID string) (*model.Application, int64, error) {
-	fsys, err := fsForURI(fsByScheme, src.URI)
-	if err != nil {
-		return nil, 0, err
-	}
+func parseApp(fsys fs.FS, src eventlog.LogSource, appID string) (*model.Application, int64, error) {
 	r, err := eventlog.Open(src, fsys)
 	if err != nil {
 		return nil, 0, err
@@ -120,6 +135,20 @@ func parseApp(fsByScheme map[string]fs.FS, src eventlog.LogSource, appID string)
 		return nil, int64(count), err
 	}
 	return app, int64(count), nil
+}
+
+// buildCache resolves the effective cache directory (config / env / flag chain
+// already merged into cfg.Cache.Dir) and returns a *cache.Cache. NoCache forces
+// Disabled; an empty cfg.Cache.Dir falls back to cache.DefaultDir().
+func buildCache(cfg *config.Config, noCache bool) *cache.Cache {
+	if noCache {
+		return cache.Disabled()
+	}
+	dir := cfg.Cache.Dir
+	if dir == "" {
+		dir = cache.DefaultDir()
+	}
+	return cache.New(dir)
 }
 
 func render(opts Options, env scenario.Envelope) int {
@@ -159,6 +188,9 @@ func buildConfig(opts Options) (*config.Config, error) {
 	}
 	if opts.HadoopConfDir != "" {
 		cfg.HDFS.ConfDir = opts.HadoopConfDir
+	}
+	if opts.CacheDir != "" {
+		cfg.Cache.Dir = opts.CacheDir
 	}
 	if opts.Timeout > 0 {
 		cfg.Timeout = opts.Timeout

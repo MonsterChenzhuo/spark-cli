@@ -38,6 +38,8 @@ func buildOpts(scenario, appID string, cc *cobra.Command) Options {
 		LogDirs:       splitLogDirs(state.LogDirs),
 		HDFSUser:      state.HDFSUser,
 		HadoopConfDir: state.HadoopConfDir,
+		CacheDir:      state.CacheDir,
+		NoCache:       state.NoCache,
 		Timeout:       parseTimeoutFlag(state.Timeout),
 		Format:        state.Format,
 		Top:           state.Top,

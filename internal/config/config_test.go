@@ -95,3 +95,36 @@ func TestValidateRequiresLogDirs(t *testing.T) {
 		t.Fatal("want validation error")
 	}
 }
+
+func TestApplyEnvCacheDir(t *testing.T) {
+	cfg := &Config{}
+	t.Setenv("SPARK_CLI_CACHE_DIR", "/tmp/spark-cli-cache")
+	ApplyEnv(cfg)
+	if cfg.Cache.Dir != "/tmp/spark-cli-cache" {
+		t.Errorf("Cache.Dir=%q want /tmp/spark-cli-cache", cfg.Cache.Dir)
+	}
+}
+
+func TestApplyFlagsCacheDir(t *testing.T) {
+	cfg := &Config{Cache: CacheConfig{Dir: "/old"}}
+	ApplyFlags(cfg, FlagOverrides{CacheDir: "/new"})
+	if cfg.Cache.Dir != "/new" {
+		t.Errorf("Cache.Dir=%q want /new", cfg.Cache.Dir)
+	}
+}
+
+func TestLoadParsesCacheDir(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SPARK_CLI_CONFIG_DIR", dir)
+	body := "log_dirs:\n  - file:///x\ncache:\n  dir: /var/cache/spark-cli\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Cache.Dir != "/var/cache/spark-cli" {
+		t.Errorf("Cache.Dir=%q want /var/cache/spark-cli", cfg.Cache.Dir)
+	}
+}

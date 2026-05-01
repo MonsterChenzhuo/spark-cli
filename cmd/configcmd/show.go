@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/opay-bigdata/spark-cli/internal/cache"
 	"github.com/opay-bigdata/spark-cli/internal/config"
 )
 
@@ -15,6 +16,7 @@ type sources struct {
 	LogDirs       string // "flag" | "env" | "file" | "default"
 	HDFSUser      string
 	HadoopConfDir string
+	CacheDir      string
 	Timeout       string
 }
 
@@ -36,7 +38,7 @@ func newShowCmd() *cobra.Command {
 }
 
 func detectSources(cfg *config.Config) sources {
-	src := sources{LogDirs: "default", HDFSUser: "default", HadoopConfDir: "default", Timeout: "default"}
+	src := sources{LogDirs: "default", HDFSUser: "default", HadoopConfDir: "default", CacheDir: "default", Timeout: "default"}
 	dir := os.Getenv("SPARK_CLI_CONFIG_DIR")
 	if dir == "" {
 		home, _ := os.UserHomeDir()
@@ -53,6 +55,9 @@ func detectSources(cfg *config.Config) sources {
 		if cfg.HDFS.ConfDir != "" {
 			src.HadoopConfDir = "file"
 		}
+		if cfg.Cache.Dir != "" {
+			src.CacheDir = "file"
+		}
 		src.Timeout = "file"
 	}
 	if os.Getenv("SPARK_CLI_LOG_DIRS") != "" {
@@ -63,6 +68,9 @@ func detectSources(cfg *config.Config) sources {
 	}
 	if os.Getenv("SPARK_CLI_HADOOP_CONF_DIR") != "" {
 		src.HadoopConfDir = "env"
+	}
+	if os.Getenv("SPARK_CLI_CACHE_DIR") != "" {
+		src.CacheDir = "env"
 	}
 	if os.Getenv("SPARK_CLI_TIMEOUT") != "" {
 		src.Timeout = "env"
@@ -80,5 +88,10 @@ func render(w io.Writer, cfg *config.Config, src sources) {
 	}
 	fmt.Fprintf(w, "hdfs.user (%s): %s\n", src.HDFSUser, cfg.HDFS.User)
 	fmt.Fprintf(w, "hdfs.conf_dir (%s): %s\n", src.HadoopConfDir, cfg.HDFS.ConfDir)
+	cacheDir := cfg.Cache.Dir
+	if cacheDir == "" {
+		cacheDir = cache.DefaultDir()
+	}
+	fmt.Fprintf(w, "cache.dir (%s): %s\n", src.CacheDir, cacheDir)
 	fmt.Fprintf(w, "timeout (%s): %s\n", src.Timeout, cfg.Timeout)
 }

@@ -11,6 +11,8 @@ type globalState struct {
 	LogDirs       string
 	HDFSUser      string
 	HadoopConfDir string
+	CacheDir      string
+	NoCache       bool
 	Timeout       string
 	Format        string
 	Top           int
@@ -44,6 +46,8 @@ func RegisterFlags(root *cobra.Command) {
 	root.PersistentFlags().IntVar(&state.Top, "top", state.Top, "Top N for ranked scenarios")
 	root.PersistentFlags().BoolVar(&state.DryRun, "dry-run", state.DryRun, "Locate file only; do not parse events")
 	root.PersistentFlags().BoolVar(&state.NoProgress, "no-progress", state.NoProgress, "Disable stderr progress")
+	root.PersistentFlags().StringVar(&state.CacheDir, "cache-dir", state.CacheDir, "Directory for the parsed-application cache (defaults to $XDG_CACHE_HOME/spark-cli or ~/.cache/spark-cli)")
+	root.PersistentFlags().BoolVar(&state.NoCache, "no-cache", state.NoCache, "Bypass the parsed-application cache for this invocation (do not read or write)")
 }
 
 func splitLogDirs(s string) []string {

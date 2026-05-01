@@ -19,9 +19,17 @@ type HDFSConfig struct {
 	ConfDir string `yaml:"conf_dir"`
 }
 
+// CacheConfig 控制 *model.Application 持久化缓存的位置。
+// Dir 为空时, runner 会在使用点退回 internal/cache.DefaultDir
+// ($XDG_CACHE_HOME/spark-cli 或 ~/.cache/spark-cli)。
+type CacheConfig struct {
+	Dir string `yaml:"dir"`
+}
+
 type Config struct {
 	LogDirs []string      `yaml:"log_dirs"`
 	HDFS    HDFSConfig    `yaml:"hdfs"`
+	Cache   CacheConfig   `yaml:"cache"`
 	Timeout time.Duration `yaml:"timeout"`
 }
 
@@ -48,15 +56,17 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	raw := struct {
-		LogDirs []string   `yaml:"log_dirs"`
-		HDFS    HDFSConfig `yaml:"hdfs"`
-		Timeout string     `yaml:"timeout"`
+		LogDirs []string    `yaml:"log_dirs"`
+		HDFS    HDFSConfig  `yaml:"hdfs"`
+		Cache   CacheConfig `yaml:"cache"`
+		Timeout string      `yaml:"timeout"`
 	}{}
 	if err := yaml.Unmarshal(b, &raw); err != nil {
 		return nil, err
 	}
 	cfg.LogDirs = raw.LogDirs
 	cfg.HDFS = raw.HDFS
+	cfg.Cache = raw.Cache
 	if raw.Timeout != "" {
 		d, err := time.ParseDuration(raw.Timeout)
 		if err != nil {
@@ -77,6 +87,9 @@ func ApplyEnv(cfg *Config) {
 	if v := os.Getenv("SPARK_CLI_HADOOP_CONF_DIR"); v != "" {
 		cfg.HDFS.ConfDir = v
 	}
+	if v := os.Getenv("SPARK_CLI_CACHE_DIR"); v != "" {
+		cfg.Cache.Dir = v
+	}
 	if v := os.Getenv("SPARK_CLI_TIMEOUT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.Timeout = d
@@ -88,6 +101,7 @@ type FlagOverrides struct {
 	LogDirs       string
 	HDFSUser      string
 	HadoopConfDir string
+	CacheDir      string
 	Timeout       time.Duration
 }
 
@@ -100,6 +114,9 @@ func ApplyFlags(cfg *Config, f FlagOverrides) {
 	}
 	if f.HadoopConfDir != "" {
 		cfg.HDFS.ConfDir = f.HadoopConfDir
+	}
+	if f.CacheDir != "" {
+		cfg.Cache.Dir = f.CacheDir
 	}
 	if f.Timeout > 0 {
 		cfg.Timeout = f.Timeout

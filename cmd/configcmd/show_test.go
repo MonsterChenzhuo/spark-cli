@@ -66,6 +66,33 @@ func TestDetectSourcesHadoopConfDirEnv(t *testing.T) {
 	}
 }
 
+func TestRenderIncludesCacheDir(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", "/tmp/xdg")
+	cfg := &config.Config{}
+	var buf bytes.Buffer
+	render(&buf, cfg, sources{
+		LogDirs:       "default",
+		HDFSUser:      "default",
+		HadoopConfDir: "default",
+		CacheDir:      "default",
+		Timeout:       "default",
+	})
+	if !strings.Contains(buf.String(), "cache.dir (default): /tmp/xdg/spark-cli") {
+		t.Errorf("output missing cache.dir line:\n%s", buf.String())
+	}
+}
+
+func TestDetectSourcesCacheDirEnv(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SPARK_CLI_CONFIG_DIR", dir)
+	t.Setenv("SPARK_CLI_CACHE_DIR", "/tmp/cd")
+	cfg := &config.Config{Cache: config.CacheConfig{Dir: "/tmp/cd"}}
+	src := detectSources(cfg)
+	if src.CacheDir != "env" {
+		t.Errorf("expected env label for cache.dir, got %q", src.CacheDir)
+	}
+}
+
 func TestDetectSourcesEnvOverridesFile(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SPARK_CLI_CONFIG_DIR", dir)
