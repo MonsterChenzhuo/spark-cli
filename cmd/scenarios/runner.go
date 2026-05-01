@@ -28,6 +28,7 @@ type Options struct {
 	HadoopConfDir string
 	CacheDir      string
 	NoCache       bool
+	SHSTimeout    time.Duration
 	Timeout       time.Duration
 	Format        string
 	Top           int
@@ -192,6 +193,9 @@ func buildConfig(opts Options) (*config.Config, error) {
 	if opts.CacheDir != "" {
 		cfg.Cache.Dir = opts.CacheDir
 	}
+	if opts.SHSTimeout > 0 {
+		cfg.SHS.Timeout = opts.SHSTimeout
+	}
 	if opts.Timeout > 0 {
 		cfg.Timeout = opts.Timeout
 	}
@@ -229,8 +233,14 @@ func buildFS(cfg *config.Config) (map[string]fs.FS, []io.Closer, error) {
 				out["hdfs"] = h
 				closers = append(closers, h)
 			}
+		case "shs":
+			if _, ok := out["shs"]; !ok {
+				sh := fs.NewSHS("shs://"+u.Host, cfg.SHS.Timeout)
+				out["shs"] = sh
+				closers = append(closers, sh)
+			}
 		default:
-			return nil, closers, cerrors.New(cerrors.CodeFlagInvalid, "unsupported scheme: "+u.Scheme, "use file:// or hdfs://")
+			return nil, closers, cerrors.New(cerrors.CodeFlagInvalid, "unsupported scheme: "+u.Scheme, "use file://, hdfs:// or shs://")
 		}
 	}
 	return out, closers, nil

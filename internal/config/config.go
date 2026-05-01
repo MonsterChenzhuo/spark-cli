@@ -26,14 +26,24 @@ type CacheConfig struct {
 	Dir string `yaml:"dir"`
 }
 
+// SHSConfig 控制 Spark History Server (`shs://`) 数据源的 HTTP 行为。
+// 当前仅暴露 Timeout; TLS / 鉴权未支持。
+type SHSConfig struct {
+	Timeout time.Duration `yaml:"timeout"`
+}
+
 type Config struct {
 	LogDirs []string      `yaml:"log_dirs"`
 	HDFS    HDFSConfig    `yaml:"hdfs"`
 	Cache   CacheConfig   `yaml:"cache"`
+	SHS     SHSConfig     `yaml:"shs"`
 	Timeout time.Duration `yaml:"timeout"`
 }
 
-const defaultTimeout = 30 * time.Second
+const (
+	defaultTimeout    = 30 * time.Second
+	defaultSHSTimeout = 60 * time.Second
+)
 
 func configDir() string {
 	if d := os.Getenv("SPARK_CLI_CONFIG_DIR"); d != "" {
@@ -46,7 +56,7 @@ func configDir() string {
 }
 
 func Load() (*Config, error) {
-	cfg := &Config{Timeout: defaultTimeout}
+	cfg := &Config{Timeout: defaultTimeout, SHS: SHSConfig{Timeout: defaultSHSTimeout}}
 	path := filepath.Join(configDir(), "config.yaml")
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -59,7 +69,10 @@ func Load() (*Config, error) {
 		LogDirs []string    `yaml:"log_dirs"`
 		HDFS    HDFSConfig  `yaml:"hdfs"`
 		Cache   CacheConfig `yaml:"cache"`
-		Timeout string      `yaml:"timeout"`
+		SHS     struct {
+			Timeout string `yaml:"timeout"`
+		} `yaml:"shs"`
+		Timeout string `yaml:"timeout"`
 	}{}
 	if err := yaml.Unmarshal(b, &raw); err != nil {
 		return nil, err
@@ -73,6 +86,13 @@ func Load() (*Config, error) {
 			return nil, err
 		}
 		cfg.Timeout = d
+	}
+	if raw.SHS.Timeout != "" {
+		d, err := time.ParseDuration(raw.SHS.Timeout)
+		if err != nil {
+			return nil, err
+		}
+		cfg.SHS.Timeout = d
 	}
 	return cfg, nil
 }
@@ -90,6 +110,11 @@ func ApplyEnv(cfg *Config) {
 	if v := os.Getenv("SPARK_CLI_CACHE_DIR"); v != "" {
 		cfg.Cache.Dir = v
 	}
+	if v := os.Getenv("SPARK_CLI_SHS_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.SHS.Timeout = d
+		}
+	}
 	if v := os.Getenv("SPARK_CLI_TIMEOUT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.Timeout = d
@@ -102,6 +127,7 @@ type FlagOverrides struct {
 	HDFSUser      string
 	HadoopConfDir string
 	CacheDir      string
+	SHSTimeout    time.Duration
 	Timeout       time.Duration
 }
 
@@ -117,6 +143,9 @@ func ApplyFlags(cfg *Config, f FlagOverrides) {
 	}
 	if f.CacheDir != "" {
 		cfg.Cache.Dir = f.CacheDir
+	}
+	if f.SHSTimeout > 0 {
+		cfg.SHS.Timeout = f.SHSTimeout
 	}
 	if f.Timeout > 0 {
 		cfg.Timeout = f.Timeout

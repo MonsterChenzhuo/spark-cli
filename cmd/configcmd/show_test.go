@@ -93,6 +93,34 @@ func TestDetectSourcesCacheDirEnv(t *testing.T) {
 	}
 }
 
+func TestRenderIncludesSHSTimeout(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.SHS.Timeout = 60_000_000_000 // 60s
+	var buf bytes.Buffer
+	render(&buf, cfg, sources{
+		LogDirs:       "default",
+		HDFSUser:      "default",
+		HadoopConfDir: "default",
+		CacheDir:      "default",
+		SHSTimeout:    "default",
+		Timeout:       "default",
+	})
+	if !strings.Contains(buf.String(), "shs.timeout (default): 1m0s") {
+		t.Errorf("output missing shs.timeout line:\n%s", buf.String())
+	}
+}
+
+func TestDetectSourcesSHSTimeoutEnv(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SPARK_CLI_CONFIG_DIR", dir)
+	t.Setenv("SPARK_CLI_SHS_TIMEOUT", "120s")
+	cfg := &config.Config{}
+	src := detectSources(cfg)
+	if src.SHSTimeout != "env" {
+		t.Errorf("expected env label for shs.timeout, got %q", src.SHSTimeout)
+	}
+}
+
 func TestDetectSourcesEnvOverridesFile(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SPARK_CLI_CONFIG_DIR", dir)

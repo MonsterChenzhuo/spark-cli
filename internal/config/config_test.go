@@ -113,6 +113,51 @@ func TestApplyFlagsCacheDir(t *testing.T) {
 	}
 }
 
+func TestApplyEnvSHSTimeout(t *testing.T) {
+	cfg := &Config{}
+	t.Setenv("SPARK_CLI_SHS_TIMEOUT", "12s")
+	ApplyEnv(cfg)
+	if cfg.SHS.Timeout != 12*time.Second {
+		t.Errorf("SHS.Timeout=%v want 12s", cfg.SHS.Timeout)
+	}
+}
+
+func TestApplyFlagsSHSTimeout(t *testing.T) {
+	cfg := &Config{SHS: SHSConfig{Timeout: 30 * time.Second}}
+	ApplyFlags(cfg, FlagOverrides{SHSTimeout: 90 * time.Second})
+	if cfg.SHS.Timeout != 90*time.Second {
+		t.Errorf("SHS.Timeout=%v want 90s", cfg.SHS.Timeout)
+	}
+}
+
+func TestLoadParsesSHSTimeout(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SPARK_CLI_CONFIG_DIR", dir)
+	body := "log_dirs:\n  - shs://h:18081\nshs:\n  timeout: 90s\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SHS.Timeout != 90*time.Second {
+		t.Errorf("SHS.Timeout=%v want 90s", cfg.SHS.Timeout)
+	}
+}
+
+func TestLoadDefaultSHSTimeout(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SPARK_CLI_CONFIG_DIR", dir)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SHS.Timeout != 60*time.Second {
+		t.Errorf("default SHS.Timeout=%v want 60s", cfg.SHS.Timeout)
+	}
+}
+
 func TestLoadParsesCacheDir(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SPARK_CLI_CONFIG_DIR", dir)

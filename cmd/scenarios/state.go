@@ -13,6 +13,7 @@ type globalState struct {
 	HadoopConfDir string
 	CacheDir      string
 	NoCache       bool
+	SHSTimeout    string
 	Timeout       string
 	Format        string
 	Top           int
@@ -48,6 +49,7 @@ func RegisterFlags(root *cobra.Command) {
 	root.PersistentFlags().BoolVar(&state.NoProgress, "no-progress", state.NoProgress, "Disable stderr progress")
 	root.PersistentFlags().StringVar(&state.CacheDir, "cache-dir", state.CacheDir, "Directory for the parsed-application cache (defaults to $XDG_CACHE_HOME/spark-cli or ~/.cache/spark-cli)")
 	root.PersistentFlags().BoolVar(&state.NoCache, "no-cache", state.NoCache, "Bypass the parsed-application cache for this invocation (do not read or write)")
+	root.PersistentFlags().StringVar(&state.SHSTimeout, "shs-timeout", state.SHSTimeout, "HTTP timeout for shs:// requests, e.g. 60s")
 }
 
 func splitLogDirs(s string) []string {

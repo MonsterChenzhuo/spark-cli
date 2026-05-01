@@ -40,6 +40,7 @@ func buildOpts(scenario, appID string, cc *cobra.Command) Options {
 		HadoopConfDir: state.HadoopConfDir,
 		CacheDir:      state.CacheDir,
 		NoCache:       state.NoCache,
+		SHSTimeout:    parseTimeoutFlag(state.SHSTimeout),
 		Timeout:       parseTimeoutFlag(state.Timeout),
 		Format:        state.Format,
 		Top:           state.Top,
