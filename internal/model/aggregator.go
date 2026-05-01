@@ -1,5 +1,7 @@
 package model
 
+import "strconv"
+
 type TaskMetrics struct {
 	RunMs             int64
 	GCMs              int64
@@ -60,9 +62,57 @@ func (a *Aggregator) OnExecutorRemoved(id string, ts int64, reason string) {
 	}
 }
 
-func (a *Aggregator) OnJobStart(id int, stageIDs []int, submitMs int64) {
-	a.app.Jobs[id] = &Job{ID: id, StageIDs: stageIDs, StartMs: submitMs}
+func (a *Aggregator) OnJobStart(id int, stageIDs []int, submitMs int64, props map[string]string) {
+	sqlID := int64(-1)
+	if v, ok := props["spark.sql.execution.id"]; ok && v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			sqlID = n
+			for _, sid := range stageIDs {
+				a.app.StageToSQL[sid] = n
+			}
+		}
+	}
+	a.app.Jobs[id] = &Job{ID: id, StageIDs: stageIDs, StartMs: submitMs, SQLExecutionID: sqlID}
 	a.app.JobsTotal++
+}
+
+func (a *Aggregator) OnEnvironmentUpdate(sparkProps map[string]string) {
+	if a.app.SparkConf == nil {
+		a.app.SparkConf = map[string]string{}
+	}
+	for k, v := range sparkProps {
+		a.app.SparkConf[k] = v
+	}
+}
+
+func (a *Aggregator) OnSQLExecutionStart(id int64, description, details string, ts int64) {
+	if a.app.SQLExecutions == nil {
+		a.app.SQLExecutions = map[int64]*SQLExecution{}
+	}
+	a.app.SQLExecutions[id] = &SQLExecution{
+		ID:          id,
+		Description: description,
+		Details:     details,
+		StartMs:     ts,
+	}
+}
+
+func (a *Aggregator) OnSQLExecutionEnd(id, ts int64) {
+	if e, ok := a.app.SQLExecutions[id]; ok {
+		e.EndMs = ts
+	}
+}
+
+func (a *Aggregator) OnNodeBlacklisted(ts int64, host string, stageID, failures int) {
+	a.app.Blacklists = append(a.app.Blacklists, BlacklistEvent{
+		Time: ts, Kind: "node", Target: host, StageID: stageID, Failures: failures,
+	})
+}
+
+func (a *Aggregator) OnExecutorBlacklisted(ts int64, executorID string, stageID, failures int) {
+	a.app.Blacklists = append(a.app.Blacklists, BlacklistEvent{
+		Time: ts, Kind: "executor", Target: executorID, StageID: stageID, Failures: failures,
+	})
 }
 
 func (a *Aggregator) OnJobEnd(id int, endMs int64, result string) {

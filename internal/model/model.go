@@ -34,14 +34,52 @@ type Application struct {
 	TotalSpillDisk         int64
 	TotalRunMs             int64
 	TotalGCMs              int64
+
+	// SparkConf is filled from SparkListenerEnvironmentUpdate's Spark Properties.
+	// Empty map until that event is observed.
+	SparkConf map[string]string
+
+	// SQLExecutions maps SQL executionId to its description, populated by
+	// SparkListenerSQLExecutionStart. StageToSQL gives the reverse lookup
+	// from stageID to executionId, populated when JobStart properties carry
+	// `spark.sql.execution.id`.
+	SQLExecutions map[int64]*SQLExecution
+	StageToSQL    map[int]int64
+
+	// Blacklists records every Node/Executor Blacklisted-or-Excluded-ForStage
+	// event in the order they appeared. Used by failed_tasks rule to
+	// distinguish node-level failures from random task failures.
+	Blacklists []BlacklistEvent
 }
 
 func NewApplication() *Application {
 	return &Application{
-		Executors: map[string]*Executor{},
-		Jobs:      map[int]*Job{},
-		Stages:    map[StageKey]*Stage{},
+		Executors:     map[string]*Executor{},
+		Jobs:          map[int]*Job{},
+		Stages:        map[StageKey]*Stage{},
+		SparkConf:     map[string]string{},
+		SQLExecutions: map[int64]*SQLExecution{},
+		StageToSQL:    map[int]int64{},
 	}
+}
+
+type SQLExecution struct {
+	ID          int64
+	Description string
+	Details     string
+	StartMs     int64
+	EndMs       int64
+}
+
+// BlacklistEvent is a unified record for Spark's
+// {Node,Executor}{Blacklisted,Excluded}ForStage events. Kind is
+// "node" or "executor"; Target is hostId or executorId respectively.
+type BlacklistEvent struct {
+	Time     int64
+	Kind     string
+	Target   string
+	StageID  int
+	Failures int
 }
 
 type Executor struct {
@@ -56,11 +94,12 @@ type Executor struct {
 }
 
 type Job struct {
-	ID       int
-	StageIDs []int
-	StartMs  int64
-	EndMs    int64
-	Result   string // "succeeded" | "failed"
+	ID             int
+	StageIDs       []int
+	StartMs        int64
+	EndMs          int64
+	Result         string // "succeeded" | "failed"
+	SQLExecutionID int64  // -1 if no spark.sql.execution.id in JobStart properties
 }
 
 type Stage struct {

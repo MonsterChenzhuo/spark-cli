@@ -34,9 +34,10 @@ type evtExecutorRemoved struct {
 }
 
 type evtJobStart struct {
-	JobID    int   `json:"Job ID"`
-	StageIDs []int `json:"Stage IDs"`
-	SubmitMs int64 `json:"Submission Time"`
+	JobID      int               `json:"Job ID"`
+	StageIDs   []int             `json:"Stage IDs"`
+	SubmitMs   int64             `json:"Submission Time"`
+	Properties map[string]string `json:"Properties"`
 }
 
 type evtJobEnd struct {
@@ -63,6 +64,38 @@ type evtStageSubmitted struct {
 
 type evtStageCompleted struct {
 	StageInfo evtStageInfo `json:"Stage Info"`
+}
+
+type evtEnvironmentUpdate struct {
+	SparkProperties map[string]string `json:"Spark Properties"`
+}
+
+type evtSQLExecutionStart struct {
+	ExecutionID int64  `json:"executionId"`
+	Description string `json:"description"`
+	Details     string `json:"details"`
+	Time        int64  `json:"time"`
+}
+
+type evtSQLExecutionEnd struct {
+	ExecutionID int64 `json:"executionId"`
+	Time        int64 `json:"time"`
+}
+
+type evtNodeBlacklisted struct {
+	Time             int64  `json:"time"`
+	HostID           string `json:"hostId"`
+	ExecutorFailures int    `json:"executorFailures"`
+	StageID          int    `json:"stageId"`
+	StageAttemptID   int    `json:"stageAttemptId"`
+}
+
+type evtExecutorBlacklisted struct {
+	Time           int64  `json:"time"`
+	ExecutorID     string `json:"executorId"`
+	TaskFailures   int    `json:"taskFailures"`
+	StageID        int    `json:"stageId"`
+	StageAttemptID int    `json:"stageAttemptId"`
 }
 
 type evtTaskEnd struct {
