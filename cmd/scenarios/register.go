@@ -33,15 +33,16 @@ func newScenarioCmd(name, short string) *cobra.Command {
 
 func buildOpts(scenario, appID string, cc *cobra.Command) Options {
 	return Options{
-		Scenario: scenario,
-		AppID:    appID,
-		LogDirs:  splitLogDirs(state.LogDirs),
-		HDFSUser: state.HDFSUser,
-		Timeout:  parseTimeoutFlag(state.Timeout),
-		Format:   state.Format,
-		Top:      state.Top,
-		DryRun:   state.DryRun,
-		Stdout:   cc.OutOrStdout(),
-		Stderr:   cc.ErrOrStderr(),
+		Scenario:      scenario,
+		AppID:         appID,
+		LogDirs:       splitLogDirs(state.LogDirs),
+		HDFSUser:      state.HDFSUser,
+		HadoopConfDir: state.HadoopConfDir,
+		Timeout:       parseTimeoutFlag(state.Timeout),
+		Format:        state.Format,
+		Top:           state.Top,
+		DryRun:        state.DryRun,
+		Stdout:        cc.OutOrStdout(),
+		Stderr:        cc.ErrOrStderr(),
 	}
 }

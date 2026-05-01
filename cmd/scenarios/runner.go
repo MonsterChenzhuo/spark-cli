@@ -20,16 +20,17 @@ import (
 )
 
 type Options struct {
-	Scenario string
-	AppID    string
-	LogDirs  []string
-	HDFSUser string
-	Timeout  time.Duration
-	Format   string
-	Top      int
-	DryRun   bool
-	Stdout   io.Writer
-	Stderr   io.Writer
+	Scenario      string
+	AppID         string
+	LogDirs       []string
+	HDFSUser      string
+	HadoopConfDir string
+	Timeout       time.Duration
+	Format        string
+	Top           int
+	DryRun        bool
+	Stdout        io.Writer
+	Stderr        io.Writer
 }
 
 func Run(ctx context.Context, opts Options) int {
@@ -156,6 +157,9 @@ func buildConfig(opts Options) (*config.Config, error) {
 	if opts.HDFSUser != "" {
 		cfg.HDFS.User = opts.HDFSUser
 	}
+	if opts.HadoopConfDir != "" {
+		cfg.HDFS.ConfDir = opts.HadoopConfDir
+	}
 	if opts.Timeout > 0 {
 		cfg.Timeout = opts.Timeout
 	}
@@ -186,9 +190,9 @@ func buildFS(cfg *config.Config) (map[string]fs.FS, []io.Closer, error) {
 				hdfsAddr = u.Host
 			}
 			if _, ok := out["hdfs"]; !ok {
-				h, err := fs.NewHDFS(hdfsAddr, cfg.HDFS.User)
+				h, err := buildHDFS(cfg, hdfsAddr)
 				if err != nil {
-					return nil, closers, cerrors.New(cerrors.CodeHDFSUnreachable, err.Error(), "check hdfs:// addr and credentials")
+					return nil, closers, err
 				}
 				out["hdfs"] = h
 				closers = append(closers, h)
@@ -198,6 +202,31 @@ func buildFS(cfg *config.Config) (map[string]fs.FS, []io.Closer, error) {
 		}
 	}
 	return out, closers, nil
+}
+
+// buildHDFS 优先用 Hadoop XML 配置 (cfg.HDFS.ConfDir / HADOOP_CONF_DIR / HADOOP_HOME);
+// 加载到非空 Addresses 时 URI host 仅用作 List() 返回 URI 的字面前缀。
+// 否则退回旧路径: 直接用 URI 的 host:port 直连 (要求形如 hdfs://host:port/...)。
+func buildHDFS(cfg *config.Config, uriHost string) (*fs.HDFS, error) {
+	conf, err := fs.LoadHadoopConf(cfg.HDFS.ConfDir)
+	if err != nil {
+		return nil, cerrors.New(cerrors.CodeConfigMissing, err.Error(), "check hadoop_conf_dir / HADOOP_CONF_DIR / HADOOP_HOME")
+	}
+	if len(conf) > 0 {
+		opts := fs.BuildClientOptions(conf, cfg.HDFS.User)
+		if len(opts.Addresses) > 0 {
+			h, err := fs.NewHDFSWithOptions(uriHost, opts)
+			if err != nil {
+				return nil, cerrors.New(cerrors.CodeHDFSUnreachable, err.Error(), "check hadoop conf NameNode addresses and credentials")
+			}
+			return h, nil
+		}
+	}
+	h, err := fs.NewHDFS(uriHost, cfg.HDFS.User)
+	if err != nil {
+		return nil, cerrors.New(cerrors.CodeHDFSUnreachable, err.Error(), "check hdfs:// addr and credentials, or set HADOOP_CONF_DIR for HA")
+	}
+	return h, nil
 }
 
 func fsForURI(fsByScheme map[string]fs.FS, uri string) (fs.FS, error) {

@@ -18,16 +18,25 @@ type HDFS struct {
 	addr   string
 }
 
+// NewHDFS 用 URI 字面 host:port 直连 (旧路径)。addr 用作 List() 返回 URI 的前缀。
 func NewHDFS(addr, user string) (*HDFS, error) {
 	if user == "" {
 		user = os.Getenv("USER")
 	}
 	opts := hdfs.ClientOptions{Addresses: []string{addr}, User: user}
+	return NewHDFSWithOptions(addr, opts)
+}
+
+// NewHDFSWithOptions 用调用方提供的 ClientOptions 建客户端 (典型来自 BuildClientOptions),
+// uriHost 仅作 List() 返回 URI 的字面前缀, 与实际连接的 Addresses 解耦, 这样
+// HA 逻辑名 (例如 "mycluster") 可以保留在用户原始 URI 里, 不破坏 eventlog.Locator
+// 的 prefix matching。
+func NewHDFSWithOptions(uriHost string, opts hdfs.ClientOptions) (*HDFS, error) {
 	c, err := hdfs.NewClient(opts)
 	if err != nil {
 		return nil, err
 	}
-	return &HDFS{client: c, addr: addr}, nil
+	return &HDFS{client: c, addr: uriHost}, nil
 }
 
 func (h *HDFS) Close() error { return h.client.Close() }

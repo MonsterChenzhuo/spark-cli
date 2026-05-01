@@ -56,13 +56,28 @@ $EDITOR ~/.config/spark-cli/config.yaml
 ```yaml
 log_dirs:
   - file:///var/log/spark-history
-  - hdfs://nn:8020/spark-history
+  - hdfs://mycluster/spark-history     # HA NameService logical name (recommended)
+  # - hdfs://nn:8020/spark-history     # or an explicit host:port
 hdfs:
   user: hadoop
+  conf_dir: /etc/hadoop/conf           # optional; auto-discovered via HADOOP_CONF_DIR / HADOOP_HOME if empty
 timeout: 30s
 ```
 
 Override per-invocation via `--log-dirs`, env var `SPARK_CLI_LOG_DIRS`.
+
+### HDFS configuration
+
+- Pure-Go client (`github.com/colinmarc/hdfs/v2`); **reads** `core-site.xml` / `hdfs-site.xml` and honors HA NameService entries.
+- NameNode address resolution (highest → lowest priority):
+  1. `--hadoop-conf-dir <path>` flag
+  2. `SPARK_CLI_HADOOP_CONF_DIR` env
+  3. `hdfs.conf_dir` in `config.yaml`
+  4. `HADOOP_CONF_DIR` env
+  5. `HADOOP_HOME/etc/hadoop` or `HADOOP_HOME/conf`
+  6. Falls back to the literal `host:port` from `--log-dirs` (no HA logical-name support in this mode)
+- HDFS user resolution: `--hdfs-user` → `SPARK_CLI_HDFS_USER` → `hdfs.user` → `$USER`. Note: it reads `$USER`, **not** Hadoop's `$HADOOP_USER_NAME`.
+- Kerberos / SASL / TLS are **not supported**; this targets simple-auth clusters only.
 
 ## Commands
 

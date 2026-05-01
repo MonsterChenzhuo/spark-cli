@@ -37,6 +37,8 @@ func newInitCmd() *cobra.Command {
 			hpath := readLine(r, "/spark-history")
 			fmt.Fprint(out, "HDFS user [$USER]: ")
 			huser := readLine(r, os.Getenv("USER"))
+			fmt.Fprint(out, "Hadoop conf dir (path to core-site.xml/hdfs-site.xml, blank to use $HADOOP_CONF_DIR/$HADOOP_HOME): ")
+			hconf := readLine(r, "")
 			fmt.Fprint(out, "Parse timeout [30s]: ")
 			to := readLine(r, "30s")
 
@@ -50,6 +52,9 @@ func newInitCmd() *cobra.Command {
 			}
 			b.WriteString("hdfs:\n")
 			fmt.Fprintf(&b, "  user: %s\n", huser)
+			if hconf != "" {
+				fmt.Fprintf(&b, "  conf_dir: %s\n", hconf)
+			}
 			fmt.Fprintf(&b, "timeout: %s\n", to)
 
 			path := filepath.Join(dir, "config.yaml")

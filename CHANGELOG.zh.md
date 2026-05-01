@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### HDFS 配置
+- `internal/fs/hdfs.go` + 新增 `internal/fs/hdfs_conf.go` —— 通过 `hadoopconf.Load` + `hdfs.ClientOptionsFromConf` 加载 `core-site.xml` / `hdfs-site.xml`,支持 HA NameService 地址解析。
+- 新增 `--hadoop-conf-dir <path>` flag、`SPARK_CLI_HADOOP_CONF_DIR` 环境变量、YAML 字段 `hdfs.conf_dir`。自动发现路径: `HADOOP_CONF_DIR` → `HADOOP_HOME/etc/hadoop` → `HADOOP_HOME/conf`。都没拿到 conf 时退回 URI 字面 `host:port`。
+- `spark-cli config show` 现在显示 `hdfs.conf_dir` 及其来源(flag/env/file/default);`spark-cli config init` 增加可选的 Hadoop conf dir 输入。
+- Kerberos / SASL / TLS 仍不支持 —— 仅适用于 simple auth + HA 集群。
+
 ### CI / Release
 - `ci.yml` 改为单 job 全流程：用 `go.mod` 锁定 Go 版本、`go mod tidy` 清洁度校验、gofmt、`go run` 调起 golangci-lint v2、`-race` 单测、带版本 ldflag 的 build、烟囱测试、`-tags=e2e` 的 e2e dry-run，以及 SKILL.md 前置元数据校验。
 - `release.yml` 同时响应 `push` 到 `main`（自动 bump patch tag）和 `v*` tag 推送；由 `release` concurrency group 串行化。

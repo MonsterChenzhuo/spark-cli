@@ -8,14 +8,15 @@ import (
 )
 
 type globalState struct {
-	LogDirs    string
-	HDFSUser   string
-	Timeout    string
-	Format     string
-	Top        int
-	DryRun     bool
-	NoProgress bool
-	ExitCode   int
+	LogDirs       string
+	HDFSUser      string
+	HadoopConfDir string
+	Timeout       string
+	Format        string
+	Top           int
+	DryRun        bool
+	NoProgress    bool
+	ExitCode      int
 }
 
 var state = defaultState()
@@ -37,6 +38,7 @@ func ResetForTest() { state = defaultState() }
 func RegisterFlags(root *cobra.Command) {
 	root.PersistentFlags().StringVar(&state.LogDirs, "log-dirs", state.LogDirs, "Comma-separated list of EventLog dirs (file:// or hdfs:// URIs)")
 	root.PersistentFlags().StringVar(&state.HDFSUser, "hdfs-user", state.HDFSUser, "HDFS simple-auth user (defaults to $USER)")
+	root.PersistentFlags().StringVar(&state.HadoopConfDir, "hadoop-conf-dir", state.HadoopConfDir, "Path to Hadoop XML config dir; falls back to HADOOP_CONF_DIR / HADOOP_HOME")
 	root.PersistentFlags().StringVar(&state.Timeout, "timeout", state.Timeout, "Overall parse timeout, e.g. 30s")
 	root.PersistentFlags().StringVar(&state.Format, "format", state.Format, "Output format: json | table | markdown")
 	root.PersistentFlags().IntVar(&state.Top, "top", state.Top, "Top N for ranked scenarios")

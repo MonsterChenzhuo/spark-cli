@@ -12,9 +12,10 @@ import (
 )
 
 type sources struct {
-	LogDirs  string // "flag" | "env" | "file" | "default"
-	HDFSUser string
-	Timeout  string
+	LogDirs       string // "flag" | "env" | "file" | "default"
+	HDFSUser      string
+	HadoopConfDir string
+	Timeout       string
 }
 
 func newShowCmd() *cobra.Command {
@@ -35,7 +36,7 @@ func newShowCmd() *cobra.Command {
 }
 
 func detectSources(cfg *config.Config) sources {
-	src := sources{LogDirs: "default", HDFSUser: "default", Timeout: "default"}
+	src := sources{LogDirs: "default", HDFSUser: "default", HadoopConfDir: "default", Timeout: "default"}
 	dir := os.Getenv("SPARK_CLI_CONFIG_DIR")
 	if dir == "" {
 		home, _ := os.UserHomeDir()
@@ -49,6 +50,9 @@ func detectSources(cfg *config.Config) sources {
 		if cfg.HDFS.User != "" {
 			src.HDFSUser = "file"
 		}
+		if cfg.HDFS.ConfDir != "" {
+			src.HadoopConfDir = "file"
+		}
 		src.Timeout = "file"
 	}
 	if os.Getenv("SPARK_CLI_LOG_DIRS") != "" {
@@ -56,6 +60,9 @@ func detectSources(cfg *config.Config) sources {
 	}
 	if os.Getenv("SPARK_CLI_HDFS_USER") != "" {
 		src.HDFSUser = "env"
+	}
+	if os.Getenv("SPARK_CLI_HADOOP_CONF_DIR") != "" {
+		src.HadoopConfDir = "env"
 	}
 	if os.Getenv("SPARK_CLI_TIMEOUT") != "" {
 		src.Timeout = "env"
@@ -72,5 +79,6 @@ func render(w io.Writer, cfg *config.Config, src sources) {
 		fmt.Fprintf(w, "  - %s\n", d)
 	}
 	fmt.Fprintf(w, "hdfs.user (%s): %s\n", src.HDFSUser, cfg.HDFS.User)
+	fmt.Fprintf(w, "hdfs.conf_dir (%s): %s\n", src.HadoopConfDir, cfg.HDFS.ConfDir)
 	fmt.Fprintf(w, "timeout (%s): %s\n", src.Timeout, cfg.Timeout)
 }

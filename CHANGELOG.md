@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### HDFS
+- `internal/fs/hdfs.go` + new `internal/fs/hdfs_conf.go` — load Hadoop XML config (`core-site.xml` / `hdfs-site.xml`) and resolve HA NameService addresses via `hadoopconf.Load` + `hdfs.ClientOptionsFromConf`.
+- New flag `--hadoop-conf-dir <path>`, env var `SPARK_CLI_HADOOP_CONF_DIR`, and YAML key `hdfs.conf_dir`. Auto-discovers from `HADOOP_CONF_DIR`, then `HADOOP_HOME/etc/hadoop`, then `HADOOP_HOME/conf`. Falls back to URI literal `host:port` when no conf is found.
+- `spark-cli config show` now reports `hdfs.conf_dir` and its source (flag/env/file/default); `spark-cli config init` accepts an optional Hadoop conf dir.
+- Kerberos / SASL / TLS remain unsupported — simple auth + HA only.
+
 ### CI / Release
 - Single-job `ci.yml` now enforces `go.mod` Go version, `go mod tidy` cleanliness, gofmt, golangci-lint v2 (via `go run`), race-tested unit suite, ldflag-versioned build, smoke checks, e2e dry-run with `-tags=e2e`, and SKILL.md frontmatter lint.
 - `release.yml` triggers on `push` to `main` (auto-bumps the patch tag) and on `v*` tag pushes; serialised by a `release` concurrency group.

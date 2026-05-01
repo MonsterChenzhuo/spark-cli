@@ -56,13 +56,28 @@ $EDITOR ~/.config/spark-cli/config.yaml
 ```yaml
 log_dirs:
   - file:///var/log/spark-history
-  - hdfs://nn:8020/spark-history
+  - hdfs://mycluster/spark-history     # 写 HA NameService 逻辑名 (推荐)
+  # - hdfs://nn:8020/spark-history     # 或写具体 host:port
 hdfs:
   user: hadoop
+  conf_dir: /etc/hadoop/conf           # 可选; 留空则按 HADOOP_CONF_DIR / HADOOP_HOME 自动发现
 timeout: 30s
 ```
 
 也可通过 `--log-dirs` 标志或 `SPARK_CLI_LOG_DIRS` 环境变量逐次覆盖。
+
+### HDFS 配置
+
+- 使用纯 Go 客户端 (`github.com/colinmarc/hdfs/v2`),**自动读取** `core-site.xml` / `hdfs-site.xml`,支持 HA NameService。
+- NameNode 地址优先级 (高 → 低):
+  1. `--hadoop-conf-dir <path>` 命令行
+  2. `SPARK_CLI_HADOOP_CONF_DIR` 环境变量
+  3. `config.yaml` 的 `hdfs.conf_dir`
+  4. `HADOOP_CONF_DIR` 环境变量
+  5. `HADOOP_HOME/etc/hadoop` 或 `HADOOP_HOME/conf`
+  6. 都没拿到 conf 时,退回 `--log-dirs` 里 `hdfs://host:port/...` 的字面 `host:port` (此时不支持 HA 逻辑名)
+- HDFS 用户名优先级 (高 → 低): `--hdfs-user` → `SPARK_CLI_HDFS_USER` → `hdfs.user` → `$USER`。注意是 `$USER`,**不是** Hadoop 原生的 `$HADOOP_USER_NAME`。
+- **暂不支持** Kerberos / SASL / TLS,仅适用于 simple-auth 集群。
 
 ## 命令
 

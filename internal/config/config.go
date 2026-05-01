@@ -13,6 +13,10 @@ import (
 
 type HDFSConfig struct {
 	User string `yaml:"user"`
+	// ConfDir 指向包含 core-site.xml / hdfs-site.xml 的目录; 留空则按
+	// HADOOP_CONF_DIR -> HADOOP_HOME/etc/hadoop -> HADOOP_HOME/conf 自动搜索。
+	// 仅 simple-auth + HA, 不支持 Kerberos / TLS。
+	ConfDir string `yaml:"conf_dir"`
 }
 
 type Config struct {
@@ -70,6 +74,9 @@ func ApplyEnv(cfg *Config) {
 	if v := os.Getenv("SPARK_CLI_HDFS_USER"); v != "" {
 		cfg.HDFS.User = v
 	}
+	if v := os.Getenv("SPARK_CLI_HADOOP_CONF_DIR"); v != "" {
+		cfg.HDFS.ConfDir = v
+	}
 	if v := os.Getenv("SPARK_CLI_TIMEOUT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.Timeout = d
@@ -78,9 +85,10 @@ func ApplyEnv(cfg *Config) {
 }
 
 type FlagOverrides struct {
-	LogDirs  string
-	HDFSUser string
-	Timeout  time.Duration
+	LogDirs       string
+	HDFSUser      string
+	HadoopConfDir string
+	Timeout       time.Duration
 }
 
 func ApplyFlags(cfg *Config, f FlagOverrides) {
@@ -89,6 +97,9 @@ func ApplyFlags(cfg *Config, f FlagOverrides) {
 	}
 	if f.HDFSUser != "" {
 		cfg.HDFS.User = f.HDFSUser
+	}
+	if f.HadoopConfDir != "" {
+		cfg.HDFS.ConfDir = f.HadoopConfDir
 	}
 	if f.Timeout > 0 {
 		cfg.Timeout = f.Timeout

@@ -52,6 +52,7 @@ Envelope → output.Write{JSON|Table|Markdown}
 - **Commit 信息格式**: `type(scope): subject` —— `feat(scenario):`、`feat(output):`、`fix(model):`、`test(e2e):`、`docs(skill):`、`ci:`、`style:` 等。每个 commit 末尾带 `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`。
 - **不要随手扩功能**: 任务/bug 只动相关代码,别顺手重构 (除非任务即重构)。
 - **Envelope 改动需同步**: 改 `scenario.Envelope` JSON tag 或字段时,务必跑 `tests/e2e` + 更新 `.claude/skills/spark/SKILL.md` 的 envelope 文档 + `README.md` / `CHANGELOG.md`。
+- **CLAUDE.md 同步规则**: 每次新增/修改用户可见功能(CLI flag、环境变量、配置项、命令行为、输出契约、依赖发现路径)或调整开发流程时,**必须**同步更新本文件相关章节(常见入口:开发约定、HDFS 连接、添加新场景/规则、已知踩坑),并在同一 commit 中带上 README/CHANGELOG 的对应变更。原因:本仓库的 AI agent 工作流强依赖 CLAUDE.md 作为唯一权威上下文,文档漂移会让后续会话直接做错事。
 
 ## 常用命令
 
@@ -103,6 +104,25 @@ go run . app-summary application_1_1 --log-dirs file:///tmp/spark-cli-smoke --fo
 > 想跳过自动 bump、自己控制版本号？直接 `git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z`，main 分支别动即可。
 
 `scripts/install.sh` 通过 GitHub `releases/latest` redirect 解析最新 tag（API 限流时回落到 `/repos/.../releases/latest`），下载归档后用 `checksums.txt` 做 sha256 校验，再把 binary 装到 `PREFIX` (默认 `/usr/local/bin`，必要时 `sudo`)、把 skill 树镜像到 `SKILL_DIR` (默认 `~/.claude/skills/spark`)。环境变量：`VERSION` / `PREFIX` / `SKILL_DIR` / `NO_SUDO` / `NO_SKILL` / `REPO`，详见脚本头部注释。
+
+## HDFS 连接
+
+`internal/fs/hdfs.go` + `hdfs_conf.go` 走纯 Go 客户端 (`github.com/colinmarc/hdfs/v2`),**支持** Hadoop XML 配置和 HA NameService,**不支持** Kerberos / SASL / TLS。
+
+NameNode 地址来源 (按优先级,高 → 低):
+
+1. `--hadoop-conf-dir <path>` flag → `cfg.HDFS.ConfDir`
+2. `SPARK_CLI_HADOOP_CONF_DIR` 环境变量
+3. `config.yaml` 的 `hdfs.conf_dir`
+4. `HADOOP_CONF_DIR` 环境变量
+5. `HADOOP_HOME/etc/hadoop` 或 `HADOOP_HOME/conf`
+6. 上述都没拿到 conf 时,退回 `--log-dirs` 里 `hdfs://host:port/...` 的字面 `host:port`
+
+`fs.LoadHadoopConf("")` 内部统一处理 4-5 (用 `hadoopconf.LoadFromEnvironment` 不行,因为它静默吞错;我们自己读 env 以便 `--hadoop-conf-dir` 显式失败时报错)。`fs.BuildClientOptions(conf, user)` 把 `core-site.xml` 的 `fs.defaultFS` + `hdfs-site.xml` 的 `dfs.nameservices` / `dfs.namenode.rpc-address.<ns>.<nn>` 解析成 `[]string` Addresses,自带 HA failover。
+
+HDFS 用户名优先级 (高 → 低): `--hdfs-user` flag → `SPARK_CLI_HDFS_USER` → `config.yaml hdfs.user` → `$USER`。注意是 `$USER`,**不是** Hadoop 原生客户端的 `$HADOOP_USER_NAME`。
+
+**关键约束**: `internal/fs/hdfs.go` 的 `HDFS.addr` 字段保存的是用户在 URI 里写的字面 host (例如 `mycluster` 或 `nn1:8020`),**不是**实际连接的 NameNode 地址。`List()` 用它拼回 `hdfs://<addr>/...` URI,这套 URI 会回流到 `eventlog.Locator` 做 prefix matching 对照 `cfg.LogDirs`。改造时不要把 `addr` 替换成 `opts.Addresses[0]`,否则 HA 场景下 Locator 直接匹配不上。
 
 ## 已知踩坑
 
