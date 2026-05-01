@@ -159,6 +159,78 @@ func TestResolveV2MixedCodecs(t *testing.T) {
 	}
 }
 
+func TestResolveV2WithAttemptSuffix(t *testing.T) {
+	dir := t.TempDir()
+	v2dir := filepath.Join(dir, "eventlog_v2_application_1_a_1")
+	if err := os.MkdirAll(v2dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(v2dir, "appstatus_application_1_a_1"))
+	writeFile(t, filepath.Join(v2dir, "events_1_application_1_a_1"))
+	loc := NewLocator(map[string]fs.FS{"file": fs.NewLocal()}, []string{"file://" + dir})
+	src, err := loc.Resolve("application_1_a")
+	if err != nil {
+		t.Fatalf("expected to resolve attempt-suffixed dir: %v", err)
+	}
+	if src.Format != "v2" || len(src.Parts) != 1 {
+		t.Fatalf("source = %+v", src)
+	}
+	if !strings.HasSuffix(src.URI, "eventlog_v2_application_1_a_1") {
+		t.Fatalf("URI = %s", src.URI)
+	}
+}
+
+func TestResolveV2PicksHighestAttempt(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"1", "3", "2"} {
+		v2dir := filepath.Join(dir, "eventlog_v2_application_1_a_"+n)
+		if err := os.MkdirAll(v2dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(v2dir, "events_1_application_1_a_"+n))
+	}
+	loc := NewLocator(map[string]fs.FS{"file": fs.NewLocal()}, []string{"file://" + dir})
+	src, err := loc.Resolve("application_1_a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(src.URI, "eventlog_v2_application_1_a_3") {
+		t.Fatalf("expected highest attempt _3, got %s", src.URI)
+	}
+}
+
+func TestResolveV2ExplicitAttemptInput(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"1", "2"} {
+		v2dir := filepath.Join(dir, "eventlog_v2_application_1_a_"+n)
+		if err := os.MkdirAll(v2dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(v2dir, "events_1_application_1_a_"+n))
+	}
+	loc := NewLocator(map[string]fs.FS{"file": fs.NewLocal()}, []string{"file://" + dir})
+	src, err := loc.Resolve("application_1_a_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(src.URI, "eventlog_v2_application_1_a_1") {
+		t.Fatalf("explicit attempt _1 not honored, got %s", src.URI)
+	}
+}
+
+func TestResolveV2DoesNotMatchPrefixSibling(t *testing.T) {
+	dir := t.TempDir()
+	v2dir := filepath.Join(dir, "eventlog_v2_application_1_a_other")
+	if err := os.MkdirAll(v2dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(v2dir, "events_1_application_1_a_other"))
+	loc := NewLocator(map[string]fs.FS{"file": fs.NewLocal()}, []string{"file://" + dir})
+	if _, err := loc.Resolve("application_1_a"); err == nil {
+		t.Fatal("want APP_NOT_FOUND, sibling with non-numeric suffix must not match")
+	}
+}
+
 func TestResolveV2MissingParts(t *testing.T) {
 	dir := t.TempDir()
 	v2dir := filepath.Join(dir, "eventlog_v2_application_1_a")

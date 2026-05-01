@@ -138,17 +138,33 @@ func (l *Locator) resolveV2(fsys fs.FS, dirURI, appID string) (LogSource, bool, 
 	if err != nil {
 		return LogSource{}, false, cerrors.New(cerrors.CodeLogUnreadable, err.Error(), "")
 	}
+	// Spark V2 directory is either `eventlog_v2_<appId>` (no attempt) or
+	// `eventlog_v2_<appId>_<attempt>`. When multiple attempts coexist, pick
+	// the highest, matching Spark History Server behavior. A non-numeric
+	// suffix means it's a different app sharing our prefix — ignore it.
+	attemptRE := regexp.MustCompile(`^` + regexp.QuoteMeta(v2Name) + `(?:_(\d+))?$`)
+	bestAttempt := -1
 	var v2URI string
 	for _, d := range dirs {
-		if path.Base(d) == v2Name {
-			st, err := fsys.Stat(d)
-			if err != nil {
-				return LogSource{}, false, cerrors.New(cerrors.CodeLogUnreadable, err.Error(), "")
-			}
-			if st.IsDir {
-				v2URI = d
-				break
-			}
+		base := path.Base(d)
+		m := attemptRE.FindStringSubmatch(base)
+		if m == nil {
+			continue
+		}
+		st, err := fsys.Stat(d)
+		if err != nil {
+			return LogSource{}, false, cerrors.New(cerrors.CodeLogUnreadable, err.Error(), "")
+		}
+		if !st.IsDir {
+			continue
+		}
+		attempt := 0
+		if m[1] != "" {
+			attempt, _ = strconv.Atoi(m[1])
+		}
+		if attempt > bestAttempt {
+			bestAttempt = attempt
+			v2URI = d
 		}
 	}
 	if v2URI == "" {
