@@ -47,19 +47,38 @@ func (SkewRule) Eval(app *model.Application) Finding {
 	if bestF >= 10 {
 		sev = "critical"
 	}
-	return Finding{
-		RuleID:   SkewRule{}.ID(),
-		Severity: sev,
-		Title:    SkewRule{}.Title(),
-		Evidence: map[string]any{
-			"stage_id":    bestStage.ID,
-			"skew_factor": round3(bestF),
-			"p50_task_ms": int64(bestP50),
-			"p99_task_ms": int64(bestP99),
-		},
-		Suggestion: fmt.Sprintf("stage %d 任务长尾严重，median %dms / P99 %dms。检查 join key 分布或开启 AQE skew join。",
-			bestStage.ID, int64(bestP50), int64(bestP99)),
+	evidence := map[string]any{
+		"stage_id":    bestStage.ID,
+		"skew_factor": round3(bestF),
+		"p50_task_ms": int64(bestP50),
+		"p99_task_ms": int64(bestP99),
 	}
+	aqe := confValue(app, "spark.sql.adaptive.enabled")
+	skewJoin := confValue(app, "spark.sql.adaptive.skewJoin.enabled")
+	if aqe != "" {
+		evidence["spark_sql_adaptive_enabled"] = aqe
+	}
+	if skewJoin != "" {
+		evidence["spark_sql_adaptive_skewjoin_enabled"] = skewJoin
+	}
+	return Finding{
+		RuleID:     SkewRule{}.ID(),
+		Severity:   sev,
+		Title:      SkewRule{}.Title(),
+		Evidence:   evidence,
+		Suggestion: skewSuggestion(bestStage.ID, int64(bestP50), int64(bestP99), aqe, skewJoin),
+	}
+}
+
+func skewSuggestion(stageID int, p50, p99 int64, aqe, skewJoin string) string {
+	hint := "检查 join key 分布或开启 AQE skew join"
+	if skewJoin == "true" {
+		hint = "AQE skewJoin 已开启仍长尾，检查 join key 分布或调整 spark.sql.adaptive.skewJoin.skewedPartitionFactor"
+	} else if skewJoin == "false" || (aqe != "" && aqe != "true") {
+		hint = "建议启用 spark.sql.adaptive.enabled=true 与 spark.sql.adaptive.skewJoin.enabled=true，并复查 join key 分布"
+	}
+	return fmt.Sprintf("stage %d 任务长尾严重，median %dms / P99 %dms。%s。",
+		stageID, p50, p99, hint)
 }
 
 func round3(f float64) float64 {

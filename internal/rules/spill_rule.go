@@ -28,15 +28,36 @@ func (SpillRule) Eval(app *model.Application) Finding {
 	if gb >= 10 {
 		sev = "critical"
 	}
-	return Finding{
-		RuleID:   SpillRule{}.ID(),
-		Severity: sev,
-		Title:    SpillRule{}.Title(),
-		Evidence: map[string]any{
-			"stage_id":      hot.ID,
-			"spill_disk_gb": round3(gb),
-		},
-		Suggestion: fmt.Sprintf("stage %d 磁盘溢写 %.2f GB，考虑提高 spark.sql.shuffle.partitions 或增大 executor 内存。",
-			hot.ID, gb),
+	evidence := map[string]any{
+		"stage_id":      hot.ID,
+		"spill_disk_gb": round3(gb),
 	}
+	shufflePartitions := confValue(app, "spark.sql.shuffle.partitions")
+	executorMem := confValue(app, "spark.executor.memory")
+	if shufflePartitions != "" {
+		evidence["spark_sql_shuffle_partitions"] = shufflePartitions
+	}
+	if executorMem != "" {
+		evidence["spark_executor_memory"] = executorMem
+	}
+	return Finding{
+		RuleID:     SpillRule{}.ID(),
+		Severity:   sev,
+		Title:      SpillRule{}.Title(),
+		Evidence:   evidence,
+		Suggestion: spillSuggestion(hot.ID, gb, shufflePartitions, executorMem),
+	}
+}
+
+func spillSuggestion(stageID int, gb float64, shufflePartitions, executorMem string) string {
+	cur := ""
+	if shufflePartitions != "" {
+		cur = fmt.Sprintf("(当前 spark.sql.shuffle.partitions=%s) ", shufflePartitions)
+	}
+	mem := ""
+	if executorMem != "" {
+		mem = fmt.Sprintf("，或加大 spark.executor.memory(当前 %s)", executorMem)
+	}
+	return fmt.Sprintf("stage %d 磁盘溢写 %.2f GB，考虑提高 spark.sql.shuffle.partitions %s%s。",
+		stageID, gb, cur, mem)
 }

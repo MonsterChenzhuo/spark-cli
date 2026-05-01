@@ -25,3 +25,12 @@ func All() []Rule {
 func okFinding(id, title string) Finding {
 	return Finding{RuleID: id, Severity: "ok", Title: title}
 }
+
+// confValue returns the SparkConf value for key, empty string if absent.
+// SparkConf is populated from SparkListenerEnvironmentUpdate's Spark Properties.
+func confValue(app *model.Application, key string) string {
+	if app.SparkConf == nil {
+		return ""
+	}
+	return app.SparkConf[key]
+}
