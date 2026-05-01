@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### LLM-friendly envelope + impact-aware diagnostics
+
+- **Breaking:** `slow-stages` and `data-skew` envelopes now expose a single top-level `sql_executions: {<int64 id>: <description>}` map; per-row `sql_description` columns were removed. Rows reference the id via `sql_execution_id`. Production logs with multi-line SQL drop from 40+ KB (per-row repetition) to a few KB (one shared map). `omitempty` keeps the field absent for non-SQL apps and for scenarios that don't need it.
+- `data_skew` rule and `data-skew` rows gain a `wall_share` gate: when a stage's wall-clock is < 1% of app duration and `p99/p50 < 20`, severity downgrades to `warn` (rule) / `mild` (row verdict). Tail latency on a sub-1% stage isn't worth flagging as critical. Threshold is suppressed when `app.DurationMs <= 0` (no ApplicationEnd event) so logs without an end marker aren't blanket-downgraded. New `wall_share` field appears on rule evidence (when known) and `data-skew` rows.
+- `slow-stages` rows now expose `busy_ratio` (same `TotalRunMs / (wall * effective_slots)` formula as `app-summary.top_stages_by_duration[]`) and `shuffle_read_mb_per_task` (`TotalShuffleReadBytes / NumTasks`, MiB). Lets agents distinguish driver-idle stages and identify under-partitioned shuffles without manual arithmetic.
+- `disk_spill` rule evidence now includes `partitions` (stage `NumTasks`) and `est_partition_size_mb` (`shuffle_read / num_tasks` in MiB). Suggestions can now be anchored to the actual partition size and compared against `spark.executor.memory`, rather than emitting generic "raise shuffle.partitions" advice.
+- `diagnose` envelope's `summary` adds `top_findings_by_impact: [{rule_id, severity, wall_share}]` ranked desc by `wall_share`. Only findings with a `stage_id` evidence link and `wall_share > 0` appear; the array is `omitempty` when `app.DurationMs == 0`. Agents and humans read priority directly without re-drilling per finding.
+- Reflection-based column contract tests added for `SlowStageRow` ↔ `SlowStagesColumns()` and `DataSkewRow` ↔ `DataSkewColumns()`, mirroring the existing `app_summary` guard.
+
 ### Diagnostic accuracy & readability fixes
 
 - `slow-stages` rows now expose `gc_ratio` (`sum(task_gc) / sum(task_run)`) so callers stop computing `gc_ms / duration_ms` and getting >100% values from multi-executor concurrency.

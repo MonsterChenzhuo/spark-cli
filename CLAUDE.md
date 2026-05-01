@@ -12,7 +12,8 @@ Guidance for Claude Code (and other AI agents) working in this repository.
 
 特例:
 - `gc-pressure` 的 `data` 是数组 (与其他场景一致),非对象 —— 早期 spec 设想的双段已收敛为单段
-- `diagnose` 的信封额外带 `summary: {critical, warn, ok}`
+- `diagnose` 的信封额外带 `summary: {critical, warn, ok, top_findings_by_impact?}`。`top_findings_by_impact` 是按 `wall_share` 倒序的 `[{rule_id, severity, wall_share}]` 摘要,只收录有 `stage_id` 关联且 `wall_share > 0` 的 finding(没 ApplicationEnd 时整组缺失,这是 omitempty 故意行为)
+- `slow-stages` / `data-skew` 信封顶层带 `sql_executions: map[int64]string`,key 是 `sql_execution_id`、value 是 description(对 DataFrame 作业自动回退到 details 首行)。row 内只保 `sql_execution_id`,**不再带** `sql_description` 字段 —— 切走重复嵌入,把 JSON 体积从几十 KB 压到几 KB。app-summary / gc-pressure / diagnose 不带这个字段(`omitempty`)
 
 ## 仓库布局
 
@@ -38,7 +39,7 @@ Guidance for Claude Code (and other AI agents) working in this repository.
 ```
 appId (CLI) → config → fs.FS map → eventlog.Locator.Resolve → LogSource
 LogSource → eventlog.Open (decompress + V2 拼接) → eventlog.Decode → model.Aggregator → *model.Application
-*model.Application → scenario.<X>(app) → Envelope.{Columns, Data, Summary}
+*model.Application → scenario.<X>(app) → Envelope.{Columns, Data, Summary, SQLExecutions}
 Envelope → output.Write{JSON|Table|Markdown}
 ```
 
@@ -49,7 +50,7 @@ Envelope → output.Write{JSON|Table|Markdown}
 - **Go 1.22 锁定**: `go.mod` 显式 `go 1.22`,不要被工具链自动 bump (有依赖如 tdigest 想要更高版本,但本仓库限定 1.22)。
 - **TDD**: 新场景/规则先写失败测试再写实现,见每个 `*_test.go`。
 - **回应中文**: 仓库内交互、commit 信息可中英混合,但解释/讨论默认中文。
-- **Commit 信息格式**: `type(scope): subject` —— `feat(scenario):`、`feat(output):`、`fix(model):`、`test(e2e):`、`docs(skill):`、`ci:`、`style:` 等。每个 commit 末尾带 `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`。
+- **Commit 信息格式**: `type(scope): subject` —— `feat(scenario):`、`feat(output):`、`fix(model):`、`test(e2e):`、`docs(skill):`、`ci:`、`style:` 等。每个 commit 末尾带 `Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>`(更早的 commit 可能是 Sonnet 4.6,新 commit 用当前模型即可)。
 - **Envelope 改动需同步**: 改 `scenario.Envelope` JSON tag 或字段时,务必跑 `tests/e2e` + 更新 `.claude/skills/spark/SKILL.md` 的 envelope 文档 + `README.md` / `CHANGELOG.md`。
 - **CLAUDE.md 同步规则**: 每次新增/修改用户可见功能(CLI flag、环境变量、配置项、命令行为、输出契约、依赖发现路径)或调整开发流程时,**必须**同步更新本文件相关章节(常见入口:开发约定、HDFS 连接、添加新场景/规则、已知踩坑),并在同一 commit 中带上 README/CHANGELOG 的对应变更。原因:本仓库的 AI agent 工作流强依赖 CLAUDE.md 作为唯一权威上下文,文档漂移会让后续会话直接做错事。
 
@@ -171,18 +172,24 @@ HDFS 用户名优先级 (高 → 低): `--hdfs-user` flag → `SPARK_CLI_HDFS_US
 - **负任务时长**: 某些 EventLog 的 `RunMs` 可能为负 (clock skew),`OnTaskEnd` 已 clamp 到 0,不要去掉。
 - **V2 解码空 Parts**: `eventlog.Open` 拒绝 `Parts == nil` 的 V2 LogSource,`multiCloser.Close` 是幂等的 —— 见 commit `5a98097`。
 - **Top-level App ID vs CLI App ID**: Envelope 顶层 `app_id` 来自 CLI 输入 + 文件名归一化;`data[].app_id` 来自 EventLog `SparkListenerApplicationStart` 事件。两者可能不同 (尤其当 fixture 与文件名不一致时),这是预期行为。
-- **AppSummary 列契约**: `scenario.AppSummaryColumns()` 必须与 `AppSummaryRow` 的 JSON tag 完全一一对应,下游按 `columns` 解析 `data` 才不会丢字段。`internal/scenario/app_summary_test.go` 的 `TestAppSummaryColumnsMatchRowFields` 通过反射守门,新增 row 字段时**同步**更新 columns 列表,**不要**只改一边。
+- **列契约(三处反射守门)**: `scenario.AppSummaryColumns()` / `SlowStagesColumns()` / `DataSkewColumns()` 必须与对应 row 类型的 JSON tag 完全一一对应,下游按 `columns` 解析 `data` 才不会丢字段。`internal/scenario/{app_summary,slow_stages,data_skew}_test.go` 各有一个 `Test*ColumnsMatchRowFields` 反射测试守门,新增 row 字段时**同步**更新 columns 列表,**不要**只改一边。`gc-pressure` 行(`GCExecRow`)目前还没加这个反射测试 —— 改它的字段时手工核对。
 - **idle_stage 误报口径**: `IdleStageRule` 用 `MaxConcurrentExecutors` 估算有效 slot;若 EventLog 缺 `SparkListenerExecutorAdded` (例如局部日志),slot 估值会偏大导致误报偏低。阈值 `wall ≥ 30s`、`busy_ratio < 0.2` 是经验值,改阈值前先用真实日志回归。
 - **V1/V2 attempt 后缀匹配**: Spark 实际写出的日志(无论 V1 单文件 `application_<id>_<attempt>` 还是 V2 滚动目录 `eventlog_v2_<appId>_<attempt>`)经常带 `_<attempt>` 计数器后缀,**不是**裸 appId。`resolveV1` / `resolveV2` 都用 `^<appID>(?:_(\d+))?$` 容忍可选 attempt,多 attempt 共存时取最大 (Spark History Server 行为)。V1 路径还保留一条短路:同时存在裸名 + attempt 命名时,裸名优先(对应 `spark.eventLog.rolling.enabled=false` 的旧行为)。**别**把任何一边改回精确等值 —— 真实 EventLog 几乎都带 attempt,改回去会全线 APP_NOT_FOUND。
 - **dispatch 复杂度上限**: `internal/eventlog/decoder.go` 的事件分发被拆成 `dispatchAppLifecycle` / `dispatchSQLAndBlacklist` / `dispatchStageAndTask` 三组,每组独立 switch 返回 `(handled, err)`。原因:`gocyclo` lint 在单 switch 阈值 22,塞下全部事件后会触线。新增事件类型时按业务归类追加到对应分组;不要把所有 case 重新塞回一个大 switch。
-- **SparkConf / SQLExecutions / Blacklists 模型**: `Application.SparkConf`(来自 `EnvironmentUpdate` 的 Spark Properties)、`SQLExecutions`(`SQLExecutionStart`)、`StageToSQL`(`JobStart.Properties[spark.sql.execution.id]`)、`Blacklists`(`Node/Executor{Blacklisted,Excluded}ForStage`)是规则给 LLM 输出"具体可执行建议"的依赖来源。改造规则时优先从这些字段取上下文:`disk_spill` / `gc_pressure` / `data_skew` 引用 SparkConf 当前值,`failed_tasks` 用 `Blacklists` 检测节点级故障(同一 host ≥2 次自动升级 critical)。`slow-stages` / `data-skew` 行通过 `StageToSQL` → `SQLExecutions` 关联 `sql_execution_id` + `sql_description`,非 SQL job 输出 `-1` + 空串。
+- **SparkConf / SQLExecutions / Blacklists 模型**: `Application.SparkConf`(来自 `EnvironmentUpdate` 的 Spark Properties)、`SQLExecutions`(`SQLExecutionStart`)、`StageToSQL`(`JobStart.Properties[spark.sql.execution.id]`)、`Blacklists`(`Node/Executor{Blacklisted,Excluded}ForStage`)是规则给 LLM 输出"具体可执行建议"的依赖来源。改造规则时优先从这些字段取上下文:`disk_spill` / `gc_pressure` / `data_skew` 引用 SparkConf 当前值,`failed_tasks` 用 `Blacklists` 检测节点级故障(同一 host ≥2 次自动升级 critical)。`slow-stages` / `data-skew` row 仅保 `sql_execution_id`(非 SQL job 为 `-1`),description 文本由 `cmd/scenarios/dispatch.go` 调 `scenario.BuildSQLExecutionMap(app)` 写到 envelope 顶层 `sql_executions: map[int64]string`(`omitempty`,无关联时整段缺失)。回退逻辑(callsite description → details 首行)集中在 `internal/scenario/result.go` 的 `stageSQL`,`BuildSQLExecutionMap` 复用同一 helper 去重。
 - **缓存 schema 不 bump 的隐性 bug**: `internal/cache/envelope.go` 的 `currentSchemaVersion` 是手动维护的整型常量。改 `model.Application` / `Stage` / `Executor` / `BlacklistEvent` 等的字段**类型**或**重命名**字段时**必须** bump 一档,否则旧缓存会被当成有效,反序列化结果可能字段错位(gob 对类型不匹配会报错被当成 miss,但对兼容类型(如 int → int64)可能静默错位)。**只新增字段不需要 bump**。每次走完上面"添加新场景的标准步骤"之后,自检一下是否动了字段类型,动了就 bump。
 - **缓存层 tmp 文件并发**: `Cache.Put` 用 `os.CreateTemp(dir, base+".tmp.*")` 拿到独占 tmp 文件再 `os.Rename`,**不要**改回 `<file>.tmp.<pid>` 的旧方案 —— 同进程多 goroutine 会撞同一个 tmp 名,出现 "rename: no such file or directory" 警告 spam。
 - **shs 缓存命中仍要下载 zip**: `internal/cache` 命中只是跳过 `Open + Decode + Aggregate`,但 `Locator.Resolve` 仍要 `List + Stat`,这两步会触发 `internal/fs.SHS.bundleFor` 从 SHS 拉一次完整 zip 来判断 V1/V2 layout。不要把 SHS 的 zip 下载移到 cache 命中之后 —— Locator 在 cache 之前就需要确切的 LogSource。修这个意味着持久化 zip 到磁盘缓存,目前**不做**。
-- **sql_description 对 DataFrame 作业默认是 callsite**: `SparkListenerSQLExecutionStart.description` 在 DataFrame API 提交时是 `getCallSite at SQLExecution.scala:74`,几乎没有信息量。`stageSQL` 在 `internal/scenario/result.go` 已实现 fallback:description 是该 callsite 或为空时,改取 `SQLExecution.Details` 的首行(通常是用户实际调用位置)。**不要**回退到只读 description,否则 data-skew / slow-stages 的 sql_description 列对绝大多数生产作业完全无用。判定窗口刻意收窄到 `getCallSite ` 前缀,不做模糊匹配,以免误判真 SQL。
-- **data_skew 双闸门**: `SkewRule` 与 `DataSkew` 在 `input_skew_factor < 1.2` 且 `p99/p50 < 20` 时,把 critical 降为 warn(数据均匀的长尾几乎都是抖动);候选 stage 同时命中 `IdleStageRule`(wall>=30s + busy_ratio<0.2)时整个跳过。两道闸门的阈值与 `IdleStageRule` 同口径,**改 idle 阈值时记得回头改 `SkewRule.isIdleStage`**(目前两边各保一份内联实现,故意不抽 helper —— 让两条规则可以独立演进)。极端 ratio (≥ 20) 仍保留 critical,不被闸门遮蔽。
+- **sql_description 对 DataFrame 作业默认是 callsite**: `SparkListenerSQLExecutionStart.description` 在 DataFrame API 提交时是 `getCallSite at SQLExecution.scala:74`,几乎没有信息量。`stageSQL` 在 `internal/scenario/result.go` 已实现 fallback:description 是该 callsite 或为空时,改取 `SQLExecution.Details` 的首行(通常是用户实际调用位置)。`BuildSQLExecutionMap` 写到 envelope 顶层 `sql_executions` 的也是这条 fallback 后的文本。**不要**回退到只读 description,否则 envelope 的 `sql_executions[<id>]` 对绝大多数生产作业完全无用。判定窗口刻意收窄到 `getCallSite ` 前缀,不做模糊匹配,以免误判真 SQL。
+- **data_skew 三道闸门**: `SkewRule` / `DataSkew.skewVerdict` 共有三道降级闸门,顺序应用:
+  1. **均匀输入闸门**:`input_skew_factor < 1.2` 且 `p99/p50 < 20` 时降级 → 数据均匀的长尾多半是抖动
+  2. **wall_share 闸门**:`stage.duration / app.duration < 1%` 且 `p99/p50 < 20` 时降级(SkewRule → warn,DataSkew → mild)→ 短 stage 长尾即使指标很差也几乎没优化收益。`app.DurationMs <= 0`(没 ApplicationEnd 事件)时 wall_share 算 0,被视作"未知",**不**触发闸门
+  3. **idle_stage 跳过**:候选 stage 命中 `IdleStageRule` 条件(wall ≥ 30s + busy_ratio < 0.2)时整个跳过,选下一个 hot stage
+  
+  极端 ratio (≥ 20) 不被任何闸门遮蔽,始终保留 critical / severe。**改任一闸门阈值时**:`wall_share` helper 在 `internal/rules/rule.go`(`wallShare` + `wallShareNegligible`),DataSkew 镜像在 `internal/scenario/data_skew.go`(`dataSkewWallShare` + `dataSkewNegligibleWallShare`),idle 闸门两边各保一份内联(`SkewRule.isIdleStage`)—— 故意不抽 helper 让两条规则可独立演进。SkewRule 的 evidence 在 wall_share > 0 时输出 `wall_share` 字段,DataSkew row 总是带 `wall_share` 字段(未知则为 0)。
 - **三层 gc_ratio 口径**: `Envelope.gc_ratio`(`app-summary` 顶层)= `app.TotalGCMs / app.TotalRunMs`;`SlowStageRow.gc_ratio` = `stage.TotalGCMs / stage.TotalRunMs`;`GCExecRow.gc_ratio` = `executor.TotalGCMs / executor.TotalRunMs`。**三层分母都是 task 累加**,**不要**用 wall(`duration_ms`)做分母,否则多 executor 并发场景下会出现 >100% 的诡异值。SKILL.md 已显式列出三层口径表,改任何一层时记得同步。
-- **app-summary top stages 的 busy_ratio**: `TopStage.BusyRatio` = `TotalRunMs / (wall * effective_slots)`,clamp 到 [0,1]。`effective_slots = min(NumTasks, MaxConcurrentExecutors)`(与 `IdleStageRule` 同口径)。接近 0 的 stage 在 top 列表里是 driver-side idle stage(broadcast/planning/listing 等),按 wall 排序会把它们推到前面但优化方向完全不同 —— agent / 用户读 top 时**必须**先看 `busy_ratio` 再决定是否值得动 stage 本身。
+- **app-summary top stages 的 busy_ratio + slow-stages busy_ratio**: `TopStage.BusyRatio` 与 `SlowStageRow.BusyRatio` 共用 `internal/scenario/app_summary.go:stageBusyRatio` —— `TotalRunMs / (wall * effective_slots)`,clamp 到 [0,1],`effective_slots = min(NumTasks, MaxConcurrentExecutors)`(与 `IdleStageRule` 同口径)。接近 0 的 stage 是 driver-side idle stage(broadcast/planning/listing 等),按 wall 排序会把它们推到前面但优化方向完全不同 —— agent / 用户读 `slow-stages` 或 `app-summary.top_stages` 的列表时**必须**先看 `busy_ratio` 再决定是否值得动 stage 本身。`slow-stages` 行还附 `shuffle_read_mb_per_task = TotalShuffleReadBytes / NumTasks / MiB`(NumTasks=0 时为 0),用来一眼识别 partition 太少导致 spill 的场景。
+- **diagnose summary.top_findings_by_impact**: `internal/scenario/diagnose.go:collectTopFindingsByImpact` 把所有非 ok finding 按 `wall_share` 倒序(复用 `dataSkewWallShare` 公式),只收录 evidence 含 `stage_id` 且 `wall_share > 0` 的 finding。`app.DurationMs == 0` 或 finding 无 `stage_id` 关联时整段缺失(`omitempty`)。优先级展示靠这个字段,不要在 agent / 用户侧再二次心算 wall_share。
 
 ## 文档与计划
 

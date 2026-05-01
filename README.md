@@ -14,7 +14,7 @@ If `diagnose` flags `data_skew`:
 spark-cli data-skew application_1735000000_0001 --top 10
 ```
 
-Each row carries `input_skew_factor` alongside `skew_factor`; verdicts are downgraded to `warn` when input is uniform (`input_skew_factor < 1.2`) and `p99/p50 < 20` so jitter on idle stages stops triggering false `severe`. `slow-stages` rows expose `gc_ratio` (sum(task_gc) / sum(task_run)); `app-summary` exposes `top_stages_by_duration[].busy_ratio` so driver-side idle stages are visible at a glance.
+Each row carries `input_skew_factor` alongside `skew_factor`; verdicts are downgraded when input is uniform (`input_skew_factor < 1.2`, `p99/p50 < 20`) or when stage `wall_share < 1%` (tail on a sub-1% stage isn't worth optimising). `slow-stages` rows expose `gc_ratio` (`sum(task_gc) / sum(task_run)`), `busy_ratio` (driver-idle vs. truly busy), and `shuffle_read_mb_per_task` (one-glance partition-size check). `data-skew` rows expose `wall_share`. `app-summary` exposes `top_stages_by_duration[].busy_ratio`. `diagnose` summary adds `top_findings_by_impact: [{rule_id, severity, wall_share}]` ranked desc — agents can read priority without manual drilling. SQL description text moved out of every row into a single `envelope.sql_executions: {<id>: <description>}` map (slow-stages / data-skew envelopes only) — production logs with multi-line SQL drop from 40+ KB to a few KB.
 
 ## Install
 
@@ -155,9 +155,17 @@ The repo ships `.claude/skills/spark/SKILL.md`. Claude Code auto-loads it when p
   "parsed_events": 482113,
   "elapsed_ms": 1842,
   "columns": [...],
-  "data": [...]
+  "data": [...],
+  "sql_executions": {
+    "0": "select count(*) from orders where dt = '2026-05-01'"
+  }
 }
 ```
+
+Per-scenario extras:
+- `gc-pressure` returns `data` as `{by_stage: [...], by_executor: [...]}` (object, not array).
+- `diagnose` returns `summary: {critical, warn, ok, top_findings_by_impact?}`. `top_findings_by_impact` is an array of `{rule_id, severity, wall_share}` ranked desc by impact (omitempty when no rule has a `stage_id` evidence link or `app.DurationMs == 0`).
+- `slow-stages` and `data-skew` return `sql_executions: {<id>: <description>}` at the top level — rows reference it via `sql_execution_id`. Description text is **not** repeated per row anymore.
 
 Errors → stderr as `{"error":{"code":..., "message":..., "hint":...}}`. Exit codes: `0` success · `1` internal · `2` user · `3` IO.
 

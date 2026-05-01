@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### LLM 友好的信封形状 + 按耗时占比排序的诊断
+
+- **不兼容变更:** `slow-stages` 与 `data-skew` 信封顶层新增一份共享的 `sql_executions: {<int64 id>: <description>}` map;每行的 `sql_description` 列已删除,改为通过 `sql_execution_id` 引用。生产作业(SQL 文本动辄几十行)JSON 体积从 40+ KB(每行重复嵌入)降到几 KB(顶层一份)。`omitempty` 保证非 SQL 作业 / 无需 SQL 关联的场景下该字段缺失。
+- `data_skew` 规则与 `data-skew` 行新增 **`wall_share` 闸门**:当 stage 的 wall-clock 不到应用 wall 的 1% 且 `p99/p50 < 20` 时,severity 降级(规则 → `warn`,行 verdict → `mild`)。短 stage 的尾抖动不应占用优先级。`app.DurationMs <= 0`(没 ApplicationEnd 事件)时 wall_share 视作"未知",**不**触发闸门,避免没结束事件的日志被全面降级。规则 evidence 在 wall_share 已知时输出该字段,DataSkew 行始终带 `wall_share` 字段(未知则为 0)。
+- `slow-stages` 行新增 `busy_ratio`(与 `app-summary.top_stages_by_duration[]` 同公式 `TotalRunMs / (wall * effective_slots)`)与 `shuffle_read_mb_per_task`(`TotalShuffleReadBytes / NumTasks`,MiB),agent 直接看出 driver-idle stage 与 partition 过粗导致 spill 的场景,不必再心算。
+- `disk_spill` 规则 evidence 新增 `partitions`(stage 的 `NumTasks`)与 `est_partition_size_mb`(`shuffle_read / num_tasks` 转 MiB),让建议可以基于实际 partition 大小对比 `spark.executor.memory`,不再只是套模板说"调高 shuffle.partitions"。
+- `diagnose` 信封的 `summary` 新增 `top_findings_by_impact: [{rule_id, severity, wall_share}]`,按 `wall_share` 倒序。只收录 evidence 含 `stage_id` 关联且 `wall_share > 0` 的 finding;`app.DurationMs == 0` 时整段缺失(`omitempty`)。agent / 用户直接读优先级,不必再二次下钻 + 心算。
+- 新增基于反射的列契约测试 `SlowStageRow` ↔ `SlowStagesColumns()`、`DataSkewRow` ↔ `DataSkewColumns()`,与既有 `app_summary` 守门测试一致;column / row 字段错配将在单测层面立刻报警。
+
 ### 诊断精度与可读性修复
 
 - `slow-stages` 行新增 `gc_ratio` 字段(`sum(task_gc) / sum(task_run)`),解决调用方用 `gc_ms / duration_ms` 在多 executor 并发下得到 >100% 的诡异值。

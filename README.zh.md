@@ -14,7 +14,7 @@ spark-cli diagnose application_1735000000_0001
 spark-cli data-skew application_1735000000_0001 --top 10
 ```
 
-每行除 `skew_factor` 外还带 `input_skew_factor`;输入均匀(`input_skew_factor < 1.2`)且 `p99/p50 < 20` 时 verdict 自动降为 `warn`,避免 idle stage 上的抖动误报 `severe`。`slow-stages` 行带 `gc_ratio`(口径 `sum(task_gc) / sum(task_run)`);`app-summary` 的 `top_stages_by_duration[]` 带 `busy_ratio`,driver 端 idle 等待 stage 一眼可辨。
+每行除 `skew_factor` 外还带 `input_skew_factor` 与 `wall_share`;输入均匀(`input_skew_factor < 1.2` 且 `p99/p50 < 20`)或 `wall_share < 1%` 时 verdict 自动降级,避免短 stage 上的抖动占用优先级。`slow-stages` 行带 `gc_ratio`、`busy_ratio`(driver-idle 一眼辨)与 `shuffle_read_mb_per_task`(partition 是否过粗);`app-summary` 的 `top_stages_by_duration[]` 带 `busy_ratio`;`diagnose` 的 `summary` 加 `top_findings_by_impact: [{rule_id, severity, wall_share}]`,按 wall_share 倒序,agent 不必再自己心算优先级。每行重复嵌入的 SQL 文本上提到 envelope 顶层 `sql_executions: {<id>: <description>}` 一份共享(仅 slow-stages / data-skew),生产作业 JSON 体积从几十 KB 降到几 KB。
 
 ## 安装
 
@@ -148,9 +148,17 @@ spark-cli diagnose application_1771556836054_861265 \
   "parsed_events": 482113,
   "elapsed_ms": 1842,
   "columns": [...],
-  "data": [...]
+  "data": [...],
+  "sql_executions": {
+    "0": "select count(*) from orders where dt = '2026-05-01'"
+  }
 }
 ```
+
+各场景特例:
+- `gc-pressure` 的 `data` 是对象 `{by_stage: [...], by_executor: [...]}`,不是数组。
+- `diagnose` 顶层带 `summary: {critical, warn, ok, top_findings_by_impact?}`。`top_findings_by_impact` 是按 `wall_share` 倒序的 `[{rule_id, severity, wall_share}]`(没规则带 `stage_id` 或 `app.DurationMs == 0` 时整段 omitempty 缺失)。
+- `slow-stages` 与 `data-skew` 顶层带 `sql_executions: {<id>: <description>}`,row 通过 `sql_execution_id` 引用。**description 文本不再嵌入每行**。
 
 错误走 stderr,格式为 `{"error":{"code":..., "message":..., "hint":...}}`。退出码: `0` 成功 · `1` 内部错误 · `2` 用户错误 · `3` IO 不可达。
 
