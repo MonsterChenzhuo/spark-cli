@@ -37,6 +37,44 @@ func TestSlowStagesAttachesSQLExecution(t *testing.T) {
 	}
 }
 
+func TestSlowStagesComputesGCRatio(t *testing.T) {
+	app := model.NewApplication()
+	s := model.NewStage(1, 0, "stage", 10, 0)
+	s.SubmitMs = 0
+	s.CompleteMs = 1000
+	s.Status = "succeeded"
+	s.TotalRunMs = 1000
+	s.TotalGCMs = 300
+	for i := 0; i < 10; i++ {
+		s.TaskDurations.Add(100)
+	}
+	app.Stages[model.StageKey{ID: 1}] = s
+
+	rows := SlowStages(app, 0)
+	if len(rows) != 1 {
+		t.Fatalf("rows=%d", len(rows))
+	}
+	if rows[0].GCRatio < 0.299 || rows[0].GCRatio > 0.301 {
+		t.Errorf("gc_ratio=%v want ~0.3", rows[0].GCRatio)
+	}
+}
+
+func TestSlowStagesGCRatioZeroDivision(t *testing.T) {
+	app := model.NewApplication()
+	s := model.NewStage(1, 0, "stage", 10, 0)
+	s.SubmitMs = 0
+	s.CompleteMs = 1000
+	s.Status = "succeeded"
+	s.TotalRunMs = 0
+	s.TotalGCMs = 50
+	app.Stages[model.StageKey{ID: 1}] = s
+
+	rows := SlowStages(app, 0)
+	if len(rows) != 1 || rows[0].GCRatio != 0 {
+		t.Fatalf("expect gc_ratio=0 on zero run_ms, got %+v", rows)
+	}
+}
+
 func TestSlowStagesSortsByWallTimeDesc(t *testing.T) {
 	app := model.NewApplication()
 	for i, wall := range []int64{100, 500, 300} {

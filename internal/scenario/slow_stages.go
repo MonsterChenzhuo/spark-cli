@@ -20,6 +20,7 @@ type SlowStageRow struct {
 	ShuffleWriteGB float64 `json:"shuffle_write_gb"`
 	SpillDiskGB    float64 `json:"spill_disk_gb"`
 	GCMs           int64   `json:"gc_ms"`
+	GCRatio        float64 `json:"gc_ratio"`
 	SQLExecutionID int64   `json:"sql_execution_id"`
 	SQLDescription string  `json:"sql_description"`
 }
@@ -28,7 +29,7 @@ func SlowStagesColumns() []string {
 	return []string{
 		"stage_id", "attempt", "name", "duration_ms", "tasks", "failed_tasks",
 		"p50_task_ms", "p99_task_ms", "input_gb", "shuffle_read_gb",
-		"shuffle_write_gb", "spill_disk_gb", "gc_ms",
+		"shuffle_write_gb", "spill_disk_gb", "gc_ms", "gc_ratio",
 		"sql_execution_id", "sql_description",
 	}
 }
@@ -55,6 +56,7 @@ func SlowStages(app *model.Application, top int) []SlowStageRow {
 			ShuffleWriteGB: bytesToGB(s.TotalShuffleWriteBytes),
 			SpillDiskGB:    bytesToGB(s.TotalSpillDisk),
 			GCMs:           s.TotalGCMs,
+			GCRatio:        gcRatio(s.TotalGCMs, s.TotalRunMs),
 			SQLExecutionID: sqlID,
 			SQLDescription: sqlDesc,
 		})
@@ -64,4 +66,11 @@ func SlowStages(app *model.Application, top int) []SlowStageRow {
 		rows = rows[:top]
 	}
 	return rows
+}
+
+func gcRatio(gcMs, runMs int64) float64 {
+	if runMs <= 0 {
+		return 0
+	}
+	return round3(float64(gcMs) / float64(runMs))
 }
