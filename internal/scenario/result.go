@@ -9,25 +9,42 @@ import (
 // Envelope is the canonical JSON shape returned by every scenario.
 // Data is `any` because gc-pressure returns an object, others return arrays.
 // Columns mirrors data: []string for arrays, map[string][]string for gc-pressure.
+//
+// SQLExecutions is populated only by scenarios whose rows reference a
+// `sql_execution_id` (slow-stages, data-skew). Rows store just the id; this
+// top-level map provides description text once per execution to keep JSON
+// payload small (production logs with multi-line SQL would otherwise repeat
+// the same multi-KB string per row).
 type Envelope struct {
-	Scenario     string `json:"scenario"`
-	AppID        string `json:"app_id"`
-	AppName      string `json:"app_name"`
-	LogPath      string `json:"log_path"`
-	LogFormat    string `json:"log_format"`
-	Compression  string `json:"compression"`
-	Incomplete   bool   `json:"incomplete"`
-	ParsedEvents int64  `json:"parsed_events"`
-	ElapsedMs    int64  `json:"elapsed_ms"`
-	Columns      any    `json:"columns"`
-	Data         any    `json:"data"`
-	Summary      any    `json:"summary,omitempty"`
+	Scenario      string           `json:"scenario"`
+	AppID         string           `json:"app_id"`
+	AppName       string           `json:"app_name"`
+	LogPath       string           `json:"log_path"`
+	LogFormat     string           `json:"log_format"`
+	Compression   string           `json:"compression"`
+	Incomplete    bool             `json:"incomplete"`
+	ParsedEvents  int64            `json:"parsed_events"`
+	ElapsedMs     int64            `json:"elapsed_ms"`
+	Columns       any              `json:"columns"`
+	Data          any              `json:"data"`
+	Summary       any              `json:"summary,omitempty"`
+	SQLExecutions map[int64]string `json:"sql_executions,omitempty"`
 }
 
 type DiagnoseSummary struct {
-	Critical int `json:"critical"`
-	Warn     int `json:"warn"`
-	OK       int `json:"ok"`
+	Critical            int          `json:"critical"`
+	Warn                int          `json:"warn"`
+	OK                  int          `json:"ok"`
+	TopFindingsByImpact []TopFinding `json:"top_findings_by_impact,omitempty"`
+}
+
+// TopFinding 提供按 wall_share 倒序的 finding 摘要,让 agent / 用户不必自己
+// 下钻 + 算耗时占比来定优先级。仅收录有 stage_id 关联且 wall_share > 0 的
+// finding(其他 finding 没法估算耗时影响,统一不入榜)。
+type TopFinding struct {
+	RuleID    string  `json:"rule_id"`
+	Severity  string  `json:"severity"`
+	WallShare float64 `json:"wall_share"`
 }
 
 // stageSQL looks up the Spark SQL execution that owns the given stage.
@@ -66,4 +83,35 @@ func firstNonEmptyLine(s string) string {
 		}
 	}
 	return ""
+}
+
+// BuildSQLExecutionMap returns a {sql_execution_id → description} map covering
+// every SQL execution referenced by at least one stage. Descriptions go through
+// stageSQL's callsite-fallback (DataFrame jobs whose description is the default
+// `getCallSite at SQLExecution.scala:74` get the first non-empty line of
+// details instead). Executions with no usable description are omitted.
+//
+// Returns nil when no stage links to any SQL execution — keeps the envelope
+// `omitempty` field absent for non-SQL apps.
+func BuildSQLExecutionMap(app *model.Application) map[int64]string {
+	if len(app.StageToSQL) == 0 {
+		return nil
+	}
+	out := make(map[int64]string)
+	seen := make(map[int64]struct{})
+	for stageID := range app.StageToSQL {
+		id, desc := stageSQL(app, stageID)
+		if id < 0 || desc == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out[id] = desc
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

@@ -17,17 +17,17 @@ type DataSkewRow struct {
 	MedianInputMB   float64 `json:"median_input_mb"`
 	MaxInputMB      float64 `json:"max_input_mb"`
 	InputSkewFactor float64 `json:"input_skew_factor"`
+	WallShare       float64 `json:"wall_share"`
 	Verdict         string  `json:"verdict"`
 	SQLExecutionID  int64   `json:"sql_execution_id"`
-	SQLDescription  string  `json:"sql_description"`
 }
 
 func DataSkewColumns() []string {
 	return []string{
 		"stage_id", "name", "tasks", "p50_task_ms", "p99_task_ms",
 		"skew_factor", "median_input_mb", "max_input_mb",
-		"input_skew_factor", "verdict",
-		"sql_execution_id", "sql_description",
+		"input_skew_factor", "wall_share", "verdict",
+		"sql_execution_id",
 	}
 }
 
@@ -56,8 +56,9 @@ func DataSkew(app *model.Application, top int) []DataSkewRow {
 		skew := p99 / median
 		inputSkew := float64(s.MaxInputBytes) / medianBytes
 		f := math.Max(skew, inputSkew)
-		v := skewVerdict(f, inputSkew, p99, median)
-		sqlID, sqlDesc := stageSQL(app, s.ID)
+		ws := dataSkewWallShare(s, app)
+		v := skewVerdict(f, inputSkew, p99, median, ws)
+		sqlID, _ := stageSQL(app, s.ID)
 		out = append(out, DataSkewRow{
 			StageID:         s.ID,
 			Name:            s.Name,
@@ -68,9 +69,9 @@ func DataSkew(app *model.Application, top int) []DataSkewRow {
 			MedianInputMB:   bytesToMB(int64(medianBytes)),
 			MaxInputMB:      bytesToMB(s.MaxInputBytes),
 			InputSkewFactor: round3(inputSkew),
+			WallShare:       round3(ws),
 			Verdict:         v,
 			SQLExecutionID:  sqlID,
-			SQLDescription:  sqlDesc,
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -91,16 +92,40 @@ func bytesToMB(b int64) float64 { return round3(float64(b) / float64(mb)) }
 const (
 	dataSkewUniformInputThreshold = 1.2
 	dataSkewExtremeRatioBypass    = 20.0
+	// dataSkewNegligibleWallShare 镜像 rules.wallShareNegligible:
+	// stage wall 占应用 wall 不到 1% 时,即使 skew_factor 极高也通常是
+	// 短 stage 的尾抖动,优化收益接近 0。verdict 直接降到 mild,避免误导优先级。
+	dataSkewNegligibleWallShare = 0.01
 )
 
+// dataSkewWallShare mirrors rules.wallShare. Returns 0 (treated as "unknown,
+// don't apply gate") when app duration or stage wall is missing or non-positive.
+func dataSkewWallShare(s *model.Stage, app *model.Application) float64 {
+	if app.DurationMs <= 0 {
+		return 0
+	}
+	wall := s.CompleteMs - s.SubmitMs
+	if wall <= 0 {
+		return 0
+	}
+	return float64(wall) / float64(app.DurationMs)
+}
+
 // skewVerdict mirrors rules.skewSeverity but emits the verdict ladder used
-// by DataSkew rows. Uniform input + moderate ratio downgrades severe to warn.
-func skewVerdict(f, inputSkew, p99, median float64) string {
+// by DataSkew rows. 三道闸门(顺序依次应用):
+//  1. 均匀输入(input_skew_factor < 1.2)+ 中等 p99/p50(< 20)→ severe 降 warn
+//  2. wall_share < 1% → 直接降 mild(短 stage 长尾不值得管,即使 ratio 极高)
+//  3. extreme p99/p50 (>= 20) 仍保留 severe,不被任何闸门遮蔽
+func skewVerdict(f, inputSkew, p99, median, wallShare float64) string {
 	if f < 4 {
 		return "mild"
 	}
 	if f < 10 {
 		return "warn"
+	}
+	// wall_share 闸门:仅在 wall_share 已知(>0)且 ratio 不极端时降级到 mild
+	if wallShare > 0 && wallShare < dataSkewNegligibleWallShare && (p99/median) < dataSkewExtremeRatioBypass {
+		return "mild"
 	}
 	if inputSkew < dataSkewUniformInputThreshold && (p99/median) < dataSkewExtremeRatioBypass {
 		return "warn"

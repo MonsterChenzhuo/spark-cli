@@ -1,10 +1,37 @@
 package scenario
 
 import (
+	"encoding/json"
+	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/opay-bigdata/spark-cli/internal/model"
 )
+
+// 契约: SlowStagesColumns() 必须与 SlowStageRow JSON 字段完全对应,否则下游
+// 按 columns 解析 data 会丢字段。镜像 TestAppSummaryColumnsMatchRowFields。
+func TestSlowStagesColumnsMatchRowFields(t *testing.T) {
+	row := SlowStageRow{}
+	b, err := json.Marshal(row)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	got := make([]string, 0, len(m))
+	for k := range m {
+		got = append(got, k)
+	}
+	sort.Strings(got)
+	want := append([]string{}, SlowStagesColumns()...)
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("columns mismatch\n got=%v\nwant=%v", got, want)
+	}
+}
 
 func TestSlowStagesAttachesSQLExecution(t *testing.T) {
 	app := model.NewApplication()
@@ -29,11 +56,54 @@ func TestSlowStagesAttachesSQLExecution(t *testing.T) {
 
 	rows := SlowStages(app, 0)
 	got := map[int]SlowStageRow{rows[0].StageID: rows[0], rows[1].StageID: rows[1]}
-	if got[1].SQLExecutionID != 7 || got[1].SQLDescription != "select count(*) from t" {
-		t.Errorf("stage 1 SQL link wrong: id=%d desc=%q", got[1].SQLExecutionID, got[1].SQLDescription)
+	if got[1].SQLExecutionID != 7 {
+		t.Errorf("stage 1 SQL link wrong: id=%d", got[1].SQLExecutionID)
 	}
-	if got[2].SQLExecutionID != -1 || got[2].SQLDescription != "" {
-		t.Errorf("stage 2 should not link to SQL: id=%d desc=%q", got[2].SQLExecutionID, got[2].SQLDescription)
+	if got[2].SQLExecutionID != -1 {
+		t.Errorf("stage 2 should not link to SQL: id=%d", got[2].SQLExecutionID)
+	}
+}
+
+func TestSlowStagesEmitsBusyRatioAndPartitionSize(t *testing.T) {
+	app := model.NewApplication()
+	app.MaxConcurrentExecutors = 50
+
+	s := model.NewStage(1, 0, "shuffle-heavy", 200, 0)
+	s.SubmitMs = 0
+	s.CompleteMs = 60_000
+	s.Status = "succeeded"
+	s.TotalRunMs = 60_000 * 50 / 2 // 50 slots, 50% busy
+	// 200 tasks × 5 MiB shuffle read per task = 1000 MiB total
+	s.TotalShuffleReadBytes = 200 * 5 * 1024 * 1024
+	for i := 0; i < 200; i++ {
+		s.TaskDurations.Add(15_000)
+	}
+	app.Stages[model.StageKey{ID: 1}] = s
+
+	rows := SlowStages(app, 0)
+	if len(rows) != 1 {
+		t.Fatalf("rows=%d", len(rows))
+	}
+	if got := rows[0].BusyRatio; got < 0.49 || got > 0.51 {
+		t.Errorf("busy_ratio=%v want ~0.5", got)
+	}
+	if got := rows[0].ShuffleReadMBPerTask; got < 4.99 || got > 5.01 {
+		t.Errorf("shuffle_read_mb_per_task=%v want ~5.0", got)
+	}
+}
+
+func TestSlowStagesShuffleReadPerTaskZeroOnZeroTasks(t *testing.T) {
+	app := model.NewApplication()
+	s := model.NewStage(1, 0, "no-tasks", 0, 0)
+	s.SubmitMs = 0
+	s.CompleteMs = 100
+	s.Status = "succeeded"
+	s.TotalShuffleReadBytes = 999 * 1024 * 1024
+	app.Stages[model.StageKey{ID: 1}] = s
+
+	rows := SlowStages(app, 0)
+	if len(rows) != 1 || rows[0].ShuffleReadMBPerTask != 0 {
+		t.Fatalf("expect shuffle_read_mb_per_task=0 when num_tasks=0, got %+v", rows)
 	}
 }
 

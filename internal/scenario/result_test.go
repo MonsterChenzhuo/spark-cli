@@ -47,6 +47,55 @@ func TestEnvelopeOmitsSummaryWhenNil(t *testing.T) {
 	}
 }
 
+func TestEnvelopeOmitsSQLExecutionsWhenNil(t *testing.T) {
+	env := Envelope{Scenario: "slow-stages"}
+	b, _ := json.Marshal(env)
+	if got := string(b); contains(got, "sql_executions") {
+		t.Errorf("expected sql_executions omitted, got %s", got)
+	}
+}
+
+func TestBuildSQLExecutionMapDeduplicatesAndApplesFallback(t *testing.T) {
+	app := model.NewApplication()
+	app.SQLExecutions[5] = &model.SQLExecution{
+		ID:          5,
+		Description: "select * from t",
+	}
+	app.SQLExecutions[7] = &model.SQLExecution{
+		ID:          7,
+		Description: "getCallSite at SQLExecution.scala:74",
+		Details:     "Execution: collect at MyJob.scala:42\n== Plan ==",
+	}
+	app.SQLExecutions[9] = &model.SQLExecution{ID: 9, Description: "", Details: ""}
+
+	app.StageToSQL[1] = 5
+	app.StageToSQL[2] = 5 // 重复指向同一个 SQL,map 应当去重
+	app.StageToSQL[3] = 7
+	app.StageToSQL[4] = 9 // 没有可用描述,应当跳过
+
+	m := BuildSQLExecutionMap(app)
+
+	if got := m[5]; got != "select * from t" {
+		t.Errorf("id=5 desc=%q want %q", got, "select * from t")
+	}
+	if got := m[7]; got != "Execution: collect at MyJob.scala:42" {
+		t.Errorf("id=7 desc=%q want details fallback first line", got)
+	}
+	if _, ok := m[9]; ok {
+		t.Errorf("id=9 should be skipped (no description), got %q", m[9])
+	}
+	if len(m) != 2 {
+		t.Errorf("map size=%d want 2 (id=5 + id=7)", len(m))
+	}
+}
+
+func TestBuildSQLExecutionMapEmptyWhenNoLinks(t *testing.T) {
+	app := model.NewApplication()
+	if m := BuildSQLExecutionMap(app); m != nil {
+		t.Errorf("expected nil map when no stages link to SQL, got %v", m)
+	}
+}
+
 func TestStageSQLPrefersRealDescription(t *testing.T) {
 	app := model.NewApplication()
 	app.SQLExecutions[5] = &model.SQLExecution{
