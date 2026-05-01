@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Diagnostic rules — SparkConf-aware suggestions
+- `internal/eventlog` now decodes `SparkListenerEnvironmentUpdate`, populating `Application.SparkConf` with the runtime Spark Properties.
+- `disk_spill` / `gc_pressure` / `data_skew` rules surface the relevant configs (`spark.sql.shuffle.partitions`, `spark.executor.memory`, `spark.sql.adaptive.skewJoin.enabled`, etc.) in both `evidence` and `suggestion`. The skew rule's hint flips when AQE skewJoin is already enabled — instead of "enable AQE", it suggests tuning `skewedPartitionFactor`.
+
+### SQL execution attached to slow / skewed stages
+- `slow-stages` and `data-skew` rows now include `sql_execution_id` and `sql_description` columns. The link is built from `SparkListenerJobStart` properties (`spark.sql.execution.id`) plus `SparkListenerSQLExecutionStart`. Stages outside any SQL execution emit `sql_execution_id: -1` and an empty description.
+- `Application` exposes new fields `SparkConf`, `SQLExecutions`, `StageToSQL`.
+
+### Failed-tasks rule — node-level pattern detection
+- `internal/eventlog` now decodes `Node{Blacklisted,Excluded}ForStage` and `Executor{Blacklisted,Excluded}ForStage` events into `Application.Blacklists`.
+- `failed_tasks` rule escalates to `critical` when the same host appears in ≥2 blacklist events even at low overall failure ratio, and surfaces `blacklisted_hosts` / `blacklist_node_events` / `blacklist_executor_events` in evidence with a node-targeted suggestion. Random task flakiness still reports the original message.
+
+### EventLog locator
+- `internal/eventlog/locate.go` now matches V2 directories with an optional `_<attempt>` suffix (`eventlog_v2_<appId>` or `eventlog_v2_<appId>_<n>`). When multiple attempts coexist the highest is selected, mirroring Spark History Server. Previously the locator required strict equality and could not find Spark-written rolling logs whose directory name carried the attempt counter.
+
 ### HDFS
 - `internal/fs/hdfs.go` + new `internal/fs/hdfs_conf.go` — load Hadoop XML config (`core-site.xml` / `hdfs-site.xml`) and resolve HA NameService addresses via `hadoopconf.Load` + `hdfs.ClientOptionsFromConf`.
 - New flag `--hadoop-conf-dir <path>`, env var `SPARK_CLI_HADOOP_CONF_DIR`, and YAML key `hdfs.conf_dir`. Auto-discovers from `HADOOP_CONF_DIR`, then `HADOOP_HOME/etc/hadoop`, then `HADOOP_HOME/conf`. Falls back to URI literal `host:port` when no conf is found.

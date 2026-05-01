@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### 诊断规则 —— 携带 SparkConf 的建议
+- `internal/eventlog` 新增解析 `SparkListenerEnvironmentUpdate`,把运行时 Spark Properties 写入 `Application.SparkConf`。
+- `disk_spill` / `gc_pressure` / `data_skew` 规则在 evidence 和 suggestion 中带出当前真实配置(`spark.sql.shuffle.partitions`、`spark.executor.memory`、`spark.sql.adaptive.skewJoin.enabled` 等)。skew 规则在检测到 AQE skewJoin 已开启仍长尾时,建议改为调整 `skewedPartitionFactor`,而不是再喊"启用 AQE"。
+
+### slow-stages / data-skew 关联 SQL execution
+- `slow-stages` 和 `data-skew` 行新增 `sql_execution_id` 与 `sql_description` 字段。映射来自 `SparkListenerJobStart.Properties` 中的 `spark.sql.execution.id` + `SparkListenerSQLExecutionStart`。非 SQL job 触发的 stage 输出 `sql_execution_id: -1`、`sql_description` 为空字符串。
+- `Application` 新增字段 `SparkConf`、`SQLExecutions`、`StageToSQL`。
+
+### failed_tasks —— 节点级失败模式识别
+- `internal/eventlog` 新增解析 `Node{Blacklisted,Excluded}ForStage` 与 `Executor{Blacklisted,Excluded}ForStage` 事件,写入 `Application.Blacklists`。
+- `failed_tasks` 规则在同一台 host 出现 ≥2 次 blacklist 事件时,即使整体失败率不高也会升级为 `critical`,evidence 中带出 `blacklisted_hosts` / `blacklist_node_events` / `blacklist_executor_events`,suggestion 直接指向具体节点的硬件/网络/磁盘排查。普通随机失败仍走原文案。
+
+### EventLog 定位
+- `internal/eventlog/locate.go` 支持 V2 目录的可选 `_<attempt>` 后缀(`eventlog_v2_<appId>` 或 `eventlog_v2_<appId>_<n>`),多 attempt 共存时自动取最大,与 Spark History Server 行为一致。此前严格等值匹配,无法识别 Spark 实际写出的带 attempt 计数器的滚动日志目录。
+
 ### HDFS 配置
 - `internal/fs/hdfs.go` + 新增 `internal/fs/hdfs_conf.go` —— 通过 `hadoopconf.Load` + `hdfs.ClientOptionsFromConf` 加载 `core-site.xml` / `hdfs-site.xml`,支持 HA NameService 地址解析。
 - 新增 `--hadoop-conf-dir <path>` flag、`SPARK_CLI_HADOOP_CONF_DIR` 环境变量、YAML 字段 `hdfs.conf_dir`。自动发现路径: `HADOOP_CONF_DIR` → `HADOOP_HOME/etc/hadoop` → `HADOOP_HOME/conf`。都没拿到 conf 时退回 URI 字面 `host:port`。

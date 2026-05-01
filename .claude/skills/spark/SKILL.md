@@ -20,10 +20,10 @@ The user must provide a Spark `applicationId` (e.g. `application_1735000000_0001
    Read `summary.critical` and `summary.warn`. Even `severity: "ok"` rows are meaningful — they confirm a check ran.
 
 2. **Drill down based on findings**:
-   - `data_skew` critical → `spark-cli data-skew <appId> --top 10`
-   - `gc_pressure` critical → `spark-cli gc-pressure <appId>` (look at `by_executor`)
-   - `disk_spill` triggered → `spark-cli slow-stages <appId>` and read `spill_disk_gb`
-   - `failed_tasks` triggered → ask the user for driver logs; spark-cli does not parse them
+   - `data_skew` critical → `spark-cli data-skew <appId> --top 10`. Each row carries `sql_execution_id` + `sql_description` so you can quote the SQL that owns the skewed stage.
+   - `gc_pressure` critical → `spark-cli gc-pressure <appId>` (look at `by_executor`). The `gc_pressure` finding now embeds `spark_executor_memory` in evidence — quote it before suggesting tuning.
+   - `disk_spill` triggered → `spark-cli slow-stages <appId>` and read `spill_disk_gb`. The finding's evidence already includes `spark_sql_shuffle_partitions` and `spark_executor_memory` — anchor your suggestion to the actual configured values, not generic advice.
+   - `failed_tasks` triggered → if `evidence.blacklisted_hosts` is non-empty, those hosts have been excluded ≥2 times; report them by name and tell the user the failure looks node-level (hardware/network/disk), not random task flakiness. Otherwise ask for driver logs.
    - `tiny_tasks` triggered → 分区过细,建议 `coalesce` / 调低 `spark.sql.shuffle.partitions`
    - `idle_stage` triggered → stage wall-clock 远大于 executor 实际工作时间(driver 端 broadcast/串行计算/调度等待),用 `spark-cli slow-stages <appId>` 看具体 stage,然后排查执行计划
    - All `ok` but user reports slowness → `spark-cli slow-stages <appId> --top 5`
