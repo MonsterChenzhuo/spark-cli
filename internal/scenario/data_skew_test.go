@@ -42,3 +42,24 @@ func TestDataSkewFiltersAndRanks(t *testing.T) {
 		t.Errorf("verdict=%s want severe", rows[0].Verdict)
 	}
 }
+
+func TestDataSkewVerdictDowngradesOnUniformInput(t *testing.T) {
+	app := model.NewApplication()
+	s := model.NewStage(1, 0, "uniform", 100, 0)
+	for i := 0; i < 95; i++ {
+		s.TaskDurations.Add(100)
+		s.TaskInputBytes.Add(1024 * 1024)
+	}
+	for i := 0; i < 5; i++ {
+		s.TaskDurations.Add(1700)
+		s.TaskInputBytes.Add(1024 * 1024)
+	}
+	s.MaxInputBytes = 1024 * 1024
+	s.Status = "succeeded"
+	app.Stages[model.StageKey{ID: 1}] = s
+
+	rows := DataSkew(app, 10)
+	if len(rows) != 1 || rows[0].Verdict != "warn" {
+		t.Fatalf("expect single row with verdict=warn, got %+v", rows)
+	}
+}

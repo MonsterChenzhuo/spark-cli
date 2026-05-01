@@ -56,13 +56,7 @@ func DataSkew(app *model.Application, top int) []DataSkewRow {
 		skew := p99 / median
 		inputSkew := float64(s.MaxInputBytes) / medianBytes
 		f := math.Max(skew, inputSkew)
-		v := "mild"
-		switch {
-		case f >= 10:
-			v = "severe"
-		case f >= 4:
-			v = "warn"
-		}
+		v := skewVerdict(f, inputSkew, p99, median)
 		sqlID, sqlDesc := stageSQL(app, s.ID)
 		out = append(out, DataSkewRow{
 			StageID:         s.ID,
@@ -93,3 +87,23 @@ func DataSkew(app *model.Application, top int) []DataSkewRow {
 const mb = 1024 * 1024
 
 func bytesToMB(b int64) float64 { return round3(float64(b) / float64(mb)) }
+
+const (
+	dataSkewUniformInputThreshold = 1.2
+	dataSkewExtremeRatioBypass    = 20.0
+)
+
+// skewVerdict mirrors rules.skewSeverity but emits the verdict ladder used
+// by DataSkew rows. Uniform input + moderate ratio downgrades severe to warn.
+func skewVerdict(f, inputSkew, p99, median float64) string {
+	if f < 4 {
+		return "mild"
+	}
+	if f < 10 {
+		return "warn"
+	}
+	if inputSkew < dataSkewUniformInputThreshold && (p99/median) < dataSkewExtremeRatioBypass {
+		return "warn"
+	}
+	return "severe"
+}
