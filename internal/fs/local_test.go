@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLocalOpenStatList(t *testing.T) {
@@ -41,6 +42,24 @@ func TestLocalOpenStatList(t *testing.T) {
 	}
 	if len(matches) != 2 {
 		t.Fatalf("matches = %v", matches)
+	}
+}
+
+func TestLocalStatReturnsModTime(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "f")
+	before := time.Now().Add(-time.Second).UnixNano()
+	if err := os.WriteFile(p, []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now().Add(time.Second).UnixNano()
+
+	st, err := NewLocal().Stat("file://" + p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.ModTime < before || st.ModTime > after {
+		t.Errorf("ModTime %d out of [%d, %d]", st.ModTime, before, after)
 	}
 }
 

@@ -4,10 +4,11 @@ package fs
 import "io"
 
 type FileInfo struct {
-	URI   string
-	Name  string
-	Size  int64
-	IsDir bool
+	URI     string
+	Name    string
+	Size    int64
+	ModTime int64 // unix nanoseconds; 0 if backend does not expose mtime
+	IsDir   bool
 }
 
 type FS interface {

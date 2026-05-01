@@ -48,7 +48,13 @@ func (l *Local) Stat(uri string) (FileInfo, error) {
 	if err != nil {
 		return FileInfo{}, err
 	}
-	return FileInfo{URI: uri, Name: st.Name(), Size: st.Size(), IsDir: st.IsDir()}, nil
+	return FileInfo{
+		URI:     uri,
+		Name:    st.Name(),
+		Size:    st.Size(),
+		ModTime: st.ModTime().UnixNano(),
+		IsDir:   st.IsDir(),
+	}, nil
 }
 
 func (l *Local) List(dirURI, prefix string) ([]string, error) {
