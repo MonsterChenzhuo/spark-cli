@@ -5,7 +5,7 @@
 ### Spark History Server EventLog source
 
 - New `shs://host:port` scheme for `--log-dirs`. spark-cli pulls `GET /api/v1/applications/<id>/<attempt>/logs` (a zip body) and exposes its entries through the existing `fs.FS` abstraction, so the locator, decoder, rules, and parsed-application cache all work transparently against a Spark History Server.
-- The largest numeric `attemptId` reported by `/api/v1/applications/<id>` is auto-selected.
+- The largest numeric `attemptId` reported by `/api/v1/applications/<id>` is auto-selected. When SHS reports an attempt with no `attemptId` field (Spark 3.4+ single-attempt default), spark-cli now drops the attempt segment and fetches `/api/v1/applications/<id>/logs` directly — fixes APP_NOT_FOUND against attempt-less apps.
 - New flag `--shs-timeout`, env var `SPARK_CLI_SHS_TIMEOUT`, and YAML key `shs.timeout` (default `60s`). `spark-cli config show` reports the resolved value and its source.
 - HTTP only — TLS, Basic Auth, Bearer Token, and Kerberos are out of scope for v1.
 - Zip bodies up to 256 MiB are decoded in memory; larger or unknown-length responses spill to a `os.CreateTemp` file that is removed when the process exits.

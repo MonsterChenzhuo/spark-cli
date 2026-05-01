@@ -65,8 +65,20 @@ func newSHSTestServer(t *testing.T, apps map[string]*shsApp, counts *int64, dela
 			_ = json.NewEncoder(w).Encode(meta)
 			return
 		}
-		if len(parts) >= 3 && parts[2] == "logs" {
-			attemptID := parts[1]
+		// Two URL shapes Spark History Server accepts:
+		//   /api/v1/applications/<appID>/<attemptID>/logs   (multi-attempt)
+		//   /api/v1/applications/<appID>/logs               (single attempt, no attemptId)
+		var attemptID string
+		var isLogs bool
+		switch {
+		case len(parts) >= 3 && parts[2] == "logs":
+			attemptID = parts[1]
+			isLogs = true
+		case len(parts) == 2 && parts[1] == "logs":
+			attemptID = ""
+			isLogs = true
+		}
+		if isLogs {
 			body, ok := app.zips[attemptID]
 			if !ok {
 				http.NotFound(w, r)
@@ -293,6 +305,92 @@ func TestSHSV1WithZstdSuffix(t *testing.T) {
 	rc.Close()
 	if !bytes.Equal(got, body) {
 		t.Errorf("Open should return raw bytes (zstd undone by outer codec layer); got %q want %q", got, body)
+	}
+}
+
+// TestSHSAttemptlessAppFetchesNoSegmentLogs covers SHS apps whose attempts[]
+// entries omit the attemptId field (common for single-attempt apps written by
+// recent Spark versions). The /logs URL must drop the attempt segment.
+func TestSHSAttemptlessAppFetchesNoSegmentLogs(t *testing.T) {
+	appID := "application_x"
+	body := []byte("hello")
+	z := buildZip(t, map[string][]byte{appID: body})
+	apps := map[string]*shsApp{
+		appID: {
+			ID:       appID,
+			Attempts: []shsAttempt{{LastUpdatedEpoch: 1234}}, // no AttemptID
+			zips:     map[string][]byte{"": z},               // served via /<id>/logs
+		},
+	}
+	srv := newSHSTestServer(t, apps, nil, 0, false)
+	defer srv.Close()
+
+	s := NewSHS(shsBase(srv), 5*time.Second)
+	defer func() { _ = s.Close() }()
+
+	uris, err := s.List(shsBase(srv), appID)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(uris) != 1 {
+		t.Fatalf("got URIs %v, want 1", uris)
+	}
+	rc, err := s.Open(uris[0])
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	got, _ := io.ReadAll(rc)
+	rc.Close()
+	if !bytes.Equal(got, body) {
+		t.Errorf("got %q want %q", got, body)
+	}
+	st, err := s.Stat(uris[0])
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	wantNS := int64(1234) * int64(time.Millisecond)
+	if st.ModTime != wantNS {
+		t.Errorf("ModTime = %d, want %d", st.ModTime, wantNS)
+	}
+}
+
+// TestSHSAttemptlessAppV2Layout covers single-attempt V2 rolling logs whose
+// inner directory name carries the appID without an attempt suffix
+// (eventlog_v2_<appID>) — matches what Spark 3.4+ writes when the app has no
+// numeric attemptId.
+func TestSHSAttemptlessAppV2Layout(t *testing.T) {
+	appID := "application_x"
+	v2dir := "eventlog_v2_" + appID
+	z := buildZip(t, map[string][]byte{
+		v2dir + "/appstatus_" + appID: []byte(""),
+		v2dir + "/events_1_" + appID:  []byte("part1"),
+	})
+	apps := map[string]*shsApp{
+		appID: {
+			ID:       appID,
+			Attempts: []shsAttempt{{LastUpdatedEpoch: 100}},
+			zips:     map[string][]byte{"": z},
+		},
+	}
+	srv := newSHSTestServer(t, apps, nil, 0, false)
+	defer srv.Close()
+
+	s := NewSHS(shsBase(srv), 5*time.Second)
+	defer func() { _ = s.Close() }()
+
+	rootURIs, err := s.List(shsBase(srv), "eventlog_v2_"+appID)
+	if err != nil {
+		t.Fatalf("root List: %v", err)
+	}
+	if len(rootURIs) != 1 {
+		t.Fatalf("root List = %v", rootURIs)
+	}
+	parts, err := s.List(rootURIs[0], "events_")
+	if err != nil {
+		t.Fatalf("inner List: %v", err)
+	}
+	if len(parts) != 1 {
+		t.Fatalf("inner parts = %v", parts)
 	}
 }
 

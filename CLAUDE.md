@@ -131,7 +131,7 @@ HDFS 用户名优先级 (高 → 低): `--hdfs-user` flag → `SPARK_CLI_HDFS_US
 
 **HTTP 行为**(全部不可配,简单粗暴):
 - 仅支持匿名 HTTP,**不支持** HTTPS / Basic Auth / Bearer Token / Kerberos
-- attempt 自动取 `attempts[]` 里数字 attemptId 最大那个(对齐 Spark History Server UI 默认行为)
+- attempt 自动取 `attempts[]` 里数字 attemptId 最大那个(对齐 Spark History Server UI 默认行为)。如果 `attempts[]` 条目**完全没有** `attemptId` 字段(Spark 3.4+ 单 attempt 默认行为),logs URL 改用 `/api/v1/applications/<id>/logs`(不带 attempt 段)—— SHS 对 `/<id>//logs`(空段)直接 404,所以**必须**省略段而不是传空字符串
 - HTTP timeout 由 `cfg.SHS.Timeout` 控制,优先级:`--shs-timeout` flag → `SPARK_CLI_SHS_TIMEOUT` 环境变量 → `config.yaml` `shs.timeout` → 默认 60s
 - zip body ≤ 256 MiB(由 `Content-Length` 判定)走 `bytes.Reader` 全内存解析;> 256 MiB 或 `Content-Length` 缺失时落 `os.CreateTemp`,`SHS.Close()` 删除 tmp 文件
 - 同一 appID 的 zip 在 SHS 实例生命周期内只下载一次(`bundles map[appID]*shsBundle`),之后所有 List/Stat/Open 都走内存索引

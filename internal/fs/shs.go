@@ -269,11 +269,11 @@ func (s *SHS) bundleFor(host, appID string) (*shsBundle, error) {
 
 	_ = host // host is implicit in s.httpURL; SHS instance is per-base
 
-	attempt, lastUpdated, err := s.fetchAttempt(appID)
+	attempt, found, lastUpdated, err := s.fetchAttempt(appID)
 	if err != nil {
 		return nil, err
 	}
-	if attempt == "" {
+	if !found {
 		return nil, nil
 	}
 
@@ -321,18 +321,30 @@ func (s *SHS) bundleFor(host, appID string) (*shsBundle, error) {
 	return b, nil
 }
 
-func (s *SHS) fetchAttempt(appID string) (attemptID string, lastUpdatedNS int64, err error) {
+// fetchAttempt selects the appropriate attempt segment for the SHS logs URL.
+//
+// Return shape: (attempt, found, lastUpdatedNS, err).
+//
+//   - found=false: SHS reported 404 or attempts is empty → caller treats as
+//     APP_NOT_FOUND.
+//   - found=true, attempt="N": multi-attempt or numeric attempt; logs URL is
+//     /api/v1/applications/<appID>/N/logs.
+//   - found=true, attempt="": single-attempt apps where the attempts[] entry
+//     omits attemptId (Spark 3.4+ default); logs URL is
+//     /api/v1/applications/<appID>/logs (no attempt segment). SHS returns 404
+//     for /<appID>/<empty>/logs in that case, so we MUST drop the segment.
+func (s *SHS) fetchAttempt(appID string) (attempt string, found bool, lastUpdatedNS int64, err error) {
 	metaURL := fmt.Sprintf("%s/api/v1/applications/%s", s.httpURL, appID)
 	resp, err := s.httpClient.Get(metaURL)
 	if err != nil {
-		return "", 0, fmt.Errorf("shs: GET %s: %w", metaURL, err)
+		return "", false, 0, fmt.Errorf("shs: GET %s: %w", metaURL, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
-		return "", 0, nil
+		return "", false, 0, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", 0, fmt.Errorf("shs: GET %s: status %d", metaURL, resp.StatusCode)
+		return "", false, 0, fmt.Errorf("shs: GET %s: status %d", metaURL, resp.StatusCode)
 	}
 	var meta struct {
 		ID       string `json:"id"`
@@ -343,10 +355,10 @@ func (s *SHS) fetchAttempt(appID string) (attemptID string, lastUpdatedNS int64,
 		} `json:"attempts"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
-		return "", 0, fmt.Errorf("shs: decode metadata: %w", err)
+		return "", false, 0, fmt.Errorf("shs: decode metadata: %w", err)
 	}
 	if len(meta.Attempts) == 0 {
-		return "", 0, nil
+		return "", false, 0, nil
 	}
 	bestN := -1
 	bestIdx := -1
@@ -370,11 +382,19 @@ func (s *SHS) fetchAttempt(appID string) (attemptID string, lastUpdatedNS int64,
 	} else if a.LastUpdated != "" {
 		lastUpdatedNS = parseSHSTimestamp(a.LastUpdated)
 	}
-	return a.AttemptID, lastUpdatedNS, nil
+	return a.AttemptID, true, lastUpdatedNS, nil
 }
 
 func (s *SHS) fetchZip(appID, attempt string) (*zip.Reader, io.Closer, string, error) {
-	logsURL := fmt.Sprintf("%s/api/v1/applications/%s/%s/logs", s.httpURL, appID, attempt)
+	// Empty attempt means SHS returned an attempts[] entry with no attemptId,
+	// in which case the logs are served at /api/v1/applications/<id>/logs;
+	// inserting an empty segment yields a 404.
+	var logsURL string
+	if attempt == "" {
+		logsURL = fmt.Sprintf("%s/api/v1/applications/%s/logs", s.httpURL, appID)
+	} else {
+		logsURL = fmt.Sprintf("%s/api/v1/applications/%s/%s/logs", s.httpURL, appID, attempt)
+	}
 	resp, err := s.httpClient.Get(logsURL)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("shs: GET %s: %w", logsURL, err)

@@ -5,7 +5,7 @@
 ### Spark History Server EventLog 源
 
 - 新增 `shs://host:port` scheme,可写入 `--log-dirs`。spark-cli 通过 `GET /api/v1/applications/<id>/<attempt>/logs`(返回 zip 包)拉日志,把 zip 内部条目以现有 `fs.FS` 抽象暴露,定位器、解码器、规则、应用解析缓存全部透明工作。
-- 自动选取 `/api/v1/applications/<id>` 返回数值最大的 `attemptId`。
+- 自动选取 `/api/v1/applications/<id>` 返回数值最大的 `attemptId`。当 SHS 返回的 attempt 完全没有 `attemptId` 字段(Spark 3.4+ 单 attempt 默认行为)时,spark-cli 会省略 attempt 段、改用 `/api/v1/applications/<id>/logs` —— 修复对该类应用报 APP_NOT_FOUND 的问题。
 - 新增 flag `--shs-timeout`、环境变量 `SPARK_CLI_SHS_TIMEOUT`、YAML 字段 `shs.timeout`(默认 `60s`)。`spark-cli config show` 输出当前值与来源。
 - 仅 HTTP —— TLS、Basic Auth、Bearer Token、Kerberos 暂不在 v1 范围内。
 - `Content-Length` ≤ 256 MiB 的 zip 在内存解码;更大或未知长度时 spill 到 `os.CreateTemp`,进程退出时清理。
