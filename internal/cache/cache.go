@@ -110,9 +110,21 @@ func (c *Cache) Put(src eventlog.LogSource, fsys fs.FS, app *model.Application) 
 	}
 
 	final := c.Path(src)
-	tmp := fmt.Sprintf("%s.tmp.%d", final, os.Getpid())
-	if err := os.WriteFile(tmp, buf.Bytes(), 0o644); err != nil {
+	tmpf, err := os.CreateTemp(c.dir, filepath.Base(final)+".tmp.*")
+	if err != nil {
+		warn("put: create tmp: %v", err)
+		return
+	}
+	tmp := tmpf.Name()
+	if _, err := tmpf.Write(buf.Bytes()); err != nil {
+		_ = tmpf.Close()
+		_ = os.Remove(tmp)
 		warn("put: write %s: %v", tmp, err)
+		return
+	}
+	if err := tmpf.Close(); err != nil {
+		_ = os.Remove(tmp)
+		warn("put: close %s: %v", tmp, err)
 		return
 	}
 	if err := os.Rename(tmp, final); err != nil {
@@ -121,9 +133,50 @@ func (c *Cache) Put(src eventlog.LogSource, fsys fs.FS, app *model.Application) 
 	}
 }
 
-// Get always misses for now; the real implementation lands in Task 5.
+// Get returns the cached *Application iff the on-disk envelope's schemaVersion
+// matches and its sourceKey equals the freshly-computed key. Any failure on
+// the read path degrades to (nil, false): file missing, decode error, schema
+// or key mismatch all behave the same way. Corrupt or stale cache files are
+// deleted so the next Put rewrites cleanly.
 func (c *Cache) Get(src eventlog.LogSource, fsys fs.FS) (*model.Application, bool) {
-	return nil, false
+	if !c.enabled {
+		return nil, false
+	}
+	cur, ok := computeSourceKey(src, fsys)
+	if !ok {
+		return nil, false
+	}
+	final := c.Path(src)
+	raw, err := os.ReadFile(final)
+	if err != nil {
+		return nil, false
+	}
+	zr, err := zstd.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		removeCorrupt(final, "zstd reader: %v", err)
+		return nil, false
+	}
+	defer zr.Close()
+
+	var env cacheEnvelope
+	if err := gob.NewDecoder(zr).Decode(&env); err != nil {
+		removeCorrupt(final, "gob decode: %v", err)
+		return nil, false
+	}
+	if env.SchemaVersion != currentSchemaVersion {
+		removeCorrupt(final, "schemaVersion %d != %d", env.SchemaVersion, currentSchemaVersion)
+		return nil, false
+	}
+	if env.SourceKey != cur {
+		_ = os.Remove(final)
+		return nil, false
+	}
+	return env.App, true
+}
+
+func removeCorrupt(p string, format string, args ...any) {
+	warn("get: "+format+"; removing %s", append(args, p)...)
+	_ = os.Remove(p)
 }
 
 // DefaultDir returns $XDG_CACHE_HOME/spark-cli or ~/.cache/spark-cli.
