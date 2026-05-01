@@ -59,13 +59,17 @@ func (SkewRule) Eval(app *model.Application) Finding {
 	if bestStage == nil || bestF < 4 {
 		return okFinding(SkewRule{}.ID(), SkewRule{}.Title())
 	}
-	sev := skewSeverity(bestF, bestInputSkew, bestP50, bestP99)
+	ws := wallShare(bestStage, app)
+	sev := skewSeverity(bestF, bestInputSkew, bestP50, bestP99, ws)
 	evidence := map[string]any{
 		"stage_id":          bestStage.ID,
 		"skew_factor":       round3(bestF),
 		"p50_task_ms":       int64(bestP50),
 		"p99_task_ms":       int64(bestP99),
 		"input_skew_factor": round3(bestInputSkew),
+	}
+	if ws > 0 {
+		evidence["wall_share"] = round3(ws)
 	}
 	aqe := confValue(app, "spark.sql.adaptive.enabled")
 	skewJoin := confValue(app, "spark.sql.adaptive.skewJoin.enabled")
@@ -84,14 +88,23 @@ func (SkewRule) Eval(app *model.Application) Finding {
 	}
 }
 
-// skewSeverity downgrades critical to warn when input is uniform AND the
-// p99/p50 spread is moderate. Extreme spread (>= extremeRatioBypass) keeps
-// critical regardless of input distribution.
-func skewSeverity(f, inputSkew, p50, p99 float64) string {
+// skewSeverity 三道闸门(顺序应用)用于把 critical 降级:
+//  1. f < 10        → warn(普通长尾)
+//  2. wall_share 已知(>0)且 < 1% 且 ratio 不极端  → warn(短 stage 长尾收益太低)
+//  3. input 均匀 + ratio < 20  → warn(数据均匀的长尾通常是抖动)
+//
+// 极端 ratio (>= extremeRatioBypass) 不被任何闸门遮蔽,始终保留 critical。
+// wall_share == 0 当作"未知"处理,不触发闸门 2,避免没 ApplicationEnd 事件的
+// 日志全线被降级。
+func skewSeverity(f, inputSkew, p50, p99, ws float64) string {
 	if f < 10 {
 		return "warn"
 	}
-	if inputSkew < uniformInputThreshold && (p99/p50) < extremeRatioBypass {
+	ratio := p99 / p50
+	if ws > 0 && ws < wallShareNegligible && ratio < extremeRatioBypass {
+		return "warn"
+	}
+	if inputSkew < uniformInputThreshold && ratio < extremeRatioBypass {
 		return "warn"
 	}
 	return "critical"

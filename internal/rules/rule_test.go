@@ -46,6 +46,33 @@ func TestSkewRuleDowngradesOnUniformInput(t *testing.T) {
 	}
 }
 
+func TestSkewRuleDowngradesNegligibleWallShare(t *testing.T) {
+	app := model.NewApplication()
+	app.DurationMs = 1_000_000 // 1000s
+	s := model.NewStage(1, 0, "tiny-but-skewed", 100, 0)
+	s.SubmitMs = 0
+	s.CompleteMs = 5_000 // wall_share = 0.5%,远低于 1% 阈值
+	s.Status = "succeeded"
+	for i := 0; i < 95; i++ {
+		s.TaskDurations.Add(100)
+		s.TaskInputBytes.Add(1024)
+	}
+	for i := 0; i < 5; i++ {
+		s.TaskDurations.Add(1500) // p99/p50 = 15, 中等(<20)
+		s.TaskInputBytes.Add(50 * 1024 * 1024)
+	}
+	s.MaxInputBytes = 50 * 1024 * 1024 // 让 f >= 10 触发 critical ladder
+	app.Stages[model.StageKey{ID: 1}] = s
+
+	f := SkewRule{}.Eval(app)
+	if f.Severity != "warn" {
+		t.Fatalf("severity=%s want warn (negligible wall_share should downgrade)", f.Severity)
+	}
+	if got, ok := f.Evidence["wall_share"].(float64); !ok || got > 0.01 {
+		t.Errorf("evidence wall_share=%v want < 0.01 and present", f.Evidence["wall_share"])
+	}
+}
+
 func TestSkewRuleStaysCriticalOnExtremeRatio(t *testing.T) {
 	app := model.NewApplication()
 	s := model.NewStage(1, 0, "extreme", 100, 0)
@@ -154,8 +181,9 @@ func TestSpillRuleEmbedsSparkConf(t *testing.T) {
 	app := model.NewApplication()
 	app.SparkConf["spark.sql.shuffle.partitions"] = "200"
 	app.SparkConf["spark.executor.memory"] = "8g"
-	s := model.NewStage(0, 0, "spilly", 1, 0)
-	s.TotalSpillDisk = 12 * 1024 * 1024 * 1024 // 12 GB → critical
+	s := model.NewStage(0, 0, "spilly", 200, 0)
+	s.TotalSpillDisk = 12 * 1024 * 1024 * 1024      // 12 GB → critical
+	s.TotalShuffleReadBytes = 200 * 5 * 1024 * 1024 // 200 partitions × 5 MiB
 	app.Stages[model.StageKey{ID: 0}] = s
 	f := SpillRule{}.Eval(app)
 	if f.Severity != "critical" {
@@ -166,5 +194,26 @@ func TestSpillRuleEmbedsSparkConf(t *testing.T) {
 	}
 	if f.Evidence["spark_executor_memory"] != "8g" {
 		t.Errorf("evidence missing executor.memory: %+v", f.Evidence)
+	}
+	if got := f.Evidence["partitions"]; got != 200 {
+		t.Errorf("evidence partitions=%v want 200", got)
+	}
+	if got, _ := f.Evidence["est_partition_size_mb"].(float64); got < 4.99 || got > 5.01 {
+		t.Errorf("evidence est_partition_size_mb=%v want ~5.0", got)
+	}
+}
+
+func TestSpillRuleSkipsPartitionEvidenceWhenNumTasksZero(t *testing.T) {
+	app := model.NewApplication()
+	s := model.NewStage(0, 0, "no-tasks", 0, 0)
+	s.TotalSpillDisk = 12 * 1024 * 1024 * 1024
+	s.TotalShuffleReadBytes = 999 * 1024 * 1024
+	app.Stages[model.StageKey{ID: 0}] = s
+	f := SpillRule{}.Eval(app)
+	if _, ok := f.Evidence["partitions"]; ok {
+		t.Errorf("partitions should be omitted when num_tasks=0, evidence=%+v", f.Evidence)
+	}
+	if _, ok := f.Evidence["est_partition_size_mb"]; ok {
+		t.Errorf("est_partition_size_mb should be omitted when num_tasks=0, evidence=%+v", f.Evidence)
 	}
 }

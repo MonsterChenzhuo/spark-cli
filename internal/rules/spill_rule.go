@@ -32,6 +32,12 @@ func (SpillRule) Eval(app *model.Application) Finding {
 		"stage_id":      hot.ID,
 		"spill_disk_gb": round3(gb),
 	}
+	if hot.NumTasks > 0 {
+		evidence["partitions"] = hot.NumTasks
+		evidence["est_partition_size_mb"] = round3(
+			float64(hot.TotalShuffleReadBytes) / float64(hot.NumTasks) / (1024 * 1024),
+		)
+	}
 	shufflePartitions := confValue(app, "spark.sql.shuffle.partitions")
 	executorMem := confValue(app, "spark.executor.memory")
 	if shufflePartitions != "" {
