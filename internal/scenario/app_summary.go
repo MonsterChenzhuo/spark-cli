@@ -40,10 +40,16 @@ type AppSummaryRow struct {
 
 func AppSummaryColumns() []string {
 	return []string{
-		"app_id", "app_name", "duration_ms", "max_concurrent_executors",
-		"jobs_total", "stages_total", "tasks_total", "tasks_failed",
-		"total_input_gb", "total_shuffle_read_gb", "total_spill_disk_gb",
-		"gc_ratio",
+		"app_id", "app_name", "user", "duration_ms",
+		"executors_added", "executors_removed", "max_concurrent_executors",
+		"jobs_total", "jobs_failed",
+		"stages_total", "stages_failed", "stages_skipped",
+		"tasks_total", "tasks_failed",
+		"total_input_gb", "total_output_gb",
+		"total_shuffle_read_gb", "total_shuffle_write_gb",
+		"total_spill_disk_gb",
+		"total_gc_ms", "total_run_ms", "gc_ratio",
+		"top_stages_by_duration",
 	}
 }
 

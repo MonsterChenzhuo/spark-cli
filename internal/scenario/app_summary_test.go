@@ -1,10 +1,37 @@
 package scenario
 
 import (
+	"encoding/json"
+	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/opay-bigdata/spark-cli/internal/model"
 )
+
+// 契约: AppSummaryColumns() 必须与 AppSummaryRow JSON 字段完全对应,
+// 否则下游按 columns 解析 data 会丢字段。
+func TestAppSummaryColumnsMatchRowFields(t *testing.T) {
+	row := AppSummary(model.NewApplication())
+	b, err := json.Marshal(row)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	got := make([]string, 0, len(m))
+	for k := range m {
+		got = append(got, k)
+	}
+	sort.Strings(got)
+	want := append([]string{}, AppSummaryColumns()...)
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("columns mismatch\n got=%v\nwant=%v", got, want)
+	}
+}
 
 func TestAppSummaryComputesGCRatioAndTopStages(t *testing.T) {
 	app := model.NewApplication()
