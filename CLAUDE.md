@@ -27,7 +27,7 @@ Guidance for Claude Code (and other AI agents) working in this repository.
 | `internal/model/` | Application/Stage/Executor/Job 聚合模型 + Aggregator |
 | `internal/stats/` | t-digest 分位数封装 |
 | `internal/scenario/` | 场景纯函数 + Envelope 类型 |
-| `internal/rules/` | Rule 接口 + 5 条规则 (skew/gc/spill/failed/tiny) |
+| `internal/rules/` | Rule 接口 + 6 条规则 (skew/gc/spill/failed/tiny/idle_stage) |
 | `internal/output/` | JSON / Table / Markdown formatter |
 | `tests/e2e/` | 通过 `cmd.RunWith` 跑全场景 + 错误路径 |
 | `tests/testdata/tiny_app.json` | 10 行合成 EventLog,所有 E2E 共用 |
@@ -130,6 +130,8 @@ HDFS 用户名优先级 (高 → 低): `--hdfs-user` flag → `SPARK_CLI_HDFS_US
 - **负任务时长**: 某些 EventLog 的 `RunMs` 可能为负 (clock skew),`OnTaskEnd` 已 clamp 到 0,不要去掉。
 - **V2 解码空 Parts**: `eventlog.Open` 拒绝 `Parts == nil` 的 V2 LogSource,`multiCloser.Close` 是幂等的 —— 见 commit `5a98097`。
 - **Top-level App ID vs CLI App ID**: Envelope 顶层 `app_id` 来自 CLI 输入 + 文件名归一化;`data[].app_id` 来自 EventLog `SparkListenerApplicationStart` 事件。两者可能不同 (尤其当 fixture 与文件名不一致时),这是预期行为。
+- **AppSummary 列契约**: `scenario.AppSummaryColumns()` 必须与 `AppSummaryRow` 的 JSON tag 完全一一对应,下游按 `columns` 解析 `data` 才不会丢字段。`internal/scenario/app_summary_test.go` 的 `TestAppSummaryColumnsMatchRowFields` 通过反射守门,新增 row 字段时**同步**更新 columns 列表,**不要**只改一边。
+- **idle_stage 误报口径**: `IdleStageRule` 用 `MaxConcurrentExecutors` 估算有效 slot;若 EventLog 缺 `SparkListenerExecutorAdded` (例如局部日志),slot 估值会偏大导致误报偏低。阈值 `wall ≥ 30s`、`busy_ratio < 0.2` 是经验值,改阈值前先用真实日志回归。
 
 ## 文档与计划
 

@@ -18,7 +18,7 @@ type Rule interface {
 
 func All() []Rule {
 	return []Rule{
-		SkewRule{}, GCRule{}, SpillRule{}, FailedTasksRule{}, TinyTasksRule{},
+		SkewRule{}, GCRule{}, SpillRule{}, FailedTasksRule{}, TinyTasksRule{}, IdleStageRule{},
 	}
 }
 

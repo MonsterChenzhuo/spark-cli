@@ -9,10 +9,10 @@ import (
 func TestDiagnoseEmitsOKForNonTriggers(t *testing.T) {
 	app := model.NewApplication()
 	findings, sum := Diagnose(app)
-	if len(findings) != 5 {
-		t.Fatalf("findings=%d want 5", len(findings))
+	if len(findings) != 6 {
+		t.Fatalf("findings=%d want 6", len(findings))
 	}
-	if sum.OK != 5 {
-		t.Errorf("ok=%d want 5", sum.OK)
+	if sum.OK != 6 {
+		t.Errorf("ok=%d want 6", sum.OK)
 	}
 }
