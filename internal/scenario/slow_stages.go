@@ -20,6 +20,8 @@ type SlowStageRow struct {
 	ShuffleWriteGB float64 `json:"shuffle_write_gb"`
 	SpillDiskGB    float64 `json:"spill_disk_gb"`
 	GCMs           int64   `json:"gc_ms"`
+	SQLExecutionID int64   `json:"sql_execution_id"`
+	SQLDescription string  `json:"sql_description"`
 }
 
 func SlowStagesColumns() []string {
@@ -27,6 +29,7 @@ func SlowStagesColumns() []string {
 		"stage_id", "attempt", "name", "duration_ms", "tasks", "failed_tasks",
 		"p50_task_ms", "p99_task_ms", "input_gb", "shuffle_read_gb",
 		"shuffle_write_gb", "spill_disk_gb", "gc_ms",
+		"sql_execution_id", "sql_description",
 	}
 }
 
@@ -37,6 +40,7 @@ func SlowStages(app *model.Application, top int) []SlowStageRow {
 		if dur < 0 {
 			dur = 0
 		}
+		sqlID, sqlDesc := stageSQL(app, s.ID)
 		rows = append(rows, SlowStageRow{
 			StageID:        s.ID,
 			Attempt:        s.Attempt,
@@ -51,6 +55,8 @@ func SlowStages(app *model.Application, top int) []SlowStageRow {
 			ShuffleWriteGB: bytesToGB(s.TotalShuffleWriteBytes),
 			SpillDiskGB:    bytesToGB(s.TotalSpillDisk),
 			GCMs:           s.TotalGCMs,
+			SQLExecutionID: sqlID,
+			SQLDescription: sqlDesc,
 		})
 	}
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].DurationMs > rows[j].DurationMs })

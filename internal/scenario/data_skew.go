@@ -18,6 +18,8 @@ type DataSkewRow struct {
 	MaxInputMB      float64 `json:"max_input_mb"`
 	InputSkewFactor float64 `json:"input_skew_factor"`
 	Verdict         string  `json:"verdict"`
+	SQLExecutionID  int64   `json:"sql_execution_id"`
+	SQLDescription  string  `json:"sql_description"`
 }
 
 func DataSkewColumns() []string {
@@ -25,6 +27,7 @@ func DataSkewColumns() []string {
 		"stage_id", "name", "tasks", "p50_task_ms", "p99_task_ms",
 		"skew_factor", "median_input_mb", "max_input_mb",
 		"input_skew_factor", "verdict",
+		"sql_execution_id", "sql_description",
 	}
 }
 
@@ -60,6 +63,7 @@ func DataSkew(app *model.Application, top int) []DataSkewRow {
 		case f >= 4:
 			v = "warn"
 		}
+		sqlID, sqlDesc := stageSQL(app, s.ID)
 		out = append(out, DataSkewRow{
 			StageID:         s.ID,
 			Name:            s.Name,
@@ -71,6 +75,8 @@ func DataSkew(app *model.Application, top int) []DataSkewRow {
 			MaxInputMB:      bytesToMB(s.MaxInputBytes),
 			InputSkewFactor: round3(inputSkew),
 			Verdict:         v,
+			SQLExecutionID:  sqlID,
+			SQLDescription:  sqlDesc,
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
