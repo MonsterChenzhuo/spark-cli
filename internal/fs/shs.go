@@ -485,7 +485,7 @@ func (s *SHS) fetchAttempt(appID string) (attempt string, found bool, lastUpdate
 		return "", false, 0, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", false, 0, fmt.Errorf("shs: GET %s: status %d", metaURL, resp.StatusCode)
+		return "", false, 0, s.wrapStatusErr(metaURL, resp.StatusCode)
 	}
 	var meta struct {
 		ID       string `json:"id"`
@@ -549,7 +549,7 @@ func (s *SHS) fetchZip(appID, attempt, destPath string) (*zip.Reader, io.Closer,
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, "", fmt.Errorf("shs: GET %s: status %d", logsURL, resp.StatusCode)
+		return nil, nil, "", s.wrapStatusErr(logsURL, resp.StatusCode)
 	}
 
 	cl := resp.ContentLength
@@ -641,6 +641,31 @@ func (s *SHS) fetchZipToTemp(resp *http.Response) (*zip.Reader, io.Closer, strin
 		return nil, nil, "", fmt.Errorf("shs: parse zip: %w", err)
 	}
 	return zr, f, tmpPath, nil
+}
+
+// wrapStatusErr 把 SHS 返回的非 200 状态码包装成结构化 cerrors.Error,按
+// status code 类别给可执行 hint:
+//   - 5xx:server 自身故障(维护 / OOM / 重启),提示联系运维
+//   - 4xx 非 404(404 已被 fetchAttempt 单独当 found=false 处理):请求格式 /
+//     权限问题,提示检查 endpoint URL
+//   - 其他:回退通用 hint
+//
+// 历史用 fmt.Errorf 直接包装,丢失 hint chain — 上层 cerrors.WriteJSON 看到
+// non-cerrors.Error 默认 INTERNAL,严重错位。
+func (s *SHS) wrapStatusErr(url string, status int) error {
+	msg := fmt.Sprintf("shs: GET %s: status %d", url, status)
+	switch {
+	case status >= 500:
+		return cerrors.New(cerrors.CodeLogUnreadable, msg,
+			"Spark History Server 报 5xx,通常是服务自己故障(重启 / OOM / GC 风暴),联系运维或稍后重试")
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return cerrors.New(cerrors.CodeLogUnreadable, msg,
+			"SHS 拒绝访问;v1 仅支持匿名 HTTP,Bearer / Basic / Kerberos 未实现 —— 检查后端是否需要鉴权")
+	case status >= 400:
+		return cerrors.New(cerrors.CodeLogUnreadable, msg,
+			"SHS 拒绝请求;检查 --log-dirs shs://host:port 拼写,或 curl 同 URL 看完整响应体")
+	}
+	return cerrors.New(cerrors.CodeLogUnreadable, msg, "")
 }
 
 // wrapTimeout 把 net/http 错误升级成结构化 cerrors.Error,加可执行 hint:

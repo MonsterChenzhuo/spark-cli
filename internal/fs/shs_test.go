@@ -140,6 +140,50 @@ func shsBase(srv *httptest.Server) string {
 // SHSOptions{Quiet: true} 直接控制 stderr,不再读环境变量;每个测试构造 SHS
 // 时显式传 Quiet,免得依赖全局 env state。
 
+// SHS 非 200 / 非 404 状态码应当走结构化 cerrors.Error 带 hint(round-8 加的
+// wrapStatusErr 路径)。历史 fmt.Errorf 包装丢失 hint chain。
+func TestSHSWrapsHTTPStatusErrors(t *testing.T) {
+	cases := []struct {
+		name     string
+		status   int
+		wantHint string
+	}{
+		{"5xx server fault", http.StatusInternalServerError, "联系运维"},
+		{"503 unavailable", http.StatusServiceUnavailable, "联系运维"},
+		{"401 unauthorized", http.StatusUnauthorized, "Bearer / Basic / Kerberos 未实现"},
+		{"403 forbidden", http.StatusForbidden, "Bearer / Basic / Kerberos 未实现"},
+		{"400 bad request", http.StatusBadRequest, "检查 --log-dirs"},
+		{"418 teapot", http.StatusTeapot, "检查 --log-dirs"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/api/v1/applications/", func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+			})
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+
+			s := NewSHS(shsBase(srv), 5*time.Second, SHSOptions{Quiet: true})
+			defer func() { _ = s.Close() }()
+			_, err := s.List(shsBase(srv), "application_x")
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			var ce *cerrors.Error
+			if !stderrors.As(err, &ce) {
+				t.Fatalf("err type=%T want *cerrors.Error", err)
+			}
+			if ce.Code != cerrors.CodeLogUnreadable {
+				t.Errorf("code=%s want LOG_UNREADABLE", ce.Code)
+			}
+			if !strings.Contains(ce.Hint, tc.wantHint) {
+				t.Errorf("hint=%q should contain %q", ce.Hint, tc.wantHint)
+			}
+		})
+	}
+}
+
 // SHS HTTP 请求设置了 User-Agent(round-7 加),让 SHS 运维能从访问日志区分
 // spark-cli 流量。这里启个 httptest 服务器拦截两次 GET,断言 User-Agent 头
 // 形如 "spark-cli/0.1.2"。
