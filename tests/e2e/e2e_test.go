@@ -55,6 +55,23 @@ func TestE2E_AllScenarios_TinyApp(t *testing.T) {
 	}
 }
 
+// 用户输错命令(typo)应当报 USER_ERR (rc=2) 而非 INTERNAL (rc=1)。
+// 历史 bug:cobra "unknown command" 错误未被 wrap,默认走 INTERNAL,
+// 让用户以为撞了内部 bug。
+func TestE2E_UnknownCommandIsUserError(t *testing.T) {
+	cmd.ResetForTest()
+	var stdout, stderr bytes.Buffer
+	rc := cmd.RunWith(context.Background(),
+		[]string{"unknown-scenario", "application_x"},
+		&stdout, &stderr)
+	if rc != 2 {
+		t.Errorf("rc=%d want 2 (USER_ERR), stderr=%s", rc, stderr.String())
+	}
+	if !bytes.Contains(stderr.Bytes(), []byte(`"FLAG_INVALID"`)) {
+		t.Errorf("stderr missing FLAG_INVALID: %s", stderr.String())
+	}
+}
+
 func TestE2E_AppNotFound(t *testing.T) {
 	dir := t.TempDir()
 	cmd.ResetForTest()

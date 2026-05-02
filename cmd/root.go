@@ -3,6 +3,7 @@ package cmd
 
 import (
 	"context"
+	stderrors "errors"
 	"io"
 	"os"
 
@@ -38,6 +39,7 @@ func buildRoot() *cobra.Command {
 func Execute() int {
 	root := buildRoot()
 	if err := root.ExecuteContext(context.Background()); err != nil {
+		err = wrapCobraError(err)
 		cerrors.WriteJSON(os.Stderr, err)
 		if rc := cerrors.ExitCode(err); rc != cerrors.ExitOK {
 			return rc
@@ -55,6 +57,7 @@ func RunWith(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	root.SetOut(stdout)
 	root.SetErr(stderr)
 	if err := root.ExecuteContext(ctx); err != nil {
+		err = wrapCobraError(err)
 		cerrors.WriteJSON(stderr, err)
 		if rc := cerrors.ExitCode(err); rc != cerrors.ExitOK {
 			return rc
@@ -62,6 +65,18 @@ func RunWith(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return cerrors.ExitInternal
 	}
 	return scenarios.ExitCode()
+}
+
+// wrapCobraError 把 cobra 的"未知命令 / 未知 flag / required flag missing"等
+// 错误包装成 cerrors.Error{FLAG_INVALID},归到 USER_ERR (rc=2),不再被默认
+// 当成 INTERNAL (rc=1) 让用户翻文档以为撞了 bug。已经是 *cerrors.Error 的
+// 错误(scenarios runner / parseConfig 自己抛的)原样返回。
+func wrapCobraError(err error) error {
+	var ce *cerrors.Error
+	if stderrors.As(err, &ce) {
+		return err
+	}
+	return cerrors.New(cerrors.CodeFlagInvalid, err.Error(), "see `spark-cli --help`")
 }
 
 // ResetForTest clears global state between table-driven tests.

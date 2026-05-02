@@ -121,6 +121,31 @@ func TestDetectSourcesSHSTimeoutEnv(t *testing.T) {
 	}
 }
 
+// config show 必须打印 sql.detail 字段(round-2 加的 --sql-detail 配置)。
+// 默认值 truncate;cfg.SQL.Detail 为空时 render 显示 "truncate"(默认)。
+func TestRenderShowsSQLDetailDefault(t *testing.T) {
+	cfg := &config.Config{}
+	var buf bytes.Buffer
+	render(&buf, cfg, sources{
+		LogDirs: "default", HDFSUser: "default", HadoopConfDir: "default",
+		CacheDir: "default", SHSTimeout: "default", SQLDetail: "default", Timeout: "default",
+	})
+	if !strings.Contains(buf.String(), "sql.detail (default): truncate") {
+		t.Errorf("output missing sql.detail default line:\n%s", buf.String())
+	}
+}
+
+func TestDetectSourcesSQLDetailEnv(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SPARK_CLI_CONFIG_DIR", dir)
+	t.Setenv("SPARK_CLI_SQL_DETAIL", "full")
+	cfg := &config.Config{}
+	src := detectSources(cfg)
+	if src.SQLDetail != "env" {
+		t.Errorf("expected env label for sql.detail, got %q", src.SQLDetail)
+	}
+}
+
 func TestDetectSourcesEnvOverridesFile(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SPARK_CLI_CONFIG_DIR", dir)

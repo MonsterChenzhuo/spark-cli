@@ -18,6 +18,7 @@ type sources struct {
 	HadoopConfDir string
 	CacheDir      string
 	SHSTimeout    string
+	SQLDetail     string
 	Timeout       string
 }
 
@@ -39,7 +40,7 @@ func newShowCmd() *cobra.Command {
 }
 
 func detectSources(cfg *config.Config) sources {
-	src := sources{LogDirs: "default", HDFSUser: "default", HadoopConfDir: "default", CacheDir: "default", SHSTimeout: "default", Timeout: "default"}
+	src := sources{LogDirs: "default", HDFSUser: "default", HadoopConfDir: "default", CacheDir: "default", SHSTimeout: "default", SQLDetail: "default", Timeout: "default"}
 	dir := os.Getenv("SPARK_CLI_CONFIG_DIR")
 	if dir == "" {
 		home, _ := os.UserHomeDir()
@@ -62,6 +63,9 @@ func detectSources(cfg *config.Config) sources {
 		if cfg.SHS.Timeout != 0 {
 			src.SHSTimeout = "file"
 		}
+		if cfg.SQL.Detail != "" && cfg.SQL.Detail != "truncate" {
+			src.SQLDetail = "file"
+		}
 		src.Timeout = "file"
 	}
 	if os.Getenv("SPARK_CLI_LOG_DIRS") != "" {
@@ -78,6 +82,9 @@ func detectSources(cfg *config.Config) sources {
 	}
 	if os.Getenv("SPARK_CLI_SHS_TIMEOUT") != "" {
 		src.SHSTimeout = "env"
+	}
+	if os.Getenv("SPARK_CLI_SQL_DETAIL") != "" {
+		src.SQLDetail = "env"
 	}
 	if os.Getenv("SPARK_CLI_TIMEOUT") != "" {
 		src.Timeout = "env"
@@ -101,5 +108,10 @@ func render(w io.Writer, cfg *config.Config, src sources) {
 	}
 	fmt.Fprintf(w, "cache.dir (%s): %s\n", src.CacheDir, cacheDir)
 	fmt.Fprintf(w, "shs.timeout (%s): %s\n", src.SHSTimeout, cfg.SHS.Timeout)
+	sqlDetail := cfg.SQL.Detail
+	if sqlDetail == "" {
+		sqlDetail = "truncate"
+	}
+	fmt.Fprintf(w, "sql.detail (%s): %s\n", src.SQLDetail, sqlDetail)
 	fmt.Fprintf(w, "timeout (%s): %s\n", src.Timeout, cfg.Timeout)
 }
