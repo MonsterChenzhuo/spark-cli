@@ -3,6 +3,7 @@ package rules
 import (
 	"fmt"
 	"math"
+	"sort"
 
 	"github.com/opay-bigdata/spark-cli/internal/model"
 )
@@ -27,10 +28,22 @@ const extremeRatioBypass = 20.0
 // ok,DataSkew row 降到 mild。
 const tightTaskTimeRatio = 1.5
 
+// similarStagesLimit: evidence.similar_stages 最多收录的非 primary 候选数。
+// 4 条够覆盖一次诊断里"同一规则击中多 stage"的常见场景,又不让 evidence 爆炸。
+const similarStagesLimit = 4
+
+type skewCandidate struct {
+	s         *model.Stage
+	f         float64
+	p50       float64
+	p99       float64
+	inputSkew float64
+	wallShare float64
+}
+
 func (SkewRule) Eval(app *model.Application) Finding {
-	var bestF float64
-	var bestStage *model.Stage
-	var bestP50, bestP99, bestInputSkew float64
+	// 阶段 1:收集所有过 4 道闸门(succeeded、≥50 任务、p99 ≥ 1s、非 idle、f ≥ 4)的候选
+	var cands []skewCandidate
 	for _, s := range app.Stages {
 		if s.Status != "succeeded" || int64(s.TaskDurations.Count()) < 50 {
 			continue
@@ -54,35 +67,76 @@ func (SkewRule) Eval(app *model.Application) Finding {
 		}
 		inputSkew := float64(s.MaxInputBytes) / medianB
 		f := math.Max(p99/median, inputSkew)
-		if f > bestF {
-			bestF = f
-			bestStage = s
-			bestP50 = median
-			bestP99 = p99
-			bestInputSkew = inputSkew
+		if f < 4 {
+			continue
+		}
+		cands = append(cands, skewCandidate{
+			s:         s,
+			f:         f,
+			p50:       median,
+			p99:       p99,
+			inputSkew: inputSkew,
+			wallShare: wallShare(s, app),
+		})
+	}
+	if len(cands) == 0 {
+		return okFinding(SkewRule{}.ID(), SkewRule{}.Title())
+	}
+	// 阶段 2:选 primary —— 优先 wall_share 最大(代表本规则最值得修的 stage),
+	// 平局或全 0(app.DurationMs==0)时按 skew_factor 倒序。原本按 f 排序漏报
+	// "wall 大但 ratio 不是最极端"的 stage,这里直接用业务意义最强的指标排。
+	sort.SliceStable(cands, func(i, j int) bool {
+		if cands[i].wallShare != cands[j].wallShare {
+			return cands[i].wallShare > cands[j].wallShare
+		}
+		return cands[i].f > cands[j].f
+	})
+	primary := cands[0]
+
+	// 紧致闸门:primary 的任务时长 P99/P50 < 1.5 → 整体降为 ok。
+	// 即使 input_skew_factor 很大(常见伪影:单个极小任务把 min 拉爆),也不消耗用户注意力。
+	if primary.p50 > 0 && primary.p99/primary.p50 < tightTaskTimeRatio {
+		return okFinding(SkewRule{}.ID(), SkewRule{}.Title())
+	}
+
+	sev := skewSeverity(primary.f, primary.inputSkew, primary.p50, primary.p99, primary.wallShare)
+	evidence := map[string]any{
+		"stage_id":          primary.s.ID,
+		"skew_factor":       round3(primary.f),
+		"p50_task_ms":       int64(primary.p50),
+		"p99_task_ms":       int64(primary.p99),
+		"input_skew_factor": round3(primary.inputSkew),
+	}
+	if primary.wallShare > 0 {
+		evidence["wall_share"] = round3(primary.wallShare)
+	}
+
+	// similar_stages:其余候选,按 wall_share 倒序仅收 wall_share > 0 的(为 0 时
+	// 排序无意义,放进去 agent 也用不上),最多 similarStagesLimit 条。
+	// diagnose.collectTopFindingsByImpact / computeFindingsWallCoverage 会跨 primary +
+	// similar_stages 计算本规则真实覆盖的 wall 占比,避免 SkewRule 历史上"只报一条"
+	// 让 top_findings_by_impact 严重低估真实瓶颈(stage 7 wall_share 0.26 上榜,
+	// stage 14 wall_share 0.92 直接看不到)。
+	if len(cands) > 1 {
+		var similar []map[string]any
+		for _, c := range cands[1:] {
+			if c.wallShare <= 0 {
+				continue
+			}
+			similar = append(similar, map[string]any{
+				"stage_id":    c.s.ID,
+				"wall_share":  round3(c.wallShare),
+				"skew_factor": round3(c.f),
+			})
+			if len(similar) >= similarStagesLimit {
+				break
+			}
+		}
+		if len(similar) > 0 {
+			evidence["similar_stages"] = similar
 		}
 	}
-	if bestStage == nil || bestF < 4 {
-		return okFinding(SkewRule{}.ID(), SkewRule{}.Title())
-	}
-	// 紧致闸门:任务时长 P99/P50 < 1.5 → 任务时长本身就均匀,不存在真正的倾斜。
-	// 即使 input_skew_factor 很大(常见伪影:某个 task min 接近 0 把 ratio 拉爆),
-	// 也直接报 ok,不消耗用户注意力。
-	if bestP50 > 0 && bestP99/bestP50 < tightTaskTimeRatio {
-		return okFinding(SkewRule{}.ID(), SkewRule{}.Title())
-	}
-	ws := wallShare(bestStage, app)
-	sev := skewSeverity(bestF, bestInputSkew, bestP50, bestP99, ws)
-	evidence := map[string]any{
-		"stage_id":          bestStage.ID,
-		"skew_factor":       round3(bestF),
-		"p50_task_ms":       int64(bestP50),
-		"p99_task_ms":       int64(bestP99),
-		"input_skew_factor": round3(bestInputSkew),
-	}
-	if ws > 0 {
-		evidence["wall_share"] = round3(ws)
-	}
+
 	aqe := confValue(app, "spark.sql.adaptive.enabled")
 	skewJoin := confValue(app, "spark.sql.adaptive.skewJoin.enabled")
 	if aqe != "" {
@@ -96,7 +150,7 @@ func (SkewRule) Eval(app *model.Application) Finding {
 		Severity:   sev,
 		Title:      SkewRule{}.Title(),
 		Evidence:   evidence,
-		Suggestion: skewSuggestion(bestStage.ID, int64(bestP50), int64(bestP99), aqe, skewJoin),
+		Suggestion: skewSuggestion(primary.s.ID, int64(primary.p50), int64(primary.p99), aqe, skewJoin),
 	}
 }
 

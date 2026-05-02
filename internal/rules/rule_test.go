@@ -118,6 +118,88 @@ func TestSkewRuleStaysCriticalOnExtremeRatio(t *testing.T) {
 	}
 }
 
+// 历史 bug:SkewRule 选 primary stage 用 skew_factor 倒序,导致 wall_share 92% 的
+// stage 14 被 wall_share 26% 但 ratio 极端的 stage 7 盖过。primary 现在改用
+// wall_share 倒序(平局回退 skew_factor),覆盖 agent 的实际 ROI 期望。
+func TestSkewRulePicksMaxWallShareAsPrimary(t *testing.T) {
+	app := model.NewApplication()
+	app.DurationMs = 1_000_000
+
+	// stage 1: wall_share 0.3,但 skew_factor 极高(应当被打到 similar_stages)
+	low := model.NewStage(1, 0, "low-wall-extreme-ratio", 100, 0)
+	low.SubmitMs = 0
+	low.CompleteMs = 300_000 // wall_share = 0.3
+	low.Status = "succeeded"
+	for i := 0; i < 95; i++ {
+		low.TaskDurations.Add(100)
+		low.TaskInputBytes.Add(1024)
+	}
+	for i := 0; i < 5; i++ {
+		low.TaskDurations.Add(3000) // p99/p50 = 30
+		low.TaskInputBytes.Add(50 * 1024 * 1024)
+	}
+	low.MaxInputBytes = 50 * 1024 * 1024
+	app.Stages[model.StageKey{ID: 1}] = low
+
+	// stage 2: wall_share 0.7,skew_factor 中等(应当被选为 primary)
+	high := model.NewStage(2, 0, "high-wall-mid-ratio", 100, 0)
+	high.SubmitMs = 0
+	high.CompleteMs = 700_000 // wall_share = 0.7
+	high.Status = "succeeded"
+	for i := 0; i < 95; i++ {
+		high.TaskDurations.Add(1000)
+		high.TaskInputBytes.Add(10 * 1024 * 1024)
+	}
+	for i := 0; i < 5; i++ {
+		high.TaskDurations.Add(15_000) // p99/p50 = 15
+		high.TaskInputBytes.Add(20 * 1024 * 1024)
+	}
+	high.MaxInputBytes = 20 * 1024 * 1024 // input_skew = 2
+	app.Stages[model.StageKey{ID: 2}] = high
+
+	f := SkewRule{}.Eval(app)
+	if got, _ := f.Evidence["stage_id"].(int); got != 2 {
+		t.Fatalf("primary stage_id=%v want 2 (max wall_share even with smaller skew_factor)", got)
+	}
+	if ws, _ := f.Evidence["wall_share"].(float64); ws < 0.69 || ws > 0.71 {
+		t.Errorf("primary wall_share=%v want ~0.7", ws)
+	}
+	sims, ok := f.Evidence["similar_stages"].([]map[string]any)
+	if !ok || len(sims) != 1 {
+		t.Fatalf("similar_stages=%v want 1 entry covering stage 1", f.Evidence["similar_stages"])
+	}
+	if got, _ := sims[0]["stage_id"].(int); got != 1 {
+		t.Errorf("similar_stages[0].stage_id=%v want 1", got)
+	}
+	if ws, _ := sims[0]["wall_share"].(float64); ws < 0.29 || ws > 0.31 {
+		t.Errorf("similar_stages[0].wall_share=%v want ~0.3", ws)
+	}
+}
+
+func TestSkewRuleSimilarStagesAbsentWhenSingleHit(t *testing.T) {
+	app := model.NewApplication()
+	app.DurationMs = 1_000_000
+	s := model.NewStage(1, 0, "only-one", 100, 0)
+	s.SubmitMs = 0
+	s.CompleteMs = 500_000
+	s.Status = "succeeded"
+	for i := 0; i < 95; i++ {
+		s.TaskDurations.Add(100)
+		s.TaskInputBytes.Add(1024)
+	}
+	for i := 0; i < 5; i++ {
+		s.TaskDurations.Add(3000)
+		s.TaskInputBytes.Add(50 * 1024 * 1024)
+	}
+	s.MaxInputBytes = 50 * 1024 * 1024
+	app.Stages[model.StageKey{ID: 1}] = s
+
+	f := SkewRule{}.Eval(app)
+	if _, ok := f.Evidence["similar_stages"]; ok {
+		t.Errorf("similar_stages should be absent for single-stage skew, evidence=%+v", f.Evidence)
+	}
+}
+
 func TestSkewRuleSkipsIdleStageCandidate(t *testing.T) {
 	app := model.NewApplication()
 	app.MaxConcurrentExecutors = 10

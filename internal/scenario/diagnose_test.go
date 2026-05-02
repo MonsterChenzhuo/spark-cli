@@ -121,6 +121,105 @@ func TestDiagnoseFindingsWallCoverageSumsUniqueStages(t *testing.T) {
 	}
 }
 
+// SkewRule 现在在多 stage 命中时会塞 similar_stages,top_findings_by_impact 必须把
+// primary + similar_stages 都纳入计算,取 max wall_share 作为本 finding 的影响代表。
+// 历史 bug:SkewRule 只报一个 stage,导致 top_findings_by_impact 的 wall_share 严重低估。
+func TestDiagnoseTopFindingMaxAcrossSimilarStages(t *testing.T) {
+	app := model.NewApplication()
+	app.DurationMs = 1_000_000
+
+	// stage 1: wall_share 0.3,极端 ratio(进 similar_stages)
+	s1 := model.NewStage(1, 0, "skew-low-wall", 100, 0)
+	s1.SubmitMs = 0
+	s1.CompleteMs = 300_000
+	s1.Status = "succeeded"
+	for i := 0; i < 95; i++ {
+		s1.TaskDurations.Add(100)
+		s1.TaskInputBytes.Add(1024)
+	}
+	for i := 0; i < 5; i++ {
+		s1.TaskDurations.Add(3000)
+		s1.TaskInputBytes.Add(50 * 1024 * 1024)
+	}
+	s1.MaxInputBytes = 50 * 1024 * 1024
+	app.Stages[model.StageKey{ID: 1}] = s1
+
+	// stage 2: wall_share 0.7,中等 ratio(成为 primary)
+	s2 := model.NewStage(2, 0, "skew-high-wall", 100, 0)
+	s2.SubmitMs = 0
+	s2.CompleteMs = 700_000
+	s2.Status = "succeeded"
+	for i := 0; i < 95; i++ {
+		s2.TaskDurations.Add(1000)
+		s2.TaskInputBytes.Add(10 * 1024 * 1024)
+	}
+	for i := 0; i < 5; i++ {
+		s2.TaskDurations.Add(15_000)
+		s2.TaskInputBytes.Add(20 * 1024 * 1024)
+	}
+	s2.MaxInputBytes = 20 * 1024 * 1024
+	app.Stages[model.StageKey{ID: 2}] = s2
+
+	_, sum := Diagnose(app)
+	var tf TopFinding
+	for _, x := range sum.TopFindingsByImpact {
+		if x.RuleID == "data_skew" {
+			tf = x
+			break
+		}
+	}
+	if tf.RuleID == "" {
+		t.Fatalf("data_skew not in top_findings_by_impact: %+v", sum.TopFindingsByImpact)
+	}
+	if tf.WallShare < 0.69 || tf.WallShare > 0.71 {
+		t.Errorf("data_skew wall_share=%v want ~0.7 (max across primary + similar_stages)", tf.WallShare)
+	}
+}
+
+// findings_wall_coverage 必须把 SkewRule 的 similar_stages 一并纳入 perStage 去重 sum,
+// 否则历史上 SkewRule 只报一个 stage,coverage 会严重低估。
+func TestDiagnoseFindingsWallCoverageIncludesSimilarStages(t *testing.T) {
+	app := model.NewApplication()
+	app.DurationMs = 1_000_000
+
+	// 两个 skew stage,wall_share 0.3 / 0.4(都进 SkewRule 的候选,primary 为后者)
+	s1 := model.NewStage(1, 0, "skew-1", 100, 0)
+	s1.SubmitMs = 0
+	s1.CompleteMs = 300_000
+	s1.Status = "succeeded"
+	for i := 0; i < 95; i++ {
+		s1.TaskDurations.Add(100)
+		s1.TaskInputBytes.Add(1024)
+	}
+	for i := 0; i < 5; i++ {
+		s1.TaskDurations.Add(3000)
+		s1.TaskInputBytes.Add(50 * 1024 * 1024)
+	}
+	s1.MaxInputBytes = 50 * 1024 * 1024
+	app.Stages[model.StageKey{ID: 1}] = s1
+
+	s2 := model.NewStage(2, 0, "skew-2", 100, 0)
+	s2.SubmitMs = 0
+	s2.CompleteMs = 400_000
+	s2.Status = "succeeded"
+	for i := 0; i < 95; i++ {
+		s2.TaskDurations.Add(1000)
+		s2.TaskInputBytes.Add(10 * 1024 * 1024)
+	}
+	for i := 0; i < 5; i++ {
+		s2.TaskDurations.Add(15_000)
+		s2.TaskInputBytes.Add(20 * 1024 * 1024)
+	}
+	s2.MaxInputBytes = 20 * 1024 * 1024
+	app.Stages[model.StageKey{ID: 2}] = s2
+
+	_, sum := Diagnose(app)
+	// 0.3 + 0.4 = 0.7,容差 1pp
+	if got := sum.FindingsWallCoverage; got < 0.69 || got > 0.71 {
+		t.Errorf("findings_wall_coverage=%v want ~0.7 (0.3 + 0.4 across SkewRule similar_stages)", got)
+	}
+}
+
 func TestDiagnoseFindingsWallCoverageDedupesSameStage(t *testing.T) {
 	app := model.NewApplication()
 	app.DurationMs = 1_000_000
