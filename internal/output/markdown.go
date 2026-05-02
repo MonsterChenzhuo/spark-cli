@@ -57,15 +57,32 @@ func renderMDKeyValue(w io.Writer, cols []string, row map[string]any) {
 	fmt.Fprintln(w, "| field | value |")
 	fmt.Fprintln(w, "| --- | --- |")
 	for _, c := range cols {
-		fmt.Fprintln(w, "| "+c+" | "+stringify(row[c])+" |")
+		fmt.Fprintln(w, "| "+escapeMDCell(c)+" | "+escapeMDCell(stringify(row[c]))+" |")
 	}
+}
+
+// escapeMDCell 把单元格内可能破坏 markdown 表格语法的字符转义。`|` 是表格列
+// 分隔符,SQL 文本(`select a | b from t`)/ 用户 stage name / suggestion 都可能
+// 含它,不转义会让 markdown renderer 误以为多了一列、整张表格错位。`\n` 同样
+// 破坏 row 边界,统一替换成空格。
+func escapeMDCell(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "|", "\\|")
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	return s
 }
 
 func renderMD(w io.Writer, cols []string, rows []map[string]any) {
 	if len(cols) == 0 {
 		return
 	}
-	fmt.Fprintln(w, "| "+strings.Join(cols, " | ")+" |")
+	escapedCols := make([]string, len(cols))
+	for i, c := range cols {
+		escapedCols[i] = escapeMDCell(c)
+	}
+	fmt.Fprintln(w, "| "+strings.Join(escapedCols, " | ")+" |")
 	seps := make([]string, len(cols))
 	for i := range cols {
 		seps[i] = "---"
@@ -74,7 +91,7 @@ func renderMD(w io.Writer, cols []string, rows []map[string]any) {
 	for _, row := range rows {
 		cells := make([]string, len(cols))
 		for i, c := range cols {
-			cells[i] = stringify(row[c])
+			cells[i] = escapeMDCell(stringify(row[c]))
 		}
 		fmt.Fprintln(w, "| "+strings.Join(cells, " | ")+" |")
 	}

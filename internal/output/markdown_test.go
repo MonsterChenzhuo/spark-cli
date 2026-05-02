@@ -118,6 +118,42 @@ func TestMarkdownHeaderFormatAppDuration(t *testing.T) {
 	}
 }
 
+// 单元格内 `|` 必须转义成 `\|`,否则 SQL 文本(`select a | b ...`)、stage name
+// 等含 pipe 的内容会破坏 markdown 表格语法,renderer 误以为多了列、整张表错位。
+// 换行符 `\n` 同样破坏 row 边界,统一替换成空格。
+func TestMarkdownEscapesPipeAndNewlineInCells(t *testing.T) {
+	env := scenario.Envelope{
+		Scenario: "slow-stages",
+		Columns:  []string{"name", "sql"},
+		Data: []any{
+			map[string]any{"name": "stage|with|pipes", "sql": "select a\nfrom t | where x"},
+			map[string]any{"name": "ok", "sql": "select 1"},
+		},
+	}
+	var buf bytes.Buffer
+	if err := WriteMarkdown(&buf, env); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	// pipe 应当被转义成 \|
+	if !strings.Contains(out, "stage\\|with\\|pipes") {
+		t.Errorf("pipe in cell not escaped:\n%s", out)
+	}
+	if !strings.Contains(out, "select a from t \\| where x") {
+		t.Errorf("newline + pipe not handled:\n%s", out)
+	}
+	// 表格 row 应当仍然只有 2 列(每行 3 个 |:开头/中间/结尾)
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "|") && !strings.HasPrefix(line, "| --- |") {
+			// 反斜杠转义后字面 | 数应当严格 = 3
+			lit := strings.Count(line, "|") - strings.Count(line, "\\|")
+			if lit != 3 {
+				t.Errorf("row %q has %d unescaped pipes (want 3)", line, lit)
+			}
+		}
+	}
+}
+
 func TestMarkdownProducesPipedTable(t *testing.T) {
 	env := scenario.Envelope{
 		Scenario: "slow-stages",
