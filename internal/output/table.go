@@ -10,8 +10,8 @@ import (
 )
 
 func WriteTable(w io.Writer, env scenario.Envelope) error {
-	fmt.Fprintf(w, "# %s  app=%s  events=%d  elapsed=%dms\n",
-		env.Scenario, env.AppID, env.ParsedEvents, env.ElapsedMs)
+	fmt.Fprintf(w, "# %s  app=%s  events=%d  elapsed=%dms%s\n",
+		env.Scenario, env.AppID, env.ParsedEvents, env.ElapsedMs, formatAppDuration(env.AppDurationMs))
 	if env.Scenario == "gc-pressure" {
 		return writeGCSegments(w, env)
 	}

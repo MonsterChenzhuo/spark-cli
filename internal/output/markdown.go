@@ -10,8 +10,8 @@ import (
 
 func WriteMarkdown(w io.Writer, env scenario.Envelope) error {
 	fmt.Fprintf(w, "## %s — `%s`\n\n", env.Scenario, env.AppID)
-	fmt.Fprintf(w, "_log: `%s` · format: %s · compression: %s · events: %d · elapsed: %dms_\n\n",
-		env.LogPath, env.LogFormat, env.Compression, env.ParsedEvents, env.ElapsedMs)
+	fmt.Fprintf(w, "_log: `%s` · format: %s · compression: %s · events: %d · elapsed: %dms%s_\n\n",
+		env.LogPath, env.LogFormat, env.Compression, env.ParsedEvents, env.ElapsedMs, formatAppDuration(env.AppDurationMs))
 	if env.Scenario == "gc-pressure" {
 		colMap := toMap(env.Columns)
 		dataMap := toMap(env.Data)
@@ -35,6 +35,19 @@ func WriteMarkdown(w io.Writer, env scenario.Envelope) error {
 	}
 	renderMD(w, cols, rows)
 	return nil
+}
+
+// formatAppDuration 把 envelope.app_duration_ms 渲染成 markdown / table 头部
+// 可读字串。0(没 ApplicationEnd 事件)时返回空 — 头部行直接省略这部分。
+func formatAppDuration(ms int64) string {
+	if ms <= 0 {
+		return ""
+	}
+	if ms < 60_000 {
+		return fmt.Sprintf(" · app: %.1fs", float64(ms)/1000.0)
+	}
+	mins := float64(ms) / 60_000.0
+	return fmt.Sprintf(" · app: %.1fmin", mins)
 }
 
 // renderMDKeyValue 把单 row 渲染成 "field | value" 两列纵向表格。nested

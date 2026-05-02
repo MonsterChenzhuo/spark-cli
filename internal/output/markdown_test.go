@@ -85,6 +85,39 @@ func TestMarkdownMultiRowStaysHorizontal(t *testing.T) {
 	}
 }
 
+// markdown / table header 应当显示应用 wall 时长(让人类一眼知道跑了多久);
+// app_duration_ms == 0 时不应显示这部分。
+func TestMarkdownHeaderFormatAppDuration(t *testing.T) {
+	cases := []struct {
+		ms   int64
+		want string
+	}{
+		{0, "no app duration"}, // 缺失:不应包含 "app:" 标记
+		{30_000, "app: 30.0s"},
+		{4_230_802, "app: 70.5min"},
+	}
+	for _, tc := range cases {
+		env := scenario.Envelope{
+			Scenario:      "diagnose",
+			Columns:       []string{"x"},
+			Data:          []any{},
+			AppDurationMs: tc.ms,
+		}
+		var buf bytes.Buffer
+		if err := WriteMarkdown(&buf, env); err != nil {
+			t.Fatal(err)
+		}
+		out := buf.String()
+		if tc.ms == 0 {
+			if strings.Contains(out, "app:") {
+				t.Errorf("ms=0 should not show app: marker, got:\n%s", out)
+			}
+		} else if !strings.Contains(out, tc.want) {
+			t.Errorf("ms=%d should contain %q, got:\n%s", tc.ms, tc.want, out)
+		}
+	}
+}
+
 func TestMarkdownProducesPipedTable(t *testing.T) {
 	env := scenario.Envelope{
 		Scenario: "slow-stages",
