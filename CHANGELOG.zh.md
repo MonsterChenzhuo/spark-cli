@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Agent 友好性一揽子改进(2026-05-02 真实日志 dogfooding 驱动)
+
+- **BREAKING — `sql_executions` 顶层 map description 默认截断到前 500 个 rune**(UTF-8 安全,中文 SQL 不会切坏),过长追加 `...(truncated, total <N> chars)` 标记。生产 ETL SQL 单条常 5K+ tokens,长 agent 会话经常被一份 envelope 吃光上下文。`--sql-detail=full`(或 `SPARK_CLI_SQL_DETAIL=full`、yaml `sql.detail: full`)还原原始 SQL,`--sql-detail=none` 让整段 map 缺失。
+- **`data_skew` finding 改用 `wall_share` 选 primary stage**(平局回退 `skew_factor`),其余过闸门的候选按 wall_share 倒序进 `evidence.similar_stages: [{stage_id, wall_share, skew_factor}]`(最多 4 条,只收 wall_share > 0)。历史按 `skew_factor` 排,导致 wall_share 92% 的 stage 14 被 wall_share 26% 但 ratio 极端的 stage 7 盖过 —— 真实瓶颈漏报。`summary.top_findings_by_impact` 与 `findings_wall_coverage` 都跨 primary + similar_stages 聚合。
+- **`SkewRule.isIdleStage` 加 `NumTasks > 2*MaxConcurrentExecutors` 守门**:任务多但因 spill / shuffle 阻塞导致 `busy_ratio` 低的 stage(实测 1000 task / 6 executor / busy_ratio 0.07)不再被误当 driver-side idle 排除。`IdleStageRule` 自身保持原阈值 —— driver-side stage 通常 NumTasks 很少。
+- **`summary.findings_wall_coverage` cap 1.0**。Stage 在 wall 上并行,naive sum 可能 > 1.0(实测 4.337);cap 之后字段直观对应"finding 触及范围占应用 wall 的比例"。
+- **`top_findings_by_impact[].wall_share` 取 primary + similar_stages 的 max**,而非 sum,避免并行 stage 时溢出 1.0;同时仍能反映本规则击中的最严重 stage。
+- **`app-summary.top_io_bound_stages`** —— 与 `top_busy_stages` 互补的新切面,过滤 `busy_ratio < 0.8` 且(`spill_disk_gb >= 0.5` 或 `shuffle_read_gb >= 1.0`),按 wall_share 倒序 limit 3。spill 主导的真瓶颈 stage(busy_ratio 因等盘 IO 被压低,但 wall 占比大)以前被 `top_busy_stages` 阈值过滤掉,agent 完全看不到。`app-summary` 现在输出三个互补切面(by-duration / top-busy / top-io-bound),三个一起看才不漏瓶颈。
+- **SHS zip 持久化磁盘缓存**。下载的 zip 落到 `<cache_dir>/shs/<host_safe>/<appID>_<lastUpdated>.zip`(原子 tmp+rename),后续 CLI 调用同一 appID 时只发 metadata JSON 比 lastUpdated,命中即直接读盘,旧 attempt zip 自动 sweep。损坏文件自动恢复(删除 + 重新下载)。`--no-cache` 退化为一次性 system temp。实际效果:warm `app-summary` / `slow-stages` 在 1 秒内返回,不再等 4-7 秒重下几 GB zip。
+- **`SPARK_CLI_QUIET` 默认 TTY-aware**。未设时按 stdout 是否 TTY 决定(管道 / 重定向 / agent 调用默认静默,交互终端默认显示);`1`/`true` 强制静默,`0`/`false` 强制显示。原本注册了但没接线的 `--no-progress` flag 现在真正工作,优先级高于环境变量与 TTY 检测。`NewSHS` 不再自己读 env,由 `cmd/scenarios.resolveQuiet` 集中决断后通过 `SHSOptions{Quiet: bool}` 注入。
+- **`severity` 现明确文档化为"诊断置信度",不是"ROI 优先级"**。永远按 `top_findings_by_impact[].wall_share` 排优先级 —— `disk_spill warn (wall_share 0.5)` 实际比 `data_skew critical (wall_share 0.05)` 更值得修;按 severity 字符串排会错位。文档此处明确说明,免得 agent 被误导。
+
 ### UX 与诊断覆盖度修复(基于真实作业反馈)
 
 - **SHS 默认 timeout 60s → 5m**,且 timeout 错误统一升级成结构化 `LOG_UNREADABLE`,`hint` 直接告知 `--shs-timeout` / `SPARK_CLI_SHS_TIMEOUT`。生产 EventLog zip 几个 GB 是常态,旧默认 60s 让首次诊断直接撞墙、再去翻文档。

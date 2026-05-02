@@ -100,11 +100,9 @@ spark-cli diagnose application_1771556836054_861265 \
 - 仅 HTTP;**不支持** TLS、Basic Auth、Bearer Token、Kerberos。
 - 超时优先级(高 → 低):`--shs-timeout` flag → `SPARK_CLI_SHS_TIMEOUT` 环境变量
   → `config.yaml` 的 `shs.timeout` → 默认 `5m`。timeout 失败会返回结构化 `LOG_UNREADABLE`,`hint` 直接告诉用户去调这个 flag —— 首次失败后无需翻文档。
-- 每个 appID 第一次下载会在 stderr 打 `spark-cli: downloading EventLog zip from SHS for <id> ...` 与 `ready in <duration>` 两行提示,免得用户以为 CLI 挂了。`SPARK_CLI_QUIET=1` 全局静默(供脚本/测试)。
-- `Content-Length` ≤ 256 MiB 时整包读到内存;更大或长度未知时落到 `os.CreateTemp`,
-  进程退出时自动清理。
-- **已知限制**:即使应用解析缓存命中,每次调用仍要下载 zip ——
-  Locator 必须读 zip 内容才能判定 V1 / V2 布局。持久化 zip 缓存在 roadmap 上。
+- 进度提示优先级:`--no-progress` flag → `SPARK_CLI_QUIET`(`1/true` 静默 / `0/false` 强制显示) → stdout TTY 检测;**agent 重定向 stdout 时默认静默,交互终端默认显示**。
+- **持久化磁盘 zip 缓存**(自 v0.x):下载的 zip 落到 `<cache_dir>/shs/<host>/<appID>_<lastUpdated>.zip`(原子 tmp+rename),后续 CLI 调用同一 appID 时只发 metadata JSON 比 lastUpdated,命中即直接读盘。同 appID 的旧 attempt zip 在每次成功下载后自动 sweep。`--no-cache` 退化为一次性 system temp。
+- 不开磁盘缓存时:`Content-Length` ≤ 256 MiB 整包读到内存,更大或长度未知时落 `os.CreateTemp` 进程退出清理;开磁盘缓存时一律走 tmp+rename 落盘。
 
 ### 缓存
 
@@ -130,7 +128,11 @@ spark-cli diagnose application_1771556836054_861265 \
 | `spark-cli data-skew <appId>` | 倾斜 Stage |
 | `spark-cli gc-pressure <appId>` | 每 Stage / Executor 的 GC 占比 |
 
-均支持 `--top N`、`--format json|table|markdown`、`--dry-run`、`--log-dirs`。
+均支持 `--top N`、`--format json|table|markdown`、`--dry-run`、`--log-dirs`、
+`--cache-dir`、`--no-cache`、`--shs-timeout`、`--no-progress`、
+`--sql-detail truncate|full|none`(默认 `truncate` 把 SQL description 截到前
+500 个 rune 加 `...(truncated, total <N> chars)`;`full` 还原原始 SQL,`none`
+让整段 `sql_executions` 缺失)。
 
 ## 给 AI agent
 
@@ -158,8 +160,10 @@ spark-cli diagnose application_1771556836054_861265 \
 
 各场景特例:
 - `gc-pressure` 的 `data` 是对象 `{by_stage: [...], by_executor: [...]}`,不是数组。
-- `diagnose` 顶层带 `summary: {critical, warn, ok, top_findings_by_impact?, findings_wall_coverage?}`。`top_findings_by_impact` 按 `wall_share` 倒序;`findings_wall_coverage` 是这些 wall_share 按 stage 去重后加和。两者在 `app.DurationMs == 0` 时整段 omitempty。**coverage < 0.05 ⇒ 瓶颈在作业结构层,跳到 `app-summary.top_busy_stages` 看真热点,别继续下钻 finding**。
-- `slow-stages` 与 `data-skew` 顶层带 `sql_executions: {<id>: <description>}`,row 通过 `sql_execution_id` 引用。**description 文本不再嵌入每行**。DataFrame 作业那种 callsite 占位(`org.apache.spark.SparkContext.getCallSite(...)`)会被过滤,所有条目都是噪音时整段 map 走 `omitempty` 缺失。
+- `diagnose` 顶层带 `summary: {critical, warn, ok, top_findings_by_impact?, findings_wall_coverage?}`。`top_findings_by_impact` 按 `wall_share` 倒序(单条 finding 取 primary + similar_stages 的 max);`findings_wall_coverage` 是这些 wall_share 按 stage 去重后加和,**cap 到 1.0**(stage 在 wall 上并行时 naive sum 可能 > 1)。两者在 `app.DurationMs == 0` 时整段 omitempty。**coverage < 0.05 ⇒ 瓶颈在作业结构层,跳到 `app-summary.top_busy_stages` / `top_io_bound_stages` 看真热点,别继续下钻 finding**。**`severity` 是诊断置信度,不是 ROI** —— 永远以 `top_findings_by_impact` 排序为准。
+- `data_skew` finding 在多 stage 命中时,evidence 含 `similar_stages: [{stage_id, wall_share, skew_factor}]`(按 wall_share 倒序最多 4 条);primary `stage_id` 选 wall_share 最大的(平局回退 skew_factor)。`top_findings_by_impact` 与 `findings_wall_coverage` 都跨 primary + similar_stages 聚合 —— agent 直接读 evidence 就能看到完整列表,不必再回头跑 `data-skew`。
+- `app-summary` 同时输出三个互补 stage 切面:`top_stages_by_duration`(按 wall 倒序,含 driver-side 等待)、`top_busy_stages`(`busy_ratio > 0.8` 真 CPU 热点)、**`top_io_bound_stages`**(`busy_ratio < 0.8` 但 `spill >= 0.5 GB` 或 `shuffle_read >= 1 GB`,IO 阻塞但 wall 大的 stage)。**只看 `top_busy_stages` 会错过 spill 主导的最大瓶颈**,三个切面合起来才不漏。
+- `slow-stages` 与 `data-skew` 顶层带 `sql_executions: {<id>: <description>}`,row 通过 `sql_execution_id` 引用。**description 默认 truncate 到前 500 个 rune**(过长追加 `...(truncated, total <N> chars)`),`--sql-detail=full` 还原原始 SQL,`--sql-detail=none` 整段 omit。DataFrame 作业那种 callsite 占位(`org.apache.spark.SparkContext.getCallSite(...)`)会被过滤,所有条目都是噪音时整段 map 走 `omitempty` 缺失。
 
 错误走 stderr,格式为 `{"error":{"code":..., "message":..., "hint":...}}`。退出码: `0` 成功 · `1` 内部错误 · `2` 用户错误 · `3` IO 不可达。
 

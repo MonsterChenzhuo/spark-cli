@@ -99,12 +99,9 @@ spark-cli diagnose application_1771556836054_861265 \
 - The latest numeric `attemptId` is auto-selected.
 - HTTP only; **no** TLS, Basic Auth, Bearer token, or Kerberos in v1.
 - Timeout precedence (highest → lowest): `--shs-timeout` flag → `SPARK_CLI_SHS_TIMEOUT` env → `shs.timeout` in YAML → default `5m`. Timeout errors return `LOG_UNREADABLE` with a `hint` naming the flag — no need to grep docs after the first failure.
-- First fetch per appID prints `spark-cli: downloading EventLog zip from SHS for <id> ...` to stderr followed by a `ready in <duration>` line. Set `SPARK_CLI_QUIET=1` to silence (intended for scripts / tests).
-- Zip bodies up to 256 MiB are decoded in memory; larger or unknown-length
-  responses spill to a tempfile that is removed when the process exits.
-- **Known caveat:** even a parsed-application cache hit still downloads the
-  zip on every invocation, because the locator must inspect zip contents to
-  decide V1 vs V2 layout. A persistent on-disk zip cache is on the roadmap.
+- Progress lines (`spark-cli: downloading EventLog zip from SHS ...` / `ready in <duration>`) follow `--no-progress` flag → `SPARK_CLI_QUIET` env (`1/true` 静默, `0/false` 强制显示) → stdout TTY 检测;**agent 重定向 stdout 时默认静默,交互终端默认显示**。
+- **Persistent on-disk zip cache** (since v0.x): the downloaded zip is written to `<cache_dir>/shs/<host>/<appID>_<lastUpdated>.zip` (atomic tmp+rename) and reused across CLI invocations. Subsequent commands on the same appID only fetch the cheap metadata JSON to compare `lastUpdated`; on a hit the zip is read from disk. Stale attempts (older `lastUpdated` for the same appID) are swept on each successful download. `--no-cache` falls back to a one-shot system tempfile.
+- Zip bodies up to 256 MiB without disk caching are decoded in memory; with disk caching enabled the response always lands on disk via tmp+rename.
 
 ### Cache
 
@@ -137,7 +134,11 @@ mismatch, write errors) degrade silently to "miss + reparse".
 | `spark-cli data-skew <appId>` | Skewed stages |
 | `spark-cli gc-pressure <appId>` | GC ratio per stage / executor |
 
-All accept `--top N`, `--format json|table|markdown`, `--dry-run`, `--log-dirs`.
+All accept `--top N`, `--format json|table|markdown`, `--dry-run`, `--log-dirs`,
+`--cache-dir`, `--no-cache`, `--shs-timeout`, `--no-progress`,
+`--sql-detail truncate|full|none` (default `truncate` — first 500 runes of the
+SQL description with a `...(truncated, total <N> chars)` marker; `full` keeps
+the original; `none` omits the entire `sql_executions` map).
 
 ## For AI agents
 
@@ -165,8 +166,10 @@ The repo ships `.claude/skills/spark/SKILL.md`. Claude Code auto-loads it when p
 
 Per-scenario extras:
 - `gc-pressure` returns `data` as `{by_stage: [...], by_executor: [...]}` (object, not array).
-- `diagnose` returns `summary: {critical, warn, ok, top_findings_by_impact?, findings_wall_coverage?}`. `top_findings_by_impact` is an array of `{rule_id, severity, wall_share}` ranked desc by impact; `findings_wall_coverage` is the sum of those wall shares deduped by stage. Both omit when `app.DurationMs == 0`. Coverage `< 0.05` ⇒ bottleneck is structural — read `app-summary.top_busy_stages` instead of drilling further.
-- `slow-stages` and `data-skew` return `sql_executions: {<id>: <description>}` at the top level — rows reference it via `sql_execution_id`. Description text is **not** repeated per row anymore. Callsite-only entries (DataFrame jobs whose description and details are both `org.apache.spark.SparkContext.getCallSite(...)` placeholders) are filtered; if every entry would be noise the entire map is omitted.
+- `diagnose` returns `summary: {critical, warn, ok, top_findings_by_impact?, findings_wall_coverage?}`. `top_findings_by_impact` ranks findings by `wall_share` (max across primary + `similar_stages`); `findings_wall_coverage` is the deduped (max-per-stage) sum **capped at 1.0** (parallel stages can naively sum > 1.0). Both omit when `app.DurationMs == 0`. Coverage `< 0.05` ⇒ bottleneck is structural — read `app-summary.top_busy_stages` / `top_io_bound_stages` instead of drilling further. **`severity` is diagnostic confidence, not ROI** — always sort by `top_findings_by_impact` first.
+- `data_skew` finding evidence carries `similar_stages: [{stage_id, wall_share, skew_factor}]` when more than one stage qualifies (primary picks the one with the largest `wall_share`, ties resolved by `skew_factor`). `top_findings_by_impact` and `findings_wall_coverage` aggregate across primary + similar_stages — agents can read evidence directly instead of re-running `data-skew`.
+- `app-summary` returns three orthogonal stage views: `top_stages_by_duration` (raw wall, includes driver-side waits), `top_busy_stages` (`busy_ratio > 0.8` only — true CPU hotspots), and `top_io_bound_stages` (`busy_ratio < 0.8` but `spill >= 0.5 GB` or `shuffle_read >= 1 GB` — IO-stalled stages that `top_busy_stages` filters out). **All three together** prevent missing the real bottleneck.
+- `slow-stages` and `data-skew` return `sql_executions: {<id>: <description>}` at the top level — rows reference it via `sql_execution_id`. Descriptions are **truncated to the first 500 runes by default** (use `--sql-detail=full` to restore the original). Callsite-only entries (DataFrame jobs whose description and details are both `org.apache.spark.SparkContext.getCallSite(...)` placeholders) are filtered; if every entry would be noise the entire map is omitted.
 
 Errors → stderr as `{"error":{"code":..., "message":..., "hint":...}}`. Exit codes: `0` success · `1` internal · `2` user · `3` IO.
 
