@@ -159,7 +159,7 @@ spark-cli diagnose application_1771556836054_861265 \
 ```
 
 各场景特例:
-- `gc-pressure` 的 `data` 是对象 `{by_stage: [...], by_executor: [...]}`,不是数组。
+- `gc-pressure` 的 `data` 是 executor 行的扁平数组(`[{executor_id, host, tasks, run_ms, gc_ms, gc_ratio, verdict}, ...]`);早期 spec 设想的 `{by_stage, by_executor}` 双段已收敛为单段。
 - `diagnose` 顶层带 `summary: {critical, warn, ok, top_findings_by_impact?, findings_wall_coverage?}`。`top_findings_by_impact` 按 `wall_share` 倒序(单条 finding 取 primary + similar_stages 的 max);`findings_wall_coverage` 是这些 wall_share 按 stage 去重后加和,**cap 到 1.0**(stage 在 wall 上并行时 naive sum 可能 > 1)。两者在 `app.DurationMs == 0` 时整段 omitempty。**coverage < 0.05 ⇒ 瓶颈在作业结构层,跳到 `app-summary.top_busy_stages` / `top_io_bound_stages` 看真热点,别继续下钻 finding**。**`severity` 是诊断置信度,不是 ROI** —— 永远以 `top_findings_by_impact` 排序为准。
 - `data_skew` finding 在多 stage 命中时,evidence 含 `similar_stages: [{stage_id, wall_share, skew_factor}]`(按 wall_share 倒序最多 4 条);primary `stage_id` 选 wall_share 最大的(平局回退 skew_factor)。`top_findings_by_impact` 与 `findings_wall_coverage` 都跨 primary + similar_stages 聚合 —— agent 直接读 evidence 就能看到完整列表,不必再回头跑 `data-skew`。
 - `app-summary` 同时输出三个互补 stage 切面:`top_stages_by_duration`(按 wall 倒序,含 driver-side 等待)、`top_busy_stages`(`busy_ratio > 0.8` 真 CPU 热点)、**`top_io_bound_stages`**(`busy_ratio < 0.8` 但 `spill >= 0.5 GB` 或 `shuffle_read >= 1 GB`,IO 阻塞但 wall 大的 stage)。**只看 `top_busy_stages` 会错过 spill 主导的最大瓶颈**,三个切面合起来才不漏。

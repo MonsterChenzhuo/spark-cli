@@ -22,7 +22,7 @@ The user must provide a Spark `applicationId` (e.g. `application_1735000000_0001
 
 2. **Drill down based on findings**:
    - `data_skew` critical → 优先**直接读 finding evidence 的 `similar_stages: [{stage_id, wall_share, skew_factor}]`**(SkewRule 在多 stage 命中时输出;primary stage_id 选 wall_share 最大那个,其余进 similar_stages 按 wall_share 倒序最多 4 条)。需要更详细排序时再 `spark-cli data-skew <appId> --top 10`。每行带 `sql_execution_id` + `wall_share`;**SQL description 文本在 envelope 顶层 `sql_executions: {<id>: <description>}` 一份共享,不再嵌入每行**;**默认 truncate 到前 500 个 rune**(`--sql-detail=full` 还原完整 SQL,`--sql-detail=none` 整段 omit)。对 DataFrame 作业自动回退到 `details` 首行;若 description / details 都是 callsite 形态则整行被过滤,所有条目都是噪音时整段 map 走 `omitempty` 缺失。**四道闸门**降级 critical:**(0) 任务时长紧致**:`p99/p50 < 1.5` → 规则直接 `ok`、行 verdict `mild`(任务时长本身就均匀,不存在真倾斜);(1) `input_skew_factor < 1.2` 且 `p99/p50 < 20`(均匀输入抖动)→ warn;(2) stage `wall_share < 1%` 且 `p99/p50 < 20`(短 stage 长尾收益太低)→ DataSkew row verdict 直接降为 mild;(3) 命中 `idle_stage` 条件(wall ≥ 30s + busy_ratio < 0.2 且 `NumTasks <= 2*MaxConcurrentExecutors`)整个跳过 —— 任务多但 IO 阻塞导致 busy_ratio 低的 stage 不再被误当 idle。极端 ratio (≥ 20) 不被任何闸门遮蔽。
-   - `gc_pressure` critical → `spark-cli gc-pressure <appId>` (look at `by_executor`). The `gc_pressure` finding now embeds `spark_executor_memory` in evidence — quote it before suggesting tuning.
+   - `gc_pressure` critical → `spark-cli gc-pressure <appId>`(`data` 是 executor 行扁平数组,直接读 `data[].gc_ratio` 找压力高的 executor)。The `gc_pressure` finding now embeds `spark_executor_memory` in evidence — quote it before suggesting tuning.
    - `disk_spill` triggered → `spark-cli slow-stages <appId>` and read `spill_disk_gb`. Evidence 现在还带 `partitions`(stage 实际 task 数)和 `est_partition_size_mb`(`shuffle_read / num_tasks` 转 MB)—— 建议时把 `est_partition_size_mb` 跟 `spark_executor_memory` 比较,直接给出"partition size 已经超 executor 内存,把 shuffle.partitions 翻到 X"这种带数字的建议,不要套模板。
    - `failed_tasks` triggered → if `evidence.blacklisted_hosts` is non-empty, those hosts have been excluded ≥2 times; report them by name and tell the user the failure looks node-level (hardware/network/disk), not random task flakiness. Otherwise ask for driver logs.
    - `tiny_tasks` triggered → 分区过细,建议 `coalesce` / 调低 `spark.sql.shuffle.partitions`
@@ -43,7 +43,7 @@ The user must provide a Spark `applicationId` (e.g. `application_1735000000_0001
 |---|---|---|
 | 应用全局 | `envelope.gc_ratio`(`app-summary` 顶层) | `total_gc_ms / total_run_ms` |
 | stage 内 | `slow-stages[].gc_ratio` | `sum(task_gc) / sum(task_run)` |
-| executor 累加 | `gc-pressure.by_executor[].gc_ratio` | `executor.TotalGCMs / executor.TotalRunMs` |
+| executor 累加 | `gc-pressure.data[].gc_ratio`(executor 行) | `executor.TotalGCMs / executor.TotalRunMs` |
 
 ## Envelope contract
 
@@ -65,7 +65,7 @@ Every command emits one JSON object on stdout:
 ```
 
 Exceptions:
-- `gc-pressure` returns `data: {by_stage: [...], by_executor: [...]}` (the only object-shaped data field)
+- `gc-pressure` returns `data: [{executor_id, host, tasks, run_ms, gc_ms, gc_ratio, verdict}, ...]` —— 跟其他场景一致是数组(每行一个 executor),不再像早期 spec 那样有 by_stage / by_executor 双段
 - `diagnose` adds `summary: {critical, warn, ok, top_findings_by_impact?, findings_wall_coverage?}`. `top_findings_by_impact` is an array of `{rule_id, severity, wall_share}` sorted desc by `wall_share` — `wall_share` 取**该 finding 命中所有 stage(primary + similar_stages)的 max** 而非 sum,直观对应"本规则击中的最严重 stage"。`findings_wall_coverage` is the deduped (max-per-stage) sum of those wall shares **capped at 1.0**(stage 在 wall 上并行,naive sum 可能 > 1.0,语义上不应超 100%);**< 0.05 means the bottleneck is structural — read `app-summary.top_busy_stages` / `top_io_bound_stages` instead of drilling findings**. Both fields missing (omitempty) when `app.DurationMs == 0` (no ApplicationEnd event).
 - `data_skew` finding evidence 在多 stage 命中时含 `similar_stages: [{stage_id, wall_share, skew_factor}]`(按 wall_share 倒序最多 4 条),`top_findings_by_impact` 与 `findings_wall_coverage` 都会聚合 primary + similar_stages 的覆盖度 —— **看到 similar_stages 时直接读它,不必再回头跑 data-skew 找补**。
 - `slow-stages` and `data-skew` add `sql_executions: {<int64 id>: <description>}` at the top level. Rows reference the id via `sql_execution_id`; **rows no longer carry `sql_description`** — look it up in the top-level map. **Description 默认 truncate 到前 500 个 rune**,过长追加 `...(truncated, total <N> chars)`;`--sql-detail=full` 还原完整 SQL,`--sql-detail=none` 整段 omit。Empty/absent (omitempty) when no stage links to a SQL execution **or every linked execution carries only callsite noise** (DataFrame jobs whose description and details are both `org.apache.spark.SparkContext.getCallSite(...)`-style placeholders).
