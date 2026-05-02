@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/opay-bigdata/spark-cli/cmd/cachecmd"
 	"github.com/opay-bigdata/spark-cli/cmd/configcmd"
 	"github.com/opay-bigdata/spark-cli/cmd/scenarios"
 	cerrors "github.com/opay-bigdata/spark-cli/internal/errors"
@@ -44,6 +45,7 @@ func buildRoot() *cobra.Command {
 	scenarios.Register(root)
 	root.AddCommand(newVersionCmd())
 	root.AddCommand(configcmd.New())
+	root.AddCommand(cachecmd.New())
 	return root
 }
 
