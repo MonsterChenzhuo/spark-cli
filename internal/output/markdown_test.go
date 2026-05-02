@@ -154,6 +154,59 @@ func TestMarkdownEscapesPipeAndNewlineInCells(t *testing.T) {
 	}
 }
 
+// envelope.sql_executions 应当被 markdown formatter 渲染成 ### sql_executions
+// 段落 + 每个 id 的代码块。historic markdown 输出只渲染主表,SQL 文本只在 JSON
+// 模式可见 —— 但人类用 markdown 看 stage 时正需要 SQL 辅助判断。
+func TestMarkdownRendersSQLExecutionsSection(t *testing.T) {
+	env := scenario.Envelope{
+		Scenario: "slow-stages",
+		Columns:  []string{"stage_id"},
+		Data: []any{
+			map[string]any{"stage_id": 14},
+		},
+		SQLExecutions: map[int64]string{
+			5: "select * from t",
+			2: "SHOW DATABASES",
+		},
+	}
+	var buf bytes.Buffer
+	if err := WriteMarkdown(&buf, env); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "### sql_executions") {
+		t.Errorf("missing sql_executions section:\n%s", out)
+	}
+	if !strings.Contains(out, "**id=2**") || !strings.Contains(out, "**id=5**") {
+		t.Errorf("missing id markers:\n%s", out)
+	}
+	// 应当按 id 升序;id=2 在 id=5 之前
+	idx2 := strings.Index(out, "id=2")
+	idx5 := strings.Index(out, "id=5")
+	if idx2 == -1 || idx5 == -1 || idx2 > idx5 {
+		t.Errorf("ids should be sorted ascending:\n%s", out)
+	}
+}
+
+// envelope.sql_executions 为 nil / 空 map 时不应输出段落,避免 markdown 末尾
+// 多一个空 ### sql_executions 标题。
+func TestMarkdownOmitsEmptySQLExecutionsSection(t *testing.T) {
+	env := scenario.Envelope{
+		Scenario: "diagnose",
+		Columns:  []string{"rule_id"},
+		Data: []any{
+			map[string]any{"rule_id": "data_skew"},
+		},
+	}
+	var buf bytes.Buffer
+	if err := WriteMarkdown(&buf, env); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "### sql_executions") {
+		t.Errorf("expected no sql_executions section, got:\n%s", buf.String())
+	}
+}
+
 func TestMarkdownProducesPipedTable(t *testing.T) {
 	env := scenario.Envelope{
 		Scenario: "slow-stages",

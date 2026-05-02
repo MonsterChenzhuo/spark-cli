@@ -77,6 +77,39 @@ func TestTableMultiRowStaysHorizontal(t *testing.T) {
 	}
 }
 
+// envelope.sql_executions 应当被 table formatter 渲染成段落,每个 id 一行。
+// historic table 输出只渲染主表 —— 但人类用 table 看 stage 时也需要 SQL 文本。
+func TestTableRendersSQLExecutionsSection(t *testing.T) {
+	env := scenario.Envelope{
+		Scenario: "slow-stages",
+		Columns:  []string{"stage_id"},
+		Data: []any{
+			map[string]any{"stage_id": 14},
+		},
+		SQLExecutions: map[int64]string{
+			5: "select * from t",
+			2: "SHOW DATABASES",
+		},
+	}
+	var buf bytes.Buffer
+	if err := WriteTable(&buf, env); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "=== sql_executions ===") {
+		t.Errorf("missing section header:\n%s", out)
+	}
+	if !strings.Contains(out, "id=2:") || !strings.Contains(out, "id=5:") {
+		t.Errorf("missing id rows:\n%s", out)
+	}
+	// 应当按 id 升序
+	idx2 := strings.Index(out, "id=2:")
+	idx5 := strings.Index(out, "id=5:")
+	if idx2 == -1 || idx5 == -1 || idx2 > idx5 {
+		t.Errorf("ids should be sorted ascending:\n%s", out)
+	}
+}
+
 func TestTableRendersGCDoubleSegment(t *testing.T) {
 	env := scenario.Envelope{
 		Scenario: "gc-pressure",
