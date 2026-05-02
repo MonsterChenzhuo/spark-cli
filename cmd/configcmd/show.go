@@ -1,6 +1,7 @@
 package configcmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -23,7 +24,8 @@ type sources struct {
 }
 
 func newShowCmd() *cobra.Command {
-	return &cobra.Command{
+	var format string
+	c := &cobra.Command{
 		Use:   "show",
 		Short: "Print the effective configuration",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -33,10 +35,19 @@ func newShowCmd() *cobra.Command {
 			}
 			src := detectSources(cfg)
 			config.ApplyEnv(cfg)
-			render(cmd.OutOrStdout(), cfg, src)
-			return nil
+			switch format {
+			case "json":
+				return renderJSON(cmd.OutOrStdout(), cfg, src)
+			case "", "text":
+				render(cmd.OutOrStdout(), cfg, src)
+				return nil
+			default:
+				return fmt.Errorf("unknown --format %q (use text|json)", format)
+			}
 		},
 	}
+	c.Flags().StringVar(&format, "format", "", "Output format: text (default) | json")
+	return c
 }
 
 func detectSources(cfg *config.Config) sources {
@@ -90,6 +101,35 @@ func detectSources(cfg *config.Config) sources {
 		src.Timeout = "env"
 	}
 	return src
+}
+
+// renderJSON 输出 effective configuration 的结构化形态。每个字段含 value
+// 与 source(file / env / default),让 agent 一次拿到"现在生效什么、来自哪"。
+func renderJSON(w io.Writer, cfg *config.Config, src sources) error {
+	cacheDir := cfg.Cache.Dir
+	if cacheDir == "" {
+		cacheDir = cache.DefaultDir()
+	}
+	sqlDetail := cfg.SQL.Detail
+	if sqlDetail == "" {
+		sqlDetail = "truncate"
+	}
+	type field struct {
+		Source string `json:"source"`
+		Value  any    `json:"value"`
+	}
+	out := map[string]field{
+		"log_dirs":      {Source: src.LogDirs, Value: cfg.LogDirs},
+		"hdfs.user":     {Source: src.HDFSUser, Value: cfg.HDFS.User},
+		"hdfs.conf_dir": {Source: src.HadoopConfDir, Value: cfg.HDFS.ConfDir},
+		"cache.dir":     {Source: src.CacheDir, Value: cacheDir},
+		"shs.timeout":   {Source: src.SHSTimeout, Value: cfg.SHS.Timeout.String()},
+		"sql.detail":    {Source: src.SQLDetail, Value: sqlDetail},
+		"timeout":       {Source: src.Timeout, Value: cfg.Timeout.String()},
+	}
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	return enc.Encode(out)
 }
 
 func render(w io.Writer, cfg *config.Config, src sources) {
