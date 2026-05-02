@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/opay-bigdata/spark-cli/cmd"
@@ -126,6 +127,26 @@ func TestE2E_AllScenariosEmitAppDurationMs(t *testing.T) {
 			}
 			if v, ok := d.(float64); !ok || v <= 0 {
 				t.Errorf("scenario=%s app_duration_ms=%v want > 0", sc, d)
+			}
+		})
+	}
+}
+
+// `spark-cli --version` 与 `spark-cli version` 输出一致(round-8 把 --version
+// flag 接到 cobra Version 字段 + custom template,免得用户输 --version 报
+// FLAG_INVALID)。
+func TestE2E_VersionFlagAndCommandMatch(t *testing.T) {
+	for _, args := range [][]string{{"--version"}, {"version"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			cmd.ResetForTest()
+			var stdout, stderr bytes.Buffer
+			rc := cmd.RunWith(context.Background(), args, &stdout, &stderr)
+			if rc != 0 {
+				t.Fatalf("rc=%d stderr=%s", rc, stderr.String())
+			}
+			out := stdout.String()
+			if !strings.HasPrefix(out, "spark-cli ") {
+				t.Errorf("output=%q want prefix \"spark-cli \"", out)
 			}
 		})
 	}

@@ -24,12 +24,18 @@ func init() {
 
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:           "spark-cli",
-		Short:         "Diagnose Spark applications by parsing EventLog — designed for Claude Code.",
-		Long:          `spark-cli locates a Spark EventLog by applicationId (local or HDFS), parses it once, and emits structured JSON for AI agents.`,
+		Use:   "spark-cli",
+		Short: "Diagnose Spark applications by parsing EventLog — designed for Claude Code.",
+		Long:  `spark-cli locates a Spark EventLog by applicationId (local or HDFS), parses it once, and emits structured JSON for AI agents.`,
+		// Version 让 `spark-cli --version` 自动 work(原本只有 version subcommand);
+		// 跟 version subcommand 用同一字符串避免漂移。
+		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+	// 默认 template "<name> version <ver>\n",改成跟 version subcommand 一致的
+	// "spark-cli <ver>\n",免得 --version 与 version 输出格式不同。
+	root.SetVersionTemplate("spark-cli {{.Version}}\n")
 	return root
 }
 
