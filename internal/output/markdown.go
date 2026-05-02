@@ -22,8 +22,30 @@ func WriteMarkdown(w io.Writer, env scenario.Envelope) error {
 		}
 		return nil
 	}
-	renderMD(w, toStringSlice(env.Columns), toRowSlice(env.Data))
+	cols := toStringSlice(env.Columns)
+	rows := toRowSlice(env.Data)
+	// app-summary 是 single-row 多列(含 nested 数组)场景,横向表格 25 列 +
+	// nested JSON 单格几百字符宽,人类不可读。换成 key | value 纵向表格,
+	// nested 字段单元格仍是 JSON 但每个字段独占一行,扫读时不会被超宽列推走。
+	// 多 row 场景(slow-stages / data-skew / diagnose)仍然走横向表格 —— 横向
+	// 适合"扫多个 stage / finding 选感兴趣的"的浏览动作。
+	if len(rows) == 1 {
+		renderMDKeyValue(w, cols, rows[0])
+		return nil
+	}
+	renderMD(w, cols, rows)
 	return nil
+}
+
+// renderMDKeyValue 把单 row 渲染成 "field | value" 两列纵向表格。nested
+// array / map 仍用 inline JSON(stringify)塞 value 列,但每个字段独占一行,
+// 视觉上比横向 25 列表格清爽得多。
+func renderMDKeyValue(w io.Writer, cols []string, row map[string]any) {
+	fmt.Fprintln(w, "| field | value |")
+	fmt.Fprintln(w, "| --- | --- |")
+	for _, c := range cols {
+		fmt.Fprintln(w, "| "+c+" | "+stringify(row[c])+" |")
+	}
 }
 
 func renderMD(w io.Writer, cols []string, rows []map[string]any) {

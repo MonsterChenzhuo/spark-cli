@@ -34,6 +34,57 @@ func TestMarkdownRendersStructRowsViaJSONRoundTrip(t *testing.T) {
 	}
 }
 
+// app-summary 是 single-row 多列(含 nested 数组)场景,旧代码塞 25 列横向
+// 表格 + nested JSON 单元格几百字符,人类不可读。改成 single-row → vertical
+// "field | value" 表格;多 row 场景仍走横向表格。
+func TestMarkdownSingleRowGoesVertical(t *testing.T) {
+	env := scenario.Envelope{
+		Scenario: "app-summary",
+		Columns:  []string{"app_id", "duration_ms", "top_stages"},
+		Data: []any{
+			map[string]any{"app_id": "app_x", "duration_ms": 1234,
+				"top_stages": []any{map[string]any{"stage_id": 1}}},
+		},
+	}
+	var buf bytes.Buffer
+	if err := WriteMarkdown(&buf, env); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "| field | value |") {
+		t.Errorf("expected vertical table, got:\n%s", out)
+	}
+	if !strings.Contains(out, "| app_id | app_x |") {
+		t.Errorf("missing app_id row:\n%s", out)
+	}
+	if !strings.Contains(out, "| duration_ms | 1234 |") {
+		t.Errorf("missing duration_ms row:\n%s", out)
+	}
+}
+
+func TestMarkdownMultiRowStaysHorizontal(t *testing.T) {
+	env := scenario.Envelope{
+		Scenario: "slow-stages",
+		Columns:  []string{"stage_id", "duration_ms"},
+		Data: []any{
+			map[string]any{"stage_id": 1, "duration_ms": 100},
+			map[string]any{"stage_id": 2, "duration_ms": 200},
+		},
+	}
+	var buf bytes.Buffer
+	if err := WriteMarkdown(&buf, env); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	// 多 row 不应触发 vertical 模式
+	if strings.Contains(out, "| field | value |") {
+		t.Errorf("multi-row should stay horizontal, got:\n%s", out)
+	}
+	if !strings.Contains(out, "| stage_id | duration_ms |") {
+		t.Errorf("missing horizontal header:\n%s", out)
+	}
+}
+
 func TestMarkdownProducesPipedTable(t *testing.T) {
 	env := scenario.Envelope{
 		Scenario: "slow-stages",
