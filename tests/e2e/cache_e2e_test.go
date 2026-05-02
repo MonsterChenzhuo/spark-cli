@@ -90,6 +90,80 @@ func TestE2ECacheInvalidatesOnMtimeChange(t *testing.T) {
 	}
 }
 
+// `spark-cli cache list --format json --cache-dir <tmp>` 应当输出结构化清单,
+// 经过 cache 写入后能看到 application gob.zst entry。round-12 加守门,
+// 确保 cache subcommand 与 root --cache-dir flag 串起来。
+func TestE2ECacheListReadsCustomCacheDir(t *testing.T) {
+	logsDir := t.TempDir()
+	cacheDir := t.TempDir()
+	writeTinyLog(t, logsDir)
+
+	// 先跑一次 app-summary 写入缓存
+	args := []string{"app-summary", "application_1_1",
+		"--log-dirs", "file://" + logsDir,
+		"--cache-dir", cacheDir,
+		"--format", "json",
+	}
+	if _, _ = runCLI(t, args); t.Failed() {
+		return
+	}
+
+	// cache list --format json 拿到非空 entries
+	cmd.ResetForTest()
+	var stdout, stderr bytes.Buffer
+	rc := cmd.RunWith(context.Background(),
+		[]string{"cache", "list", "--cache-dir", cacheDir, "--format", "json"},
+		&stdout, &stderr)
+	if rc != 0 {
+		t.Fatalf("rc=%d stderr=%s", rc, stderr.String())
+	}
+	var listOut map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &listOut); err != nil {
+		t.Fatalf("not json: %v\n%s", err, stdout.String())
+	}
+	if total, _ := listOut["total"].(float64); total < 1 {
+		t.Errorf("expected >= 1 cache entry, got %v\n%s", total, stdout.String())
+	}
+	if dir, _ := listOut["dir"].(string); dir != cacheDir {
+		t.Errorf("dir=%q want %q", dir, cacheDir)
+	}
+}
+
+// `cache clear --dry-run --cache-dir <tmp>` 应当报告"would remove"但不真删。
+func TestE2ECacheClearDryRunDoesNotDelete(t *testing.T) {
+	logsDir := t.TempDir()
+	cacheDir := t.TempDir()
+	writeTinyLog(t, logsDir)
+
+	args := []string{"app-summary", "application_1_1",
+		"--log-dirs", "file://" + logsDir,
+		"--cache-dir", cacheDir,
+		"--format", "json",
+	}
+	_, _ = runCLI(t, args)
+
+	beforeEntries, _ := os.ReadDir(cacheDir)
+	if len(beforeEntries) == 0 {
+		t.Fatal("cache should have entries after first run")
+	}
+
+	cmd.ResetForTest()
+	var stdout, stderr bytes.Buffer
+	rc := cmd.RunWith(context.Background(),
+		[]string{"cache", "clear", "--cache-dir", cacheDir, "--dry-run"},
+		&stdout, &stderr)
+	if rc != 0 {
+		t.Fatalf("rc=%d stderr=%s", rc, stderr.String())
+	}
+	if !bytes.Contains(stdout.Bytes(), []byte("would remove")) {
+		t.Errorf("expected 'would remove' marker:\n%s", stdout.String())
+	}
+	afterEntries, _ := os.ReadDir(cacheDir)
+	if len(afterEntries) != len(beforeEntries) {
+		t.Errorf("dry-run should not delete: before=%d after=%d", len(beforeEntries), len(afterEntries))
+	}
+}
+
 func TestE2ENoCacheFlagSkipsWrite(t *testing.T) {
 	logsDir := t.TempDir()
 	cacheDir := t.TempDir()

@@ -99,6 +99,12 @@ Errors go to **stderr** as `{"error": {"code": "...", "message": "...", "hint": 
 - SHS zip 持久化:同一 appID 的 zip 在 `<cache_dir>/shs/<host>/<appID>_<lastUpdated>.zip` 复用,attempt 更新时旧文件自动 sweep;`--no-cache` 旁路。
 - `SPARK_CLI_QUIET` — `1`/`true` 强制静默,`0`/`false` 强制保留进度,**未设时按 stdout 是否 TTY 自动决定**(管道 / 重定向 / agent 调用默认静默,交互终端默认显示)。
 
+## Utility commands
+
+- `spark-cli config show [--format json]` — print effective configuration with source labels (`file` / `env` / `default` / `flag`). JSON 形态适合 agent 一次拿到完整状态,而不必分别读 yaml + env 比对生效值。
+- `spark-cli cache list [--format json]` — 列所有 cached parsed application + SHS zip(按 size 降序),应用 cache hit 慢于预期时先看这个。
+- `spark-cli cache clear [--app <id>] [--dry-run]` — 删全部 cache 或只删指定 app 的 entry;`--dry-run` 先看会删什么再确认。
+
 ## Setup if missing
 
 If `spark-cli` is not installed, fetch the appropriate release:
