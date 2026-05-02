@@ -40,17 +40,17 @@ func ResetForTest() { state = defaultState() }
 
 // RegisterFlags binds the persistent flags spark-cli scenarios need on root.
 func RegisterFlags(root *cobra.Command) {
-	root.PersistentFlags().StringVar(&state.LogDirs, "log-dirs", state.LogDirs, "Comma-separated list of EventLog dirs (file:// or hdfs:// URIs)")
+	root.PersistentFlags().StringVar(&state.LogDirs, "log-dirs", state.LogDirs, "Comma-separated EventLog sources: file:///path | hdfs://nn:port/path | shs://host:port (Spark History Server REST endpoint)")
 	root.PersistentFlags().StringVar(&state.HDFSUser, "hdfs-user", state.HDFSUser, "HDFS simple-auth user (defaults to $USER)")
 	root.PersistentFlags().StringVar(&state.HadoopConfDir, "hadoop-conf-dir", state.HadoopConfDir, "Path to Hadoop XML config dir; falls back to HADOOP_CONF_DIR / HADOOP_HOME")
 	root.PersistentFlags().StringVar(&state.Timeout, "timeout", state.Timeout, "Overall parse timeout, e.g. 30s")
 	root.PersistentFlags().StringVar(&state.Format, "format", state.Format, "Output format: json | table | markdown")
 	root.PersistentFlags().IntVar(&state.Top, "top", state.Top, "Top N for ranked scenarios")
 	root.PersistentFlags().BoolVar(&state.DryRun, "dry-run", state.DryRun, "Locate file only; do not parse events")
-	root.PersistentFlags().BoolVar(&state.NoProgress, "no-progress", state.NoProgress, "Disable stderr progress")
+	root.PersistentFlags().BoolVar(&state.NoProgress, "no-progress", state.NoProgress, "Force-silence SHS progress lines (overrides SPARK_CLI_QUIET env and stdout-TTY auto-detect)")
 	root.PersistentFlags().StringVar(&state.CacheDir, "cache-dir", state.CacheDir, "Directory for the parsed-application cache (defaults to $XDG_CACHE_HOME/spark-cli or ~/.cache/spark-cli)")
 	root.PersistentFlags().BoolVar(&state.NoCache, "no-cache", state.NoCache, "Bypass the parsed-application cache for this invocation (do not read or write)")
-	root.PersistentFlags().StringVar(&state.SHSTimeout, "shs-timeout", state.SHSTimeout, "HTTP timeout for shs:// requests, e.g. 60s")
+	root.PersistentFlags().StringVar(&state.SHSTimeout, "shs-timeout", state.SHSTimeout, "HTTP timeout for shs:// requests (default 5m;生产 zip 几 GB 是常态,设小了会撞墙)")
 	root.PersistentFlags().StringVar(&state.SQLDetail, "sql-detail", state.SQLDetail, "SQL description detail in sql_executions: truncate(default ~500 runes) | full | none")
 }
 

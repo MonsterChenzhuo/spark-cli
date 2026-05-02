@@ -55,6 +55,42 @@ func TestE2E_AllScenarios_TinyApp(t *testing.T) {
 	}
 }
 
+// markdown / table format 在所有 5 场景都不应崩溃,且 header 应当含
+// 应用 wall 时长(round-4 加的 formatAppDuration)。这是 e2e smoke,unit
+// test 已经守门具体细节。
+func TestE2E_FormatTableAndMarkdownSmoke(t *testing.T) {
+	dir := t.TempDir()
+	src, err := os.ReadFile(filepath.Join("..", "testdata", "tiny_app.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "application_1_1"), src, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, sc := range []string{"app-summary", "slow-stages", "data-skew", "gc-pressure", "diagnose"} {
+		for _, format := range []string{"table", "markdown"} {
+			t.Run(sc+"/"+format, func(t *testing.T) {
+				cmd.ResetForTest()
+				var stdout, stderr bytes.Buffer
+				rc := cmd.RunWith(context.Background(),
+					[]string{sc, "application_1_1", "--log-dirs", "file://" + dir, "--format", format},
+					&stdout, &stderr)
+				if rc != 0 {
+					t.Fatalf("rc=%d stderr=%s", rc, stderr.String())
+				}
+				out := stdout.String()
+				if out == "" {
+					t.Errorf("empty output for %s/%s", sc, format)
+				}
+				// 应当含应用 wall 时长(fixture 跑 1s,formatAppDuration 输出 "app: 1.0s")
+				if !bytes.Contains([]byte(out), []byte("app: ")) {
+					t.Errorf("%s/%s missing app duration in header:\n%s", sc, format, out)
+				}
+			})
+		}
+	}
+}
+
 // 所有 5 场景的 envelope 顶层都应该输出 app_duration_ms(fixture 有
 // ApplicationEnd 事件,DurationMs > 0)。round-2 加的字段必须在所有场景都生效,
 // 不要某个 dispatch 路径漏掉。
