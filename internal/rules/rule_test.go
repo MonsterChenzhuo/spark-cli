@@ -176,6 +176,89 @@ func TestSkewRulePicksMaxWallShareAsPrimary(t *testing.T) {
 	}
 }
 
+// 真实场景:wall_share 92% 的 stage 14 有 1000 tasks 但只有 6 个 executor,
+// 大量任务等盘 / shuffle,busy_ratio 仅 ~0.07。原 isIdleStage 阈值会把它当
+// driver-side idle 排除,SkewRule 漏报真倾斜。新加的 NumTasks > 2*executors
+// 守门避免这个误判。
+func TestSkewRuleNotMistakenIdleOnSkewedManyTasks(t *testing.T) {
+	app := model.NewApplication()
+	app.DurationMs = 1_000_000
+	app.MaxConcurrentExecutors = 6
+
+	// 1000 tasks,wall 900s(wall_share 0.9),sum(task_run) 仅 ~30s
+	// → busy_ratio = 30000 / (900000 * 6) ≈ 0.0056,远低于 0.2 idle 阈值
+	// 但 NumTasks 1000 >> 2*6=12,新规则下应当不算 idle,SkewRule 必须处理它
+	s := model.NewStage(1, 0, "many-tasks-skewed", 1000, 0)
+	s.SubmitMs = 0
+	s.CompleteMs = 900_000
+	s.TotalRunMs = 30_000
+	s.Status = "succeeded"
+	for i := 0; i < 950; i++ {
+		s.TaskDurations.Add(100)
+		s.TaskInputBytes.Add(1024)
+	}
+	for i := 0; i < 50; i++ {
+		s.TaskDurations.Add(3000) // p99/p50 = 30,极端倾斜
+		s.TaskInputBytes.Add(50 * 1024 * 1024)
+	}
+	s.MaxInputBytes = 50 * 1024 * 1024
+	app.Stages[model.StageKey{ID: 1}] = s
+
+	f := SkewRule{}.Eval(app)
+	if f.Severity == "ok" {
+		t.Fatalf("severity=ok — SkewRule mistakenly skipped many-task skewed stage as idle (evidence=%+v)", f.Evidence)
+	}
+	if got, _ := f.Evidence["stage_id"].(int); got != 1 {
+		t.Errorf("stage_id=%v want 1", got)
+	}
+}
+
+// driver-side idle stage(NumTasks 很少 + busy_ratio 极低)仍然应当被 isIdleStage
+// 识别,SkewRule 跳过它。这是与上一个测试互补的边界。
+func TestSkewRuleStillSkipsTrueDriverSideIdleStage(t *testing.T) {
+	app := model.NewApplication()
+	app.MaxConcurrentExecutors = 6
+
+	// 真倾斜 candidate
+	hot := model.NewStage(2, 0, "hot", 1000, 0)
+	hot.SubmitMs = 0
+	hot.CompleteMs = 60_000
+	hot.TotalRunMs = 540_000
+	hot.Status = "succeeded"
+	for i := 0; i < 95; i++ {
+		hot.TaskDurations.Add(5_000)
+		hot.TaskInputBytes.Add(10 * 1024 * 1024)
+	}
+	for i := 0; i < 5; i++ {
+		hot.TaskDurations.Add(60_000)
+		hot.TaskInputBytes.Add(120 * 1024 * 1024)
+	}
+	hot.MaxInputBytes = 120 * 1024 * 1024
+	app.Stages[model.StageKey{ID: 2}] = hot
+
+	// 真 driver-side idle:1 个 task,wall 120s,run 220ms — NumTasks=1 < 2*6,走 idle
+	idle := model.NewStage(1, 0, "driver-broadcast", 1, 0)
+	idle.SubmitMs = 0
+	idle.CompleteMs = 120_000
+	idle.TotalRunMs = 220
+	idle.Status = "succeeded"
+	for i := 0; i < 95; i++ {
+		idle.TaskDurations.Add(2)
+		idle.TaskInputBytes.Add(1024)
+	}
+	for i := 0; i < 5; i++ {
+		idle.TaskDurations.Add(50)
+		idle.TaskInputBytes.Add(50 * 1024 * 1024)
+	}
+	idle.MaxInputBytes = 50 * 1024 * 1024
+	app.Stages[model.StageKey{ID: 1}] = idle
+
+	f := SkewRule{}.Eval(app)
+	if got, _ := f.Evidence["stage_id"].(int); got != 2 {
+		t.Errorf("primary=%v want 2 (driver-side idle stage 1 should be suppressed)", got)
+	}
+}
+
 func TestSkewRuleSimilarStagesAbsentWhenSingleHit(t *testing.T) {
 	app := model.NewApplication()
 	app.DurationMs = 1_000_000
@@ -204,19 +287,19 @@ func TestSkewRuleSkipsIdleStageCandidate(t *testing.T) {
 	app := model.NewApplication()
 	app.MaxConcurrentExecutors = 10
 
-	// idle stage with high skew_factor: wall=120s, sum(task_run)=53.5s,
-	// slots=10 → busy_ratio≈0.045 (below idle threshold 0.2).
-	idle := model.NewStage(1, 0, "idle-skewed", 100, 0)
+	// 真 driver-side idle stage:NumTasks 很少(不超过 slots),wall 120s 但
+	// 任务总耗时 ~50ms;典型 broadcast / collect / planning 等待。
+	idle := model.NewStage(1, 0, "idle-skewed", 5, 0)
 	idle.SubmitMs = 0
 	idle.CompleteMs = 120_000
-	idle.TotalRunMs = 53_500
+	idle.TotalRunMs = 50
 	idle.Status = "succeeded"
 	for i := 0; i < 95; i++ {
 		idle.TaskDurations.Add(300)
 		idle.TaskInputBytes.Add(1024 * 1024)
 	}
 	for i := 0; i < 5; i++ {
-		idle.TaskDurations.Add(5_000) // p99/p50 ≈ 16.7 — would normally win
+		idle.TaskDurations.Add(5_000) // p99/p50 ≈ 16.7 — 看起来像 skew,实际是 driver wait
 		idle.TaskInputBytes.Add(1024 * 1024)
 	}
 	idle.MaxInputBytes = 1024 * 1024

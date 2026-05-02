@@ -66,6 +66,13 @@ func computeFindingsWallCoverage(app *model.Application, findings []rules.Findin
 	for _, v := range perStage {
 		total += v
 	}
+	// stage 在 wall 上并行,naive sum 可能 > 1.0(实测 br_loan_em_phone_sale 的
+	// 5 个 skew stage 单独 wall_share 0.45-0.92,加 disk_spill / idle 后 sum
+	// ~4.3)。"覆盖度" 语义上 ≤ 1.0,这里 cap 一下让字段保持直观;读到 1.0
+	// 等价于"几乎所有 wall 都在 finding 触及范围内"。
+	if total > 1.0 {
+		total = 1.0
+	}
 	return round3(total)
 }
 

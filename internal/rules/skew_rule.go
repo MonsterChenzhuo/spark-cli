@@ -176,9 +176,16 @@ func skewSeverity(f, inputSkew, p50, p99, ws float64) string {
 	return "critical"
 }
 
-// isIdleStage mirrors IdleStageRule's wall+busy_ratio thresholds. Kept here
-// rather than exported so the two rules can evolve independently if the
-// idle definition changes.
+// isIdleStage mirrors IdleStageRule's wall+busy_ratio thresholds with one
+// extra guard:NumTasks 显著超过 max_concurrent_executors(> 2× slots)的 stage
+// 一律不视作 idle,即使 busy_ratio 低也是 IO / spill / shuffle 阻塞或数据倾斜
+// 导致 —— 否则真倾斜场景(几百到几千 tasks 在 6 个 executor 上长尾)会被
+// SkewRule 误跳过(实测 br_loan_em_phone_sale stage 14:1000 task / 6 executor /
+// busy_ratio 0.074,如不加这条会被当 idle 排除,SkewRule 漏报 wall_share 0.92
+// 的真倾斜 stage)。
+//
+// IdleStageRule 自己实现独立判定(driver-side stage 通常 NumTasks 很少,直接命
+// 中其原阈值),CLAUDE.md 已指明"两条规则可独立演进",此处不共享 helper。
 func isIdleStage(s *model.Stage, app *model.Application) bool {
 	wall := s.CompleteMs - s.SubmitMs
 	if wall < 30_000 || s.TotalRunMs <= 0 {
@@ -189,6 +196,10 @@ func isIdleStage(s *model.Stage, app *model.Application) bool {
 		slots = lim
 	}
 	if slots <= 0 {
+		return false
+	}
+	// 多任务长尾不是 idle:留给 SkewRule 处理
+	if app.MaxConcurrentExecutors > 0 && int64(s.NumTasks) > 2*int64(app.MaxConcurrentExecutors) {
 		return false
 	}
 	return float64(s.TotalRunMs)/float64(wall*slots) < 0.2

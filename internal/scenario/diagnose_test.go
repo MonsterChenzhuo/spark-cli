@@ -220,6 +220,37 @@ func TestDiagnoseFindingsWallCoverageIncludesSimilarStages(t *testing.T) {
 	}
 }
 
+// 实测真实日志触发 SkewRule 同时报 5 个 stage(primary + 4 个 similar_stages),
+// 加上 disk_spill / idle_stage 后 perStage 加和 ~4.3 —— stage 在 wall 上并行
+// 是常态。"覆盖度"语义上 ≤ 1.0,确保 cap 生效。
+func TestDiagnoseFindingsWallCoverageCappedAtOne(t *testing.T) {
+	app := model.NewApplication()
+	app.DurationMs = 1_000_000
+
+	// 4 个 skew stage,每个 wall_share 0.5,sum=2.0
+	for i := 1; i <= 4; i++ {
+		s := model.NewStage(i, 0, "skew", 100, 0)
+		s.SubmitMs = 0
+		s.CompleteMs = 500_000
+		s.Status = "succeeded"
+		for j := 0; j < 95; j++ {
+			s.TaskDurations.Add(100)
+			s.TaskInputBytes.Add(1024)
+		}
+		for j := 0; j < 5; j++ {
+			s.TaskDurations.Add(3000)
+			s.TaskInputBytes.Add(50 * 1024 * 1024)
+		}
+		s.MaxInputBytes = 50 * 1024 * 1024
+		app.Stages[model.StageKey{ID: i}] = s
+	}
+
+	_, sum := Diagnose(app)
+	if got := sum.FindingsWallCoverage; got != 1.0 {
+		t.Errorf("findings_wall_coverage=%v want exactly 1.0 (cap)", got)
+	}
+}
+
 func TestDiagnoseFindingsWallCoverageDedupesSameStage(t *testing.T) {
 	app := model.NewApplication()
 	app.DurationMs = 1_000_000
