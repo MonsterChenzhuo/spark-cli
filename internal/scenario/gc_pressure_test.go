@@ -1,10 +1,38 @@
 package scenario
 
 import (
+	"encoding/json"
+	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/opay-bigdata/spark-cli/internal/model"
 )
+
+// 列契约反射守门 — 让 GCPressureColumns() 与 GCExecRow 的 JSON tag 不会脱节。
+// AppSummary / SlowStages / DataSkew 各有同款测试,本来 GCExecRow 没加,
+// CLAUDE.md 已注明"改它的字段时手工核对" —— 不再依赖手工,统一加上反射守门。
+func TestGCPressureColumnsMatchRowFields(t *testing.T) {
+	row := GCExecRow{}
+	b, err := json.Marshal(row)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	got := make([]string, 0, len(m))
+	for k := range m {
+		got = append(got, k)
+	}
+	sort.Strings(got)
+	want := append([]string{}, GCPressureColumns()...)
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("columns mismatch\n got=%v\nwant=%v", got, want)
+	}
+}
 
 func TestGCPressureRanksAndClassifies(t *testing.T) {
 	app := model.NewApplication()
