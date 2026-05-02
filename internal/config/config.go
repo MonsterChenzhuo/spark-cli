@@ -41,8 +41,12 @@ type Config struct {
 }
 
 const (
-	defaultTimeout    = 30 * time.Second
-	defaultSHSTimeout = 60 * time.Second
+	defaultTimeout = 30 * time.Second
+	// defaultSHSTimeout 给 Spark History Server 整段 zip 下载预留时间。生产里
+	// 几个 GB 的 EventLog zip 是常态;60s 默认值会让首次诊断在中型作业上直接挂掉,
+	// 改为 5min 起步。仍可通过 --shs-timeout / SPARK_CLI_SHS_TIMEOUT / config.yaml
+	// 覆盖,只是不再让用户先撞墙再翻文档。
+	defaultSHSTimeout = 5 * time.Minute
 )
 
 func configDir() string {

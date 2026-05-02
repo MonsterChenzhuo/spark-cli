@@ -36,6 +36,14 @@ type DiagnoseSummary struct {
 	Warn                int          `json:"warn"`
 	OK                  int          `json:"ok"`
 	TopFindingsByImpact []TopFinding `json:"top_findings_by_impact,omitempty"`
+	// FindingsWallCoverage 给出所有非 ok finding 涉及的 stage 占应用 wall 的总占比
+	// (按 stage_id 去重,同一 stage 多个 finding 取最大 wall_share)。低于约 0.05
+	// 时,几乎所有 wall 都不在 finding 范围内,瓶颈通常在作业结构 / 调度层 /
+	// driver-side 开销而非 executor 内部 —— agent / 用户应当跳出 finding 列表去
+	// 看 app-summary 的 top_busy_stages 或 stage 数量。
+	//
+	// 仅在 app.DurationMs > 0 时输出(omitempty);0 表示无法估算。
+	FindingsWallCoverage float64 `json:"findings_wall_coverage,omitempty"`
 }
 
 // TopFinding 提供按 wall_share 倒序的 finding 摘要,让 agent / 用户不必自己
@@ -72,8 +80,26 @@ func stageSQL(app *model.Application, stageID int) (int64, string) {
 	return id, e.Description
 }
 
+// isCallSiteDescription 识别 Spark 在 DataFrame API 路径上塞进 description /
+// details 的 callsite 占位字符串。命中两种形态:
+//   - 历史: "getCallSite at SQLExecution.scala:74"(SparkSQL 早期默认)
+//   - 现代: "org.apache.spark.SparkContext.getCallSite(SparkContext.scala:2205)"
+//     —— 用户交互式 / DataFrame 提交时 SparkContext 自己反射拿到的 callsite,
+//     details 字段也经常带这串,导致 stageSQL fallback 拿到的还是噪音。
+//
+// stageSQL 据此触发 fallback;BuildSQLExecutionMap 据此过滤"fallback 后仍是
+// 噪音"的条目,避免 envelope 出现一堆重复字符串。
 func isCallSiteDescription(desc string) bool {
-	return desc == "" || strings.HasPrefix(desc, "getCallSite ")
+	if desc == "" {
+		return true
+	}
+	if strings.HasPrefix(desc, "getCallSite ") {
+		return true
+	}
+	if strings.Contains(desc, "SparkContext.getCallSite(") {
+		return true
+	}
+	return false
 }
 
 func firstNonEmptyLine(s string) string {
@@ -91,8 +117,13 @@ func firstNonEmptyLine(s string) string {
 // `getCallSite at SQLExecution.scala:74` get the first non-empty line of
 // details instead). Executions with no usable description are omitted.
 //
-// Returns nil when no stage links to any SQL execution — keeps the envelope
-// `omitempty` field absent for non-SQL apps.
+// 过滤规则:
+//   - id < 0 / 空 desc → 跳过
+//   - fallback 后的 desc 仍命中 isCallSiteDescription(description 与 details
+//     都是 callsite 占位)→ 跳过,避免 envelope 出现一堆重复 callsite 文本
+//
+// Returns nil when no stage links to any SQL execution OR every linked execution
+// only carries callsite noise — keeps the envelope `omitempty` field absent.
 func BuildSQLExecutionMap(app *model.Application) map[int64]string {
 	if len(app.StageToSQL) == 0 {
 		return nil
@@ -101,7 +132,7 @@ func BuildSQLExecutionMap(app *model.Application) map[int64]string {
 	seen := make(map[int64]struct{})
 	for stageID := range app.StageToSQL {
 		id, desc := stageSQL(app, stageID)
-		if id < 0 || desc == "" {
+		if id < 0 || desc == "" || isCallSiteDescription(desc) {
 			continue
 		}
 		if _, ok := seen[id]; ok {

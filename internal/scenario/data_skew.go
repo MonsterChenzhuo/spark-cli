@@ -96,6 +96,9 @@ const (
 	// stage wall 占应用 wall 不到 1% 时,即使 skew_factor 极高也通常是
 	// 短 stage 的尾抖动,优化收益接近 0。verdict 直接降到 mild,避免误导优先级。
 	dataSkewNegligibleWallShare = 0.01
+	// dataSkewTightTaskTimeRatio 镜像 rules.tightTaskTimeRatio:
+	// 任务时长 P99/P50 < 1.5 → 时长高度均匀,不存在真正倾斜,verdict 强制 mild。
+	dataSkewTightTaskTimeRatio = 1.5
 )
 
 // dataSkewWallShare mirrors rules.wallShare. Returns 0 (treated as "unknown,
@@ -112,16 +115,22 @@ func dataSkewWallShare(s *model.Stage, app *model.Application) float64 {
 }
 
 // skewVerdict mirrors rules.skewSeverity but emits the verdict ladder used
-// by DataSkew rows. 三道闸门(顺序依次应用):
-//  1. 均匀输入(input_skew_factor < 1.2)+ 中等 p99/p50(< 20)→ severe 降 warn
-//  2. wall_share < 1% → 直接降 mild(短 stage 长尾不值得管,即使 ratio 极高)
-//  3. extreme p99/p50 (>= 20) 仍保留 severe,不被任何闸门遮蔽
+// by DataSkew rows. 四道闸门(顺序依次应用):
+//  1. 紧致任务时长(P99/P50 < 1.5)→ 直接降 mild,无视 input_skew_factor
+//     (任务时长高度均匀就不存在真正倾斜;input_skew 巨大常是 min≈0 的伪影)
+//  2. 均匀输入(input_skew_factor < 1.2)+ 中等 p99/p50(< 20)→ severe 降 warn
+//  3. wall_share < 1% → 直接降 mild(短 stage 长尾不值得管,即使 ratio 极高)
+//  4. extreme p99/p50 (>= 20) 仍保留 severe,不被任何闸门遮蔽
 func skewVerdict(f, inputSkew, p99, median, wallShare float64) string {
 	if f < 4 {
 		return "mild"
 	}
 	if f < 10 {
 		return "warn"
+	}
+	// 紧致任务时长闸门:median > 0 守 0 除,P99/P50 < 1.5 直接 mild
+	if median > 0 && p99/median < dataSkewTightTaskTimeRatio {
+		return "mild"
 	}
 	// wall_share 闸门:仅在 wall_share 已知(>0)且 ratio 不极端时降级到 mild
 	if wallShare > 0 && wallShare < dataSkewNegligibleWallShare && (p99/median) < dataSkewExtremeRatioBypass {

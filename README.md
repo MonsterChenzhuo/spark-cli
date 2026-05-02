@@ -14,7 +14,7 @@ If `diagnose` flags `data_skew`:
 spark-cli data-skew application_1735000000_0001 --top 10
 ```
 
-Each row carries `input_skew_factor` alongside `skew_factor`; verdicts are downgraded when input is uniform (`input_skew_factor < 1.2`, `p99/p50 < 20`) or when stage `wall_share < 1%` (tail on a sub-1% stage isn't worth optimising). `slow-stages` rows expose `gc_ratio` (`sum(task_gc) / sum(task_run)`), `busy_ratio` (driver-idle vs. truly busy), and `shuffle_read_mb_per_task` (one-glance partition-size check). `data-skew` rows expose `wall_share`. `app-summary` exposes `top_stages_by_duration[].busy_ratio`. `diagnose` summary adds `top_findings_by_impact: [{rule_id, severity, wall_share}]` ranked desc — agents can read priority without manual drilling. SQL description text moved out of every row into a single `envelope.sql_executions: {<id>: <description>}` map (slow-stages / data-skew envelopes only) — production logs with multi-line SQL drop from 40+ KB to a few KB.
+Each row carries `input_skew_factor` alongside `skew_factor`. `data_skew` ladder downgrades severity through four gates: tight `p99/p50 < 1.5` ⇒ `ok` (uniform task time isn't skew); uniform `input_skew_factor < 1.2` + moderate ratio; stage `wall_share < 1%`; idle stage candidates (busy < 0.2). Extreme `p99/p50 ≥ 20` bypasses every gate. `slow-stages` rows expose `gc_ratio`, `busy_ratio`, and three `*_mb_per_task` (input / shuffle_read / shuffle_write) so partition granularity is visible on read-side, write-side, and source-scan stages alike. `app-summary` ships both `top_stages_by_duration[]` and `top_busy_stages[]` (the latter filtered to `busy_ratio > 0.8` and ranked by `busy_ratio * duration` — the real CPU hotspots). `diagnose.summary` adds `top_findings_by_impact: [{rule_id, severity, wall_share}]` ranked desc plus `findings_wall_coverage` (deduped sum of those wall shares); coverage `< 0.05` means the bottleneck is structural, jump to `top_busy_stages`. SQL description text moved out of every row into a single `envelope.sql_executions: {<id>: <description>}` map (slow-stages / data-skew envelopes only); callsite-only DataFrame placeholders are filtered out and the entire map is omitted when every entry would be noise.
 
 ## Install
 
@@ -65,7 +65,7 @@ hdfs:
   user: hadoop
   conf_dir: /etc/hadoop/conf           # optional; auto-discovered via HADOOP_CONF_DIR / HADOOP_HOME if empty
 shs:
-  timeout: 60s
+  timeout: 5m  # default; production EventLog zips often need minutes — first-fetch progress is printed to stderr (silence with SPARK_CLI_QUIET=1)
 timeout: 30s
 ```
 
@@ -98,7 +98,8 @@ spark-cli diagnose application_1771556836054_861265 \
 
 - The latest numeric `attemptId` is auto-selected.
 - HTTP only; **no** TLS, Basic Auth, Bearer token, or Kerberos in v1.
-- Timeout precedence (highest → lowest): `--shs-timeout` flag → `SPARK_CLI_SHS_TIMEOUT` env → `shs.timeout` in YAML → default `60s`.
+- Timeout precedence (highest → lowest): `--shs-timeout` flag → `SPARK_CLI_SHS_TIMEOUT` env → `shs.timeout` in YAML → default `5m`. Timeout errors return `LOG_UNREADABLE` with a `hint` naming the flag — no need to grep docs after the first failure.
+- First fetch per appID prints `spark-cli: downloading EventLog zip from SHS for <id> ...` to stderr followed by a `ready in <duration>` line. Set `SPARK_CLI_QUIET=1` to silence (intended for scripts / tests).
 - Zip bodies up to 256 MiB are decoded in memory; larger or unknown-length
   responses spill to a tempfile that is removed when the process exits.
 - **Known caveat:** even a parsed-application cache hit still downloads the
@@ -164,8 +165,8 @@ The repo ships `.claude/skills/spark/SKILL.md`. Claude Code auto-loads it when p
 
 Per-scenario extras:
 - `gc-pressure` returns `data` as `{by_stage: [...], by_executor: [...]}` (object, not array).
-- `diagnose` returns `summary: {critical, warn, ok, top_findings_by_impact?}`. `top_findings_by_impact` is an array of `{rule_id, severity, wall_share}` ranked desc by impact (omitempty when no rule has a `stage_id` evidence link or `app.DurationMs == 0`).
-- `slow-stages` and `data-skew` return `sql_executions: {<id>: <description>}` at the top level — rows reference it via `sql_execution_id`. Description text is **not** repeated per row anymore.
+- `diagnose` returns `summary: {critical, warn, ok, top_findings_by_impact?, findings_wall_coverage?}`. `top_findings_by_impact` is an array of `{rule_id, severity, wall_share}` ranked desc by impact; `findings_wall_coverage` is the sum of those wall shares deduped by stage. Both omit when `app.DurationMs == 0`. Coverage `< 0.05` ⇒ bottleneck is structural — read `app-summary.top_busy_stages` instead of drilling further.
+- `slow-stages` and `data-skew` return `sql_executions: {<id>: <description>}` at the top level — rows reference it via `sql_execution_id`. Description text is **not** repeated per row anymore. Callsite-only entries (DataFrame jobs whose description and details are both `org.apache.spark.SparkContext.getCallSite(...)` placeholders) are filtered; if every entry would be noise the entire map is omitted.
 
 Errors → stderr as `{"error":{"code":..., "message":..., "hint":...}}`. Exit codes: `0` success · `1` internal · `2` user · `3` IO.
 

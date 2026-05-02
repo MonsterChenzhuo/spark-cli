@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### UX 与诊断覆盖度修复(基于真实作业反馈)
+
+- **SHS 默认 timeout 60s → 5m**,且 timeout 错误统一升级成结构化 `LOG_UNREADABLE`,`hint` 直接告知 `--shs-timeout` / `SPARK_CLI_SHS_TIMEOUT`。生产 EventLog zip 几个 GB 是常态,旧默认 60s 让首次诊断直接撞墙、再去翻文档。
+- **SHS 首次下载在 stderr 打进度**:`bundleFor` 在 HTTP 拉取前打 `spark-cli: downloading EventLog zip from SHS for <app> (timeout 5m0s; set SPARK_CLI_QUIET=1 to silence) ...`,完成后打 `ready in <duration>`。`SPARK_CLI_QUIET=1` 全局静默(供脚本/测试)。即使 cache 命中,Locator 仍要拉 zip 判 V1/V2 layout,这条提示消除"CLI 是不是挂了"的误判。
+- **`sql_executions` map 过滤 callsite 噪音**。`isCallSiteDescription` 现在还匹配 `org.apache.spark.SparkContext.getCallSite(SparkContext.scala:2205)` 这种 DataFrame 提交常见形态;`BuildSQLExecutionMap` 把 fallback 后仍是 callsite 的条目剔除,所有条目都是噪音时整个 map 走 `omitempty` 缺失。今天复现的 sparkETL 应用从 81 行 callsite 噪音直接坍缩为 0;slow-stages 信封从 ~30 KB 缩到几 KB。
+- **`data_skew` 新增任务时长紧致闸门**:`p99/p50 < 1.5` 时规则直接报 `ok`(`data-skew` 行 verdict 降到 `mild`),不论 `input_skew_factor` 多大。常见伪倾斜:某个 task 接近 0ms 把 `input_skew_factor` 拉到几千,但所有任务时长其实非常一致 —— 这种"warn"白白消耗用户注意力。极端 `p99/p50 ≥ 20` 仍跨越任何闸门保留 critical。
+- **`diagnose.summary.findings_wall_coverage`** —— 所有非 ok finding 涉及 stage 的 wall_share 加和(按 stage_id 去重,每 stage 取最大值)。直接告诉调用方"finding 解释了多少 wall";低于约 0.05 时几乎所有 wall 都不在 finding 范围内,通常是作业结构 / driver 端等待问题,agent 应跳到 `app-summary.top_busy_stages` 而非继续下钻 finding。`app.DurationMs == 0` 时整段缺失。
+- **`app-summary.top_busy_stages`** —— 与 `top_stages_by_duration` 并列的另一切面,过滤 `busy_ratio > 0.8`,按 `busy_ratio * duration_ms` 倒序。读 summary 时 driver-side 等待 stage 不再遮蔽真正吃 CPU 的热点。
+- **`slow-stages` 行新增 `input_mb_per_task` / `shuffle_write_mb_per_task`**,与既有 `shuffle_read_mb_per_task` 并列。写侧 / source-scan 阶段也能一眼看到 partition 粒度 —— 之前 shuffle-write stage 上 read 字段恒为 0,无任何信号。
+
 ### LLM 友好的信封形状 + 按耗时占比排序的诊断
 
 - **不兼容变更:** `slow-stages` 与 `data-skew` 信封顶层新增一份共享的 `sql_executions: {<int64 id>: <description>}` map;每行的 `sql_description` 列已删除,改为通过 `sql_execution_id` 引用。生产作业(SQL 文本动辄几十行)JSON 体积从 40+ KB(每行重复嵌入)降到几 KB(顶层一份)。`omitempty` 保证非 SQL 作业 / 无需 SQL 关联的场景下该字段缺失。

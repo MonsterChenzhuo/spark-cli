@@ -96,6 +96,49 @@ func TestBuildSQLExecutionMapEmptyWhenNoLinks(t *testing.T) {
 	}
 }
 
+// 真实 DataFrame ETL 里 SparkContext.getCallSite(SparkContext.scala:2205) 形态
+// 频繁出现在 description 里,常与 details 同样无意义。BuildSQLExecutionMap 应当
+// 把这种"全噪音"条目当作"没有可用描述"过滤掉,避免 envelope 出现 80+ 行重复
+// 字符串(本次诊断 sparkETL 应用就是这个症状)。
+func TestBuildSQLExecutionMapDropsCallSiteOnlyEntries(t *testing.T) {
+	app := model.NewApplication()
+	app.SQLExecutions[10] = &model.SQLExecution{
+		ID:          10,
+		Description: "org.apache.spark.SparkContext.getCallSite(SparkContext.scala:2205)",
+		Details:     "org.apache.spark.SparkContext.getCallSite(SparkContext.scala:2205)",
+	}
+	app.SQLExecutions[11] = &model.SQLExecution{
+		ID:          11,
+		Description: "getCallSite at SQLExecution.scala:74",
+		Details:     "", // fallback 也拿不到
+	}
+	app.StageToSQL[1] = 10
+	app.StageToSQL[2] = 11
+
+	m := BuildSQLExecutionMap(app)
+	if _, ok := m[10]; ok {
+		t.Errorf("id=10 应被过滤(全是 callsite 噪音),实际 %q", m[10])
+	}
+	if _, ok := m[11]; ok {
+		t.Errorf("id=11 应被过滤(callsite + 无 details),实际 %q", m[11])
+	}
+}
+
+func TestBuildSQLExecutionMapNilWhenAllNoise(t *testing.T) {
+	app := model.NewApplication()
+	for i := int64(0); i < 80; i++ {
+		app.SQLExecutions[i] = &model.SQLExecution{
+			ID:          i,
+			Description: "org.apache.spark.SparkContext.getCallSite(SparkContext.scala:2205)",
+			Details:     "org.apache.spark.SparkContext.getCallSite(SparkContext.scala:2205)",
+		}
+		app.StageToSQL[int(i)] = i
+	}
+	if m := BuildSQLExecutionMap(app); m != nil {
+		t.Errorf("80 个全噪音条目应让 map 整体 omit(返回 nil),实际 %d 项", len(m))
+	}
+}
+
 func TestStageSQLPrefersRealDescription(t *testing.T) {
 	app := model.NewApplication()
 	app.SQLExecutions[5] = &model.SQLExecution{

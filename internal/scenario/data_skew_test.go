@@ -120,6 +120,32 @@ func TestDataSkewVerdictDowngradesToMildOnNegligibleWallShare(t *testing.T) {
 	}
 }
 
+// 镜像 SkewRule 的紧致闸门:任务时长 P99/P50 < 1.5 时 verdict 直接降到 mild,
+// 不论 input_skew_factor 多大(任务时长均匀=没有真正倾斜)。wall_share 故意
+// 设到 5%(> 1% 闸门阈值),确保命中的是新闸门而非既有 wall_share 闸门。
+func TestDataSkewVerdictDowngradesToMildOnTightP99P50(t *testing.T) {
+	app := model.NewApplication()
+	app.DurationMs = 100_000
+	s := model.NewStage(1, 0, "uniform-time", 200, 0)
+	s.SubmitMs = 0
+	s.CompleteMs = 5_000 // wall_share = 5%
+	s.Status = "succeeded"
+	for i := 0; i < 200; i++ {
+		s.TaskDurations.Add(4_000)
+		s.TaskInputBytes.Add(1024)
+	}
+	s.MaxInputBytes = 30_000_000 // input_skew_factor 极大,会触发 critical ladder
+	app.Stages[model.StageKey{ID: 1}] = s
+
+	rows := DataSkew(app, 10)
+	if len(rows) != 1 {
+		t.Fatalf("rows=%d", len(rows))
+	}
+	if rows[0].Verdict != "mild" {
+		t.Errorf("verdict=%s want mild (tight P99/P50 应当降到 mild)", rows[0].Verdict)
+	}
+}
+
 func TestDataSkewKeepsSevereOnExtremeRatioEvenWithSmallWall(t *testing.T) {
 	app := model.NewApplication()
 	app.DurationMs = 1_000_000

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### UX & diagnostic-coverage fixes (driven by real-app feedback)
+
+- **SHS default timeout 60s → 5m**, plus structured `LOG_UNREADABLE` error with a `hint` that names `--shs-timeout` / `SPARK_CLI_SHS_TIMEOUT` when a fetch times out. Production EventLog zips routinely take minutes; the old 60s default forced first-time users to crash and re-read docs.
+- **SHS first-fetch progress on stderr**: `bundleFor` now prints `spark-cli: downloading EventLog zip from SHS for <app> (timeout 5m0s; set SPARK_CLI_QUIET=1 to silence) ...` before the HTTP body and a `ready in <duration>` line afterwards. Set `SPARK_CLI_QUIET=1` to silence (intended for scripted callers / tests). Cache hits still need this fetch to detect V1/V2 layout — surfacing the wait removes the "is the CLI hung?" UX bug.
+- **`sql_executions` map drops callsite-only noise**. `isCallSiteDescription` now also matches the `org.apache.spark.SparkContext.getCallSite(SparkContext.scala:2205)` form Spark stamps onto DataFrame submissions. `BuildSQLExecutionMap` filters entries whose final (post-fallback) description is still callsite-only — when every entry is noise the entire map is omitted from the envelope. Today's reproduction had 81 entries collapse to 0; the slow-stages payload shrank from ~30 KB to a few KB.
+- **`data_skew` adds a tight-task-time gate**: when `p99/p50 < 1.5` the rule reports `ok` (and `data-skew` row verdict drops to `mild`), regardless of `input_skew_factor`. Common false positive was a single near-zero task pulling `input_skew_factor` into the thousands while task durations were uniform — the resulting "warn" wasted user attention. Extreme `p99/p50 ≥ 20` still bypasses any gate.
+- **`diagnose.summary.findings_wall_coverage`** — sum of `wall_share` across all non-ok findings (deduped by `stage_id`, max per stage). Tells callers immediately how much of app wall time is explained by the rule set; values < 0.05 mean the bottleneck is structural (too many stages / driver-side waits) and the agent should jump to `app-summary.top_busy_stages` instead of drilling into findings. Omitted when `app.DurationMs == 0`.
+- **`app-summary.top_busy_stages`** — parallel slot to `top_stages_by_duration`, filtered to `busy_ratio > 0.8` and ordered by `busy_ratio * duration_ms`. Driver-side idle stages no longer mask the real CPU hotspots when the agent looks at the summary.
+- **`slow-stages` rows add `input_mb_per_task` and `shuffle_write_mb_per_task`** alongside the existing `shuffle_read_mb_per_task`. Write-side and source-scan stages can now expose partition granularity at a glance — previously the read-side metric was 0 for every shuffle-write stage and gave no signal.
+
 ### LLM-friendly envelope + impact-aware diagnostics
 
 - **Breaking:** `slow-stages` and `data-skew` envelopes now expose a single top-level `sql_executions: {<int64 id>: <description>}` map; per-row `sql_description` columns were removed. Rows reference the id via `sql_execution_id`. Production logs with multi-line SQL drop from 40+ KB (per-row repetition) to a few KB (one shared map). `omitempty` keeps the field absent for non-SQL apps and for scenarios that don't need it.
@@ -24,7 +34,7 @@
 
 - New `shs://host:port` scheme for `--log-dirs`. spark-cli pulls `GET /api/v1/applications/<id>/<attempt>/logs` (a zip body) and exposes its entries through the existing `fs.FS` abstraction, so the locator, decoder, rules, and parsed-application cache all work transparently against a Spark History Server.
 - The largest numeric `attemptId` reported by `/api/v1/applications/<id>` is auto-selected. When SHS reports an attempt with no `attemptId` field (Spark 3.4+ single-attempt default), spark-cli now drops the attempt segment and fetches `/api/v1/applications/<id>/logs` directly — fixes APP_NOT_FOUND against attempt-less apps.
-- New flag `--shs-timeout`, env var `SPARK_CLI_SHS_TIMEOUT`, and YAML key `shs.timeout` (default `60s`). `spark-cli config show` reports the resolved value and its source.
+- New flag `--shs-timeout`, env var `SPARK_CLI_SHS_TIMEOUT`, and YAML key `shs.timeout` (default `5m` since the unreleased 60s→5m bump above; original release shipped `60s`). `spark-cli config show` reports the resolved value and its source.
 - HTTP only — TLS, Basic Auth, Bearer Token, and Kerberos are out of scope for v1.
 - Zip bodies up to 256 MiB are decoded in memory; larger or unknown-length responses spill to a `os.CreateTemp` file that is removed when the process exits.
 - **Known caveat**: even when the parsed-application cache hits, every invocation still downloads the zip — `Locator.Resolve` must read zip contents to decide V1 vs V2 layout. A persistent on-disk zip cache is on the roadmap.

@@ -28,7 +28,43 @@ func Diagnose(app *model.Application) ([]rules.Finding, DiagnoseSummary) {
 		out = append(out, f)
 	}
 	sum.TopFindingsByImpact = collectTopFindingsByImpact(app, out)
+	sum.FindingsWallCoverage = computeFindingsWallCoverage(app, out)
 	return out, sum
+}
+
+// computeFindingsWallCoverage 把"所有非 ok finding 关联的 stage 占应用 wall 的
+// 比例"加和。同一 stage 出现多次取 max(避免规则间互相计数)。app.DurationMs
+// <= 0(没 ApplicationEnd 事件)时返回 0,让顶层字段经 omitempty 缺失。
+func computeFindingsWallCoverage(app *model.Application, findings []rules.Finding) float64 {
+	if app.DurationMs <= 0 {
+		return 0
+	}
+	perStage := make(map[int]float64)
+	for _, f := range findings {
+		if f.Severity == "ok" || f.Evidence == nil {
+			continue
+		}
+		stageID, ok := stageIDFromEvidence(f.Evidence["stage_id"])
+		if !ok {
+			continue
+		}
+		s := findStageByID(app, stageID)
+		if s == nil {
+			continue
+		}
+		ws := dataSkewWallShare(s, app)
+		if ws <= 0 {
+			continue
+		}
+		if cur, ok := perStage[stageID]; !ok || ws > cur {
+			perStage[stageID] = ws
+		}
+	}
+	var total float64
+	for _, v := range perStage {
+		total += v
+	}
+	return round3(total)
 }
 
 func collectTopFindingsByImpact(app *model.Application, findings []rules.Finding) []TopFinding {

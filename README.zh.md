@@ -14,7 +14,7 @@ spark-cli diagnose application_1735000000_0001
 spark-cli data-skew application_1735000000_0001 --top 10
 ```
 
-每行除 `skew_factor` 外还带 `input_skew_factor` 与 `wall_share`;输入均匀(`input_skew_factor < 1.2` 且 `p99/p50 < 20`)或 `wall_share < 1%` 时 verdict 自动降级,避免短 stage 上的抖动占用优先级。`slow-stages` 行带 `gc_ratio`、`busy_ratio`(driver-idle 一眼辨)与 `shuffle_read_mb_per_task`(partition 是否过粗);`app-summary` 的 `top_stages_by_duration[]` 带 `busy_ratio`;`diagnose` 的 `summary` 加 `top_findings_by_impact: [{rule_id, severity, wall_share}]`,按 wall_share 倒序,agent 不必再自己心算优先级。每行重复嵌入的 SQL 文本上提到 envelope 顶层 `sql_executions: {<id>: <description>}` 一份共享(仅 slow-stages / data-skew),生产作业 JSON 体积从几十 KB 降到几 KB。
+每行除 `skew_factor` 外还带 `input_skew_factor` 与 `wall_share`。`data_skew` 现在有四道闸门:**任务时长紧致**(`p99/p50 < 1.5`)直接 ok(任务时长本身就均匀,不存在真倾斜);输入均匀(`input_skew_factor < 1.2` 且 `p99/p50 < 20`);stage `wall_share < 1%`;命中 idle stage 条件(busy < 0.2)。极端 `p99/p50 ≥ 20` 跨越任何闸门保留 critical。`slow-stages` 行带 `gc_ratio`、`busy_ratio` 与三档 `*_mb_per_task`(input / shuffle_read / shuffle_write),读侧 / 写侧 / source-scan 阶段都能一眼判 partition 粒度。`app-summary` 同时给 `top_stages_by_duration[]` 与 `top_busy_stages[]`(后者过滤 `busy_ratio > 0.8` 后按 `busy_ratio * duration` 倒序 —— 这才是真正吃 CPU 值得调优的热点)。`diagnose.summary` 加 `top_findings_by_impact: [{rule_id, severity, wall_share}]`(按 wall_share 倒序)与 `findings_wall_coverage`(按 stage 去重的总 wall_share);**coverage < 0.05 时瓶颈在作业结构层,直接看 `top_busy_stages` 而非继续下钻 finding**。每行重复嵌入的 SQL 文本上提到 envelope 顶层 `sql_executions: {<id>: <description>}` 一份共享(仅 slow-stages / data-skew);DataFrame 作业那种 callsite 占位文本会被整行过滤,所有条目都是噪音时整段 map 缺失。
 
 ## 安装
 
@@ -65,7 +65,7 @@ hdfs:
   user: hadoop
   conf_dir: /etc/hadoop/conf           # 可选; 留空则按 HADOOP_CONF_DIR / HADOOP_HOME 自动发现
 shs:
-  timeout: 60s
+  timeout: 5m   # 默认值;生产 EventLog zip 几个 GB 是常态,首次下载会在 stderr 打进度提示(SPARK_CLI_QUIET=1 静默)
 timeout: 30s
 ```
 
@@ -99,7 +99,8 @@ spark-cli diagnose application_1771556836054_861265 \
 - 自动选择数值最大的 `attemptId`。
 - 仅 HTTP;**不支持** TLS、Basic Auth、Bearer Token、Kerberos。
 - 超时优先级(高 → 低):`--shs-timeout` flag → `SPARK_CLI_SHS_TIMEOUT` 环境变量
-  → `config.yaml` 的 `shs.timeout` → 默认 `60s`。
+  → `config.yaml` 的 `shs.timeout` → 默认 `5m`。timeout 失败会返回结构化 `LOG_UNREADABLE`,`hint` 直接告诉用户去调这个 flag —— 首次失败后无需翻文档。
+- 每个 appID 第一次下载会在 stderr 打 `spark-cli: downloading EventLog zip from SHS for <id> ...` 与 `ready in <duration>` 两行提示,免得用户以为 CLI 挂了。`SPARK_CLI_QUIET=1` 全局静默(供脚本/测试)。
 - `Content-Length` ≤ 256 MiB 时整包读到内存;更大或长度未知时落到 `os.CreateTemp`,
   进程退出时自动清理。
 - **已知限制**:即使应用解析缓存命中,每次调用仍要下载 zip ——
@@ -157,8 +158,8 @@ spark-cli diagnose application_1771556836054_861265 \
 
 各场景特例:
 - `gc-pressure` 的 `data` 是对象 `{by_stage: [...], by_executor: [...]}`,不是数组。
-- `diagnose` 顶层带 `summary: {critical, warn, ok, top_findings_by_impact?}`。`top_findings_by_impact` 是按 `wall_share` 倒序的 `[{rule_id, severity, wall_share}]`(没规则带 `stage_id` 或 `app.DurationMs == 0` 时整段 omitempty 缺失)。
-- `slow-stages` 与 `data-skew` 顶层带 `sql_executions: {<id>: <description>}`,row 通过 `sql_execution_id` 引用。**description 文本不再嵌入每行**。
+- `diagnose` 顶层带 `summary: {critical, warn, ok, top_findings_by_impact?, findings_wall_coverage?}`。`top_findings_by_impact` 按 `wall_share` 倒序;`findings_wall_coverage` 是这些 wall_share 按 stage 去重后加和。两者在 `app.DurationMs == 0` 时整段 omitempty。**coverage < 0.05 ⇒ 瓶颈在作业结构层,跳到 `app-summary.top_busy_stages` 看真热点,别继续下钻 finding**。
+- `slow-stages` 与 `data-skew` 顶层带 `sql_executions: {<id>: <description>}`,row 通过 `sql_execution_id` 引用。**description 文本不再嵌入每行**。DataFrame 作业那种 callsite 占位(`org.apache.spark.SparkContext.getCallSite(...)`)会被过滤,所有条目都是噪音时整段 map 走 `omitempty` 缺失。
 
 错误走 stderr,格式为 `{"error":{"code":..., "message":..., "hint":...}}`。退出码: `0` 成功 · `1` 内部错误 · `2` 用户错误 · `3` IO 不可达。
 

@@ -73,6 +73,30 @@ func TestSkewRuleDowngradesNegligibleWallShare(t *testing.T) {
 	}
 }
 
+// 真实场景: P99/P50 ≈ 1.15(任务时长非常均匀,只是有一个极小任务把 min 拉到 0,
+// 导致 input_skew_factor 看起来超大)。CLI v0 把这种情况报成 warn,但 wall_share
+// 极低、任务时长本身就一致,完全不是倾斜。新增"任务时长紧致闸门"应当直接降到 ok,
+// 让 diagnose 不要消耗用户注意力。
+func TestSkewRuleDowngradesToOKOnTightP99P50(t *testing.T) {
+	app := model.NewApplication()
+	app.DurationMs = 1_000_000
+	s := model.NewStage(1, 0, "uniform-time-but-huge-input-ratio", 200, 0)
+	s.SubmitMs = 0
+	s.CompleteMs = 5_000
+	s.Status = "succeeded"
+	for i := 0; i < 200; i++ {
+		s.TaskDurations.Add(4_000) // 全部 4000ms,P99/P50 ≈ 1.0
+		s.TaskInputBytes.Add(1024)
+	}
+	s.MaxInputBytes = 30_000_000 // input_skew_factor 极大
+	app.Stages[model.StageKey{ID: 1}] = s
+
+	f := SkewRule{}.Eval(app)
+	if f.Severity != "ok" {
+		t.Fatalf("severity=%s want ok (P99/P50 紧致时不算倾斜,即便 input_skew_factor 巨大)", f.Severity)
+	}
+}
+
 func TestSkewRuleStaysCriticalOnExtremeRatio(t *testing.T) {
 	app := model.NewApplication()
 	s := model.NewStage(1, 0, "extreme", 100, 0)

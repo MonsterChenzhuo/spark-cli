@@ -153,8 +153,8 @@ func TestLoadDefaultSHSTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.SHS.Timeout != 60*time.Second {
-		t.Errorf("default SHS.Timeout=%v want 60s", cfg.SHS.Timeout)
+	if cfg.SHS.Timeout != 5*time.Minute {
+		t.Errorf("default SHS.Timeout=%v want 5m (生产 zip 几 GB 是常态,60s 默认会让首诊撞墙)", cfg.SHS.Timeout)
 	}
 }
 

@@ -37,6 +37,10 @@ type AppSummaryRow struct {
 	TotalRunMs             int64      `json:"total_run_ms"`
 	GCRatio                float64    `json:"gc_ratio"`
 	TopStagesByDuration    []TopStage `json:"top_stages_by_duration"`
+	// TopBusyStages 把 `top_stages_by_duration` 里 busy_ratio 接近 0 的 driver-side
+	// 等待 stage 过滤掉,只保留 busy_ratio > 0.8 且按 busy_ratio*duration 倒序的
+	// 真正 executor 热点 —— 这才是值得调并行 / 调 SQL plan 的优化候选。
+	TopBusyStages []TopStage `json:"top_busy_stages"`
 }
 
 func AppSummaryColumns() []string {
@@ -51,8 +55,17 @@ func AppSummaryColumns() []string {
 		"total_spill_disk_gb",
 		"total_gc_ms", "total_run_ms", "gc_ratio",
 		"top_stages_by_duration",
+		"top_busy_stages",
 	}
 }
+
+// topBusyStagesMinRatio: busy_ratio 阈值,低于此值认为是 driver-side 等待
+// stage(broadcast / planning / collect / listing 等),不应进入热点榜。
+const topBusyStagesMinRatio = 0.8
+
+// topBusyStagesLimit: 输出前 N 个真热点。3 与 top_stages_by_duration 对齐,
+// LLM / agent 一次扫到 3 个就够定方向。
+const topBusyStagesLimit = 3
 
 func AppSummary(app *model.Application) AppSummaryRow {
 	row := AppSummaryRow{
@@ -110,6 +123,26 @@ func AppSummary(app *model.Application) AppSummaryRow {
 	for i := 0; i < n; i++ {
 		row.TopStagesByDuration = append(row.TopStagesByDuration, TopStage{
 			StageID: all[i].id, Name: all[i].name, DurationMs: all[i].dur, BusyRatio: all[i].busy,
+		})
+	}
+
+	// top_busy_stages: 过滤 + 按 busy*duration 倒序,与 by_duration 切面正交。
+	busy := make([]sd, 0, len(all))
+	for _, s := range all {
+		if s.busy >= topBusyStagesMinRatio {
+			busy = append(busy, s)
+		}
+	}
+	sort.Slice(busy, func(i, j int) bool {
+		return float64(busy[i].dur)*busy[i].busy > float64(busy[j].dur)*busy[j].busy
+	})
+	limit := topBusyStagesLimit
+	if len(busy) < limit {
+		limit = len(busy)
+	}
+	for i := 0; i < limit; i++ {
+		row.TopBusyStages = append(row.TopBusyStages, TopStage{
+			StageID: busy[i].id, Name: busy[i].name, DurationMs: busy[i].dur, BusyRatio: busy[i].busy,
 		})
 	}
 	return row

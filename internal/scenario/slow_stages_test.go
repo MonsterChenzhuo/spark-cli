@@ -75,6 +75,10 @@ func TestSlowStagesEmitsBusyRatioAndPartitionSize(t *testing.T) {
 	s.TotalRunMs = 60_000 * 50 / 2 // 50 slots, 50% busy
 	// 200 tasks × 5 MiB shuffle read per task = 1000 MiB total
 	s.TotalShuffleReadBytes = 200 * 5 * 1024 * 1024
+	// 200 tasks × 7 MiB input per task = 1400 MiB total
+	s.TotalInputBytes = 200 * 7 * 1024 * 1024
+	// 200 tasks × 3 MiB shuffle write per task = 600 MiB total
+	s.TotalShuffleWriteBytes = 200 * 3 * 1024 * 1024
 	for i := 0; i < 200; i++ {
 		s.TaskDurations.Add(15_000)
 	}
@@ -90,6 +94,12 @@ func TestSlowStagesEmitsBusyRatioAndPartitionSize(t *testing.T) {
 	if got := rows[0].ShuffleReadMBPerTask; got < 4.99 || got > 5.01 {
 		t.Errorf("shuffle_read_mb_per_task=%v want ~5.0", got)
 	}
+	if got := rows[0].InputMBPerTask; got < 6.99 || got > 7.01 {
+		t.Errorf("input_mb_per_task=%v want ~7.0", got)
+	}
+	if got := rows[0].ShuffleWriteMBPerTask; got < 2.99 || got > 3.01 {
+		t.Errorf("shuffle_write_mb_per_task=%v want ~3.0", got)
+	}
 }
 
 func TestSlowStagesShuffleReadPerTaskZeroOnZeroTasks(t *testing.T) {
@@ -99,11 +109,22 @@ func TestSlowStagesShuffleReadPerTaskZeroOnZeroTasks(t *testing.T) {
 	s.CompleteMs = 100
 	s.Status = "succeeded"
 	s.TotalShuffleReadBytes = 999 * 1024 * 1024
+	s.TotalInputBytes = 800 * 1024 * 1024
+	s.TotalShuffleWriteBytes = 700 * 1024 * 1024
 	app.Stages[model.StageKey{ID: 1}] = s
 
 	rows := SlowStages(app, 0)
-	if len(rows) != 1 || rows[0].ShuffleReadMBPerTask != 0 {
-		t.Fatalf("expect shuffle_read_mb_per_task=0 when num_tasks=0, got %+v", rows)
+	if len(rows) != 1 {
+		t.Fatalf("rows=%d", len(rows))
+	}
+	if rows[0].ShuffleReadMBPerTask != 0 {
+		t.Errorf("shuffle_read_mb_per_task=%v want 0 when num_tasks=0", rows[0].ShuffleReadMBPerTask)
+	}
+	if rows[0].InputMBPerTask != 0 {
+		t.Errorf("input_mb_per_task=%v want 0 when num_tasks=0", rows[0].InputMBPerTask)
+	}
+	if rows[0].ShuffleWriteMBPerTask != 0 {
+		t.Errorf("shuffle_write_mb_per_task=%v want 0 when num_tasks=0", rows[0].ShuffleWriteMBPerTask)
 	}
 }
 

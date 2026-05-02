@@ -3,7 +3,9 @@ package fs
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	cerrors "github.com/opay-bigdata/spark-cli/internal/errors"
 )
 
 var _ FS = (*SHS)(nil)
@@ -27,7 +31,9 @@ type SHS struct {
 	base       string // e.g. "shs://host:port"
 	httpURL    string // e.g. "http://host:port"
 	httpClient *http.Client
-	threshold  int64 // bytes; zips larger than this spill to tempfile
+	threshold  int64         // bytes; zips larger than this spill to tempfile
+	stderr     io.Writer     // 进度提示输出(SPARK_CLI_QUIET 时为 io.Discard)
+	timeout    time.Duration // 同 httpClient.Timeout,用于错误 hint 中报告当前值
 
 	mu       sync.Mutex
 	bundles  map[string]*shsBundle // appID → fetched zip
@@ -45,10 +51,18 @@ type shsBundle struct {
 
 // NewSHS constructs a Spark History Server FS bound to base of the form
 // "shs://host:port". TLS is not supported in v1 — the transport always uses
-// "http://". A non-positive timeout defaults to 60s.
+// "http://". A non-positive timeout defaults to 5 min (生产 zip 几 GB 是常态)。
+//
+// `stderr` 默认是 os.Stderr,首次为某 appID 拉 zip 时会写一行进度提示,免得用户
+// 以为 CLI 挂了。设置 SPARK_CLI_QUIET=1 可全局静默(同时影响下载提示和潜在的
+// 后续提示);测试可直接修改 stderr 字段。
 func NewSHS(base string, timeout time.Duration) *SHS {
 	if timeout <= 0 {
-		timeout = 60 * time.Second
+		timeout = 5 * time.Minute
+	}
+	var w io.Writer = os.Stderr
+	if os.Getenv("SPARK_CLI_QUIET") != "" {
+		w = io.Discard
 	}
 	httpURL := strings.Replace(base, "shs://", "http://", 1)
 	return &SHS{
@@ -57,6 +71,8 @@ func NewSHS(base string, timeout time.Duration) *SHS {
 		httpClient: &http.Client{Timeout: timeout},
 		threshold:  256 << 20,
 		bundles:    map[string]*shsBundle{},
+		stderr:     w,
+		timeout:    timeout,
 	}
 }
 
@@ -277,9 +293,18 @@ func (s *SHS) bundleFor(host, appID string) (*shsBundle, error) {
 		return nil, nil
 	}
 
+	// 提示一行,免得用户看着 CLI 静默卡几分钟以为挂了。生产 zip 几 GB 是常态,
+	// 哪怕缓存命中(之后命令)首次也要走这里下载来判 V1/V2 layout。
+	if s.stderr != nil {
+		fmt.Fprintf(s.stderr, "spark-cli: downloading EventLog zip from SHS for %s (timeout %s; set SPARK_CLI_QUIET=1 to silence) ...\n", appID, s.timeout)
+	}
+	zipStart := time.Now()
 	zr, backing, tmpPath, err := s.fetchZip(appID, attempt)
 	if err != nil {
 		return nil, err
+	}
+	if s.stderr != nil {
+		fmt.Fprintf(s.stderr, "spark-cli: SHS zip for %s ready in %s\n", appID, time.Since(zipStart).Round(time.Millisecond))
 	}
 
 	entries := make(map[string]*zip.File, len(zr.File))
@@ -337,7 +362,7 @@ func (s *SHS) fetchAttempt(appID string) (attempt string, found bool, lastUpdate
 	metaURL := fmt.Sprintf("%s/api/v1/applications/%s", s.httpURL, appID)
 	resp, err := s.httpClient.Get(metaURL)
 	if err != nil {
-		return "", false, 0, fmt.Errorf("shs: GET %s: %w", metaURL, err)
+		return "", false, 0, s.wrapTimeout(fmt.Sprintf("GET %s", metaURL), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
@@ -397,7 +422,7 @@ func (s *SHS) fetchZip(appID, attempt string) (*zip.Reader, io.Closer, string, e
 	}
 	resp, err := s.httpClient.Get(logsURL)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("shs: GET %s: %w", logsURL, err)
+		return nil, nil, "", s.wrapTimeout(fmt.Sprintf("GET %s", logsURL), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -408,7 +433,7 @@ func (s *SHS) fetchZip(appID, attempt string) (*zip.Reader, io.Closer, string, e
 	if cl >= 0 && cl <= s.threshold {
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return nil, nil, "", fmt.Errorf("shs: read zip body: %w", err)
+			return nil, nil, "", s.wrapTimeout("read zip body", err)
 		}
 		zr, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
 		if err != nil {
@@ -426,7 +451,7 @@ func (s *SHS) fetchZip(appID, attempt string) (*zip.Reader, io.Closer, string, e
 	if err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmpPath)
-		return nil, nil, "", fmt.Errorf("shs: write zip to tempfile: %w", err)
+		return nil, nil, "", s.wrapTimeout("write zip to tempfile", err)
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		_ = f.Close()
@@ -440,6 +465,39 @@ func (s *SHS) fetchZip(appID, attempt string) (*zip.Reader, io.Closer, string, e
 		return nil, nil, "", fmt.Errorf("shs: parse zip: %w", err)
 	}
 	return zr, f, tmpPath, nil
+}
+
+// wrapTimeout 把 net/http 的 timeout 错误升级成 cerrors.Error 带 hint,告诉用户
+// 怎么救(改 --shs-timeout / SPARK_CLI_SHS_TIMEOUT / config.yaml)。非 timeout
+// 错误维持原 fmt.Errorf 包装,错误码由调用方上层处理(通常 LOG_UNREADABLE)。
+func (s *SHS) wrapTimeout(op string, err error) error {
+	if isTimeoutError(err) {
+		hint := "increase --shs-timeout (current: " + s.timeout.String() + "), 或设 SPARK_CLI_SHS_TIMEOUT / config.yaml shs.timeout;大日志默认就需要几分钟"
+		return cerrors.New(cerrors.CodeLogUnreadable, fmt.Sprintf("shs: %s: %v", op, err), hint)
+	}
+	return fmt.Errorf("shs: %s: %w", op, err)
+}
+
+// isTimeoutError 识别 net/http 因 Client.Timeout 触发的超时:url.Error.Timeout()
+// 是主路径,context.DeadlineExceeded 是底层 sentinel,字符串匹配兜底,因为
+// http.Client.Timeout 触发时 context 在 Body 读完前就 cancel,误差形态多样。
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ue *url.Error
+	if stderrors.As(err, &ue) && ue.Timeout() {
+		return true
+	}
+	var ne interface{ Timeout() bool }
+	if stderrors.As(err, &ne) && ne.Timeout() {
+		return true
+	}
+	if stderrors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	return strings.Contains(err.Error(), "context deadline exceeded") ||
+		strings.Contains(err.Error(), "Client.Timeout")
 }
 
 // parseSHSTimestamp accepts the various forms Spark History Server emits:

@@ -21,6 +21,12 @@ const uniformInputThreshold = 1.2
 // uniform input — extreme task-time spread is anomalous regardless of data.
 const extremeRatioBypass = 20.0
 
+// tightTaskTimeRatio: 任务时长 P99/P50 低于此值时,任务时长本身就高度均匀,
+// 不能算倾斜。哪怕 input_skew_factor 看起来很大(往往是单个极小任务把 min
+// 拉到 0 制造的数值伪影),都不应让用户花时间在这条线上。SkewRule 直接降到
+// ok,DataSkew row 降到 mild。
+const tightTaskTimeRatio = 1.5
+
 func (SkewRule) Eval(app *model.Application) Finding {
 	var bestF float64
 	var bestStage *model.Stage
@@ -57,6 +63,12 @@ func (SkewRule) Eval(app *model.Application) Finding {
 		}
 	}
 	if bestStage == nil || bestF < 4 {
+		return okFinding(SkewRule{}.ID(), SkewRule{}.Title())
+	}
+	// 紧致闸门:任务时长 P99/P50 < 1.5 → 任务时长本身就均匀,不存在真正的倾斜。
+	// 即使 input_skew_factor 很大(常见伪影:某个 task min 接近 0 把 ratio 拉爆),
+	// 也直接报 ok,不消耗用户注意力。
+	if bestP50 > 0 && bestP99/bestP50 < tightTaskTimeRatio {
 		return okFinding(SkewRule{}.ID(), SkewRule{}.Title())
 	}
 	ws := wallShare(bestStage, app)

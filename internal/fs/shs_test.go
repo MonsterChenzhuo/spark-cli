@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	cerrors "github.com/opay-bigdata/spark-cli/internal/errors"
 )
 
 // shsAttempt mirrors the JSON shape of one element of `applications/<id>.attempts`.
@@ -130,6 +133,13 @@ func buildZip(t *testing.T, files map[string][]byte) []byte {
 func shsBase(srv *httptest.Server) string {
 	u, _ := url.Parse(srv.URL)
 	return "shs://" + u.Host
+}
+
+// TestMain 静默 SHS 的下载进度提示,免得在 go test 输出里制造噪音。
+// 实际进度提示由 NewSHS 检查同名环境变量决定是否启用。
+func TestMain(m *testing.M) {
+	_ = os.Setenv("SPARK_CLI_QUIET", "1")
+	os.Exit(m.Run())
 }
 
 func TestSHSAutoPicksMaxAttempt(t *testing.T) {
@@ -420,8 +430,21 @@ func TestSHSHTTPTimeout(t *testing.T) {
 	defer srv.Close()
 	s := NewSHS(shsBase(srv), 50*time.Millisecond)
 	defer func() { _ = s.Close() }()
-	if _, err := s.List(shsBase(srv), "application_x"); err == nil {
+	_, err := s.List(shsBase(srv), "application_x")
+	if err == nil {
 		t.Fatal("expected timeout error")
+	}
+	// 契约: timeout 必须升级成 cerrors.Error(LOG_UNREADABLE),且 hint 引导
+	// 用户去调 --shs-timeout / SPARK_CLI_SHS_TIMEOUT,不能再让用户撞墙后翻文档。
+	var ce *cerrors.Error
+	if !stderrors.As(err, &ce) {
+		t.Fatalf("err type = %T (%v), want *cerrors.Error", err, err)
+	}
+	if ce.Code != cerrors.CodeLogUnreadable {
+		t.Errorf("code=%s want %s", ce.Code, cerrors.CodeLogUnreadable)
+	}
+	if !strings.Contains(ce.Hint, "shs-timeout") {
+		t.Errorf("hint=%q should mention shs-timeout flag", ce.Hint)
 	}
 }
 
