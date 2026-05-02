@@ -446,6 +446,38 @@ func TestSHSHTTPTimeout(t *testing.T) {
 	}
 }
 
+// SHS DNS / connect-refused 错误也要走 cerrors.Error 带 hint(round-3 加的
+// isDNSOrConnectError 路径)。原本只 timeout 走 cerrors,DNS 类错误走 fmt.Errorf
+// 失去 hint。
+func TestSHSWrapsDNSAndConnectErrors(t *testing.T) {
+	cases := []struct {
+		name     string
+		errMsg   string
+		wantHint string
+	}{
+		{"no-such-host", "Get \"http://x/y\": dial tcp: lookup nonexistent.host: no such host", "shs://host:port"},
+		{"connection-refused", "Get \"http://x/y\": dial tcp 127.0.0.1:1: connect: connection refused", "shs://host:port"},
+		{"network-unreachable", "Get \"http://x/y\": dial tcp 10.0.0.1:80: connect: network is unreachable", "shs://host:port"},
+	}
+	s := NewSHS("shs://example.com:18081", 5*time.Second, SHSOptions{Quiet: true})
+	defer func() { _ = s.Close() }()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := s.wrapTimeout("test op", stderrors.New(tc.errMsg))
+			var ce *cerrors.Error
+			if !stderrors.As(err, &ce) {
+				t.Fatalf("err type = %T, want *cerrors.Error", err)
+			}
+			if ce.Code != cerrors.CodeLogUnreadable {
+				t.Errorf("code=%s want LOG_UNREADABLE", ce.Code)
+			}
+			if !strings.Contains(ce.Hint, tc.wantHint) {
+				t.Errorf("hint=%q should contain %q", ce.Hint, tc.wantHint)
+			}
+		})
+	}
+}
+
 func TestSHSLargeZipSpillsToTempfile(t *testing.T) {
 	appID := "application_x"
 	z := buildZip(t, map[string][]byte{appID + "_1": []byte("hello")})
