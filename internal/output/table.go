@@ -118,12 +118,23 @@ func toStringSlice(v any) []string {
 	}
 }
 
+// toRowSlice 把 envelope.Data 拍平成 []map[string]any 供 table / markdown 渲染。
+//
+// 历史 bug:dispatch.go 把 scenario row(rules.Finding / AppSummaryRow /
+// SlowStageRow 等 struct)塞进 []any,但本函数旧实现只接受 map[string]any,
+// 导致 struct row 全部被丢弃 —— `--format table` / `--format markdown` 输出
+// 只剩表头无数据。修法:struct row 通过 JSON round-trip 转成 map[string]any
+// (struct 上已经有完整 JSON tag,序列化后字段名与 envelope.Columns 直接对齐)。
 func toRowSlice(v any) []map[string]any {
 	switch x := v.(type) {
 	case []any:
 		out := make([]map[string]any, 0, len(x))
 		for _, e := range x {
 			if m, ok := e.(map[string]any); ok {
+				out = append(out, m)
+				continue
+			}
+			if m, ok := structToMap(e); ok {
 				out = append(out, m)
 			}
 		}
@@ -133,6 +144,20 @@ func toRowSlice(v any) []map[string]any {
 	default:
 		return nil
 	}
+}
+
+// structToMap 通过 JSON round-trip 把 struct(或包含 struct 的 any)转成 map。
+// 失败一律返回 false,table / markdown formatter 跳过这一行,不会让 CLI 失败。
+func structToMap(v any) (map[string]any, bool) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, false
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, false
+	}
+	return m, true
 }
 
 func toMap(v any) map[string]any {
