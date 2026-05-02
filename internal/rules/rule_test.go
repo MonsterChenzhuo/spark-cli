@@ -428,6 +428,38 @@ func TestSpillRuleEmitsSimilarStagesAndCountInSuggestion(t *testing.T) {
 	}
 }
 
+// SpillRule evidence 需要带 wall_share(其他规则一致),让 agent 看到 ROI
+// 不必再回头跑 slow-stages 算占比。
+func TestSpillRuleEvidenceIncludesWallShare(t *testing.T) {
+	app := model.NewApplication()
+	app.DurationMs = 1_000_000
+	s1 := model.NewStage(23, 0, "spilly-primary", 100, 0)
+	s1.SubmitMs = 0
+	s1.CompleteMs = 500_000 // wall_share = 0.5
+	s1.TotalSpillDisk = 10 * 1024 * 1024 * 1024
+	app.Stages[model.StageKey{ID: 23}] = s1
+
+	s2 := model.NewStage(38, 0, "spilly-other", 100, 0)
+	s2.SubmitMs = 0
+	s2.CompleteMs = 200_000 // wall_share = 0.2
+	s2.TotalSpillDisk = 3 * 1024 * 1024 * 1024
+	app.Stages[model.StageKey{ID: 38}] = s2
+
+	f := SpillRule{}.Eval(app)
+	ws, ok := f.Evidence["wall_share"].(float64)
+	if !ok || ws < 0.49 || ws > 0.51 {
+		t.Errorf("primary wall_share=%v want ~0.5", f.Evidence["wall_share"])
+	}
+	sims, _ := f.Evidence["similar_stages"].([]map[string]any)
+	if len(sims) == 0 {
+		t.Fatalf("expected similar_stages")
+	}
+	simWS, ok := sims[0]["wall_share"].(float64)
+	if !ok || simWS < 0.19 || simWS > 0.21 {
+		t.Errorf("similar wall_share=%v want ~0.2", sims[0]["wall_share"])
+	}
+}
+
 // suggestion 在 partition_size > 64MB 阈值时应当给出可执行的
 // `advisoryPartitionSizeInBytes=64m` 建议 + 算出目标 partition 数。
 func TestSpillRuleSuggestionQuantifiesPartitionTuning(t *testing.T) {

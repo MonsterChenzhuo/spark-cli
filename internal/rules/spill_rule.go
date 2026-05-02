@@ -24,6 +24,7 @@ type spillCandidate struct {
 	s             *model.Stage
 	gb            float64
 	estPartSizeMB float64
+	wallShare     float64
 }
 
 func (SpillRule) Eval(app *model.Application) Finding {
@@ -37,7 +38,12 @@ func (SpillRule) Eval(app *model.Application) Finding {
 		if s.NumTasks > 0 {
 			part = round3(float64(s.TotalShuffleReadBytes) / float64(s.NumTasks) / (1024 * 1024))
 		}
-		cands = append(cands, spillCandidate{s: s, gb: round3(gb), estPartSizeMB: part})
+		cands = append(cands, spillCandidate{
+			s:             s,
+			gb:            round3(gb),
+			estPartSizeMB: part,
+			wallShare:     wallShare(s, app),
+		})
 	}
 	if len(cands) == 0 {
 		return okFinding(SpillRule{}.ID(), SpillRule{}.Title())
@@ -56,6 +62,9 @@ func (SpillRule) Eval(app *model.Application) Finding {
 	if primary.s.NumTasks > 0 {
 		evidence["partitions"] = primary.s.NumTasks
 		evidence["est_partition_size_mb"] = primary.estPartSizeMB
+	}
+	if primary.wallShare > 0 {
+		evidence["wall_share"] = round3(primary.wallShare)
 	}
 	shufflePartitions := confValue(app, "spark.sql.shuffle.partitions")
 	executorMem := confValue(app, "spark.executor.memory")
@@ -78,6 +87,9 @@ func (SpillRule) Eval(app *model.Application) Finding {
 			if c.s.NumTasks > 0 {
 				entry["partitions"] = c.s.NumTasks
 				entry["est_partition_size_mb"] = c.estPartSizeMB
+			}
+			if c.wallShare > 0 {
+				entry["wall_share"] = round3(c.wallShare)
 			}
 			similar = append(similar, entry)
 			if len(similar) >= similarStagesLimit {
