@@ -177,7 +177,12 @@ func firstNonEmptyLine(s string) string {
 //   - "none"    → 直接返回 nil(整段 sql_executions 走 omitempty 缺失)
 //   - "truncate"(默认)→ 每条最多保留前 500 个 rune,过长追加 truncate 标记
 //   - "full"    → 原样输出完整 SQL(可能是几 KB,适合人工排查不适合 agent)
-func BuildSQLExecutionMap(app *model.Application, detail string) map[int64]string {
+//
+// onlyIDs 控制哪些 SQL 进 map:nil 表示历史行为(全部 stage→sql 关联的 SQL 都
+// 收录);非 nil 时只收录这个集合里的 id —— 给 dispatch 调用端用,免得
+// `slow-stages --top 5` 截断后 envelope 里仍然冒出"SHOW DATABASES"等没在 row
+// 里出现的 SQL,让 agent 困惑。
+func BuildSQLExecutionMap(app *model.Application, detail string, onlyIDs map[int64]struct{}) map[int64]string {
 	mode := NormalizeSQLDetail(detail)
 	if mode == SQLDetailNone {
 		return nil
@@ -192,6 +197,11 @@ func BuildSQLExecutionMap(app *model.Application, detail string) map[int64]strin
 		if id < 0 || desc == "" || isCallSiteDescription(desc) {
 			continue
 		}
+		if onlyIDs != nil {
+			if _, ok := onlyIDs[id]; !ok {
+				continue
+			}
+		}
 		if _, ok := seen[id]; ok {
 			continue
 		}
@@ -200,6 +210,28 @@ func BuildSQLExecutionMap(app *model.Application, detail string) map[int64]strin
 	}
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+// CollectSlowStageSQLIDs / CollectDataSkewSQLIDs 从 row 切片提取出现的 sql_execution_id
+// 集合(去掉 -1)。dispatch 用来过滤 BuildSQLExecutionMap 输出。
+func CollectSlowStageSQLIDs(rows []SlowStageRow) map[int64]struct{} {
+	out := make(map[int64]struct{}, len(rows))
+	for _, r := range rows {
+		if r.SQLExecutionID >= 0 {
+			out[r.SQLExecutionID] = struct{}{}
+		}
+	}
+	return out
+}
+
+func CollectDataSkewSQLIDs(rows []DataSkewRow) map[int64]struct{} {
+	out := make(map[int64]struct{}, len(rows))
+	for _, r := range rows {
+		if r.SQLExecutionID >= 0 {
+			out[r.SQLExecutionID] = struct{}{}
+		}
 	}
 	return out
 }

@@ -7,10 +7,14 @@ import (
 )
 
 type SlowStageRow struct {
-	StageID        int     `json:"stage_id"`
-	Attempt        int     `json:"attempt"`
-	Name           string  `json:"name"`
-	DurationMs     int64   `json:"duration_ms"`
+	StageID    int    `json:"stage_id"`
+	Attempt    int    `json:"attempt"`
+	Name       string `json:"name"`
+	DurationMs int64  `json:"duration_ms"`
+	// WallShare = stage.duration / app.duration,直接给 agent ROI 信号,免得
+	// 再用 envelope.app_duration_ms 自己除。app.DurationMs == 0(没 ApplicationEnd
+	// 事件)时为 0。
+	WallShare      float64 `json:"wall_share"`
 	Tasks          int64   `json:"tasks"`
 	FailedTasks    int64   `json:"failed_tasks"`
 	P50TaskMs      int64   `json:"p50_task_ms"`
@@ -35,7 +39,7 @@ type SlowStageRow struct {
 
 func SlowStagesColumns() []string {
 	return []string{
-		"stage_id", "attempt", "name", "duration_ms", "tasks", "failed_tasks",
+		"stage_id", "attempt", "name", "duration_ms", "wall_share", "tasks", "failed_tasks",
 		"p50_task_ms", "p99_task_ms", "input_gb", "shuffle_read_gb",
 		"shuffle_write_gb", "spill_disk_gb", "gc_ms", "gc_ratio",
 		"busy_ratio",
@@ -57,6 +61,7 @@ func SlowStages(app *model.Application, top int) []SlowStageRow {
 			Attempt:               s.Attempt,
 			Name:                  s.Name,
 			DurationMs:            dur,
+			WallShare:             round3(dataSkewWallShare(s, app)),
 			Tasks:                 int64(s.TaskDurations.Count()),
 			FailedTasks:           int64(s.FailedTasks),
 			P50TaskMs:             int64(s.TaskDurations.Quantile(0.5)),

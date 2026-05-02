@@ -19,7 +19,7 @@ func buildScenarioBody(opts Options, app *model.Application, env *scenario.Envel
 			anyRows[i] = r
 		}
 		env.Data = anyRows
-		env.SQLExecutions = scenario.BuildSQLExecutionMap(app, opts.SQLDetail)
+		env.SQLExecutions = scenario.BuildSQLExecutionMap(app, opts.SQLDetail, scenario.CollectSlowStageSQLIDs(rows))
 	case "data-skew":
 		env.Columns = scenario.DataSkewColumns()
 		rows := scenario.DataSkew(app, opts.Top)
@@ -28,7 +28,7 @@ func buildScenarioBody(opts Options, app *model.Application, env *scenario.Envel
 			anyRows[i] = r
 		}
 		env.Data = anyRows
-		env.SQLExecutions = scenario.BuildSQLExecutionMap(app, opts.SQLDetail)
+		env.SQLExecutions = scenario.BuildSQLExecutionMap(app, opts.SQLDetail, scenario.CollectDataSkewSQLIDs(rows))
 	case "gc-pressure":
 		env.Columns = scenario.GCPressureColumns()
 		rows := scenario.GCPressure(app, opts.Top)

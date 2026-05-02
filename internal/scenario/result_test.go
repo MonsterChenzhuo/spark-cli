@@ -93,7 +93,7 @@ func TestBuildSQLExecutionMapDeduplicatesAndApplesFallback(t *testing.T) {
 	app.StageToSQL[3] = 7
 	app.StageToSQL[4] = 9 // 没有可用描述,应当跳过
 
-	m := BuildSQLExecutionMap(app, "full")
+	m := BuildSQLExecutionMap(app, "full", nil)
 
 	if got := m[5]; got != "select * from t" {
 		t.Errorf("id=5 desc=%q want %q", got, "select * from t")
@@ -111,7 +111,7 @@ func TestBuildSQLExecutionMapDeduplicatesAndApplesFallback(t *testing.T) {
 
 func TestBuildSQLExecutionMapEmptyWhenNoLinks(t *testing.T) {
 	app := model.NewApplication()
-	if m := BuildSQLExecutionMap(app, "full"); m != nil {
+	if m := BuildSQLExecutionMap(app, "full", nil); m != nil {
 		t.Errorf("expected nil map when no stages link to SQL, got %v", m)
 	}
 }
@@ -135,7 +135,7 @@ func TestBuildSQLExecutionMapDropsCallSiteOnlyEntries(t *testing.T) {
 	app.StageToSQL[1] = 10
 	app.StageToSQL[2] = 11
 
-	m := BuildSQLExecutionMap(app, "full")
+	m := BuildSQLExecutionMap(app, "full", nil)
 	if _, ok := m[10]; ok {
 		t.Errorf("id=10 应被过滤(全是 callsite 噪音),实际 %q", m[10])
 	}
@@ -154,7 +154,7 @@ func TestBuildSQLExecutionMapNilWhenAllNoise(t *testing.T) {
 		}
 		app.StageToSQL[int(i)] = i
 	}
-	if m := BuildSQLExecutionMap(app, "full"); m != nil {
+	if m := BuildSQLExecutionMap(app, "full", nil); m != nil {
 		t.Errorf("80 个全噪音条目应让 map 整体 omit(返回 nil),实际 %d 项", len(m))
 	}
 }
@@ -168,7 +168,7 @@ func TestBuildSQLExecutionMapTruncatesByDefault(t *testing.T) {
 	app.StageToSQL[1] = 5
 
 	for _, mode := range []string{"", "truncate", "garbage", "TRUNCATE"} {
-		m := BuildSQLExecutionMap(app, mode)
+		m := BuildSQLExecutionMap(app, mode, nil)
 		got, ok := m[5]
 		if !ok {
 			t.Fatalf("mode=%q: id=5 missing", mode)
@@ -194,7 +194,7 @@ func TestBuildSQLExecutionMapTruncateRespectsUTF8(t *testing.T) {
 	zh := strings.Repeat("中", sqlTruncateRunes+50)
 	app.SQLExecutions[5] = &model.SQLExecution{ID: 5, Description: zh}
 	app.StageToSQL[1] = 5
-	m := BuildSQLExecutionMap(app, "truncate")
+	m := BuildSQLExecutionMap(app, "truncate", nil)
 	got := m[5]
 	if strings.ContainsRune(got, '�') {
 		t.Errorf("truncate broke UTF-8 (got replacement char in description)")
@@ -207,7 +207,7 @@ func TestBuildSQLExecutionMapNoneReturnsNil(t *testing.T) {
 	app := model.NewApplication()
 	app.SQLExecutions[5] = &model.SQLExecution{ID: 5, Description: "select * from t"}
 	app.StageToSQL[1] = 5
-	if m := BuildSQLExecutionMap(app, "none"); m != nil {
+	if m := BuildSQLExecutionMap(app, "none", nil); m != nil {
 		t.Errorf("mode=none should return nil, got %v", m)
 	}
 }
@@ -218,9 +218,62 @@ func TestBuildSQLExecutionMapFullReturnsOriginal(t *testing.T) {
 	body := strings.Repeat("a", sqlTruncateRunes+200)
 	app.SQLExecutions[5] = &model.SQLExecution{ID: 5, Description: body}
 	app.StageToSQL[1] = 5
-	m := BuildSQLExecutionMap(app, "full")
+	m := BuildSQLExecutionMap(app, "full", nil)
 	if m[5] != body {
 		t.Errorf("full mode should preserve original SQL")
+	}
+}
+
+// onlyIDs 过滤:让 envelope.sql_executions 只包含 row 实际用到的 sql_id。
+// 真实场景:slow-stages --top 5 截断后,本不该出现在 row 里的 SHOW DATABASES
+// 之类 SQL 不应在 envelope 顶层冒出来让 agent 困惑。
+func TestBuildSQLExecutionMapOnlyIDsFilters(t *testing.T) {
+	app := model.NewApplication()
+	app.SQLExecutions[2] = &model.SQLExecution{ID: 2, Description: "SHOW DATABASES"}
+	app.SQLExecutions[5] = &model.SQLExecution{ID: 5, Description: "select * from t"}
+	app.StageToSQL[10] = 2
+	app.StageToSQL[11] = 5
+
+	// 只取 id=5,id=2 不应出现
+	m := BuildSQLExecutionMap(app, "full", map[int64]struct{}{5: {}})
+	if _, ok := m[2]; ok {
+		t.Errorf("id=2 should be filtered out (not in onlyIDs), got %v", m)
+	}
+	if m[5] != "select * from t" {
+		t.Errorf("id=5 should be present, got %v", m)
+	}
+
+	// 空集合 → nil(没人用,整段 omit)
+	if m := BuildSQLExecutionMap(app, "full", map[int64]struct{}{}); m != nil {
+		t.Errorf("empty onlyIDs should yield nil, got %v", m)
+	}
+
+	// nil → 历史行为(都收录)
+	full := BuildSQLExecutionMap(app, "full", nil)
+	if _, ok := full[2]; !ok {
+		t.Errorf("nil onlyIDs should keep id=2, got %v", full)
+	}
+}
+
+func TestCollectSlowStageSQLIDs(t *testing.T) {
+	rows := []SlowStageRow{
+		{StageID: 1, SQLExecutionID: 5},
+		{StageID: 2, SQLExecutionID: 5}, // dup
+		{StageID: 3, SQLExecutionID: -1},
+		{StageID: 4, SQLExecutionID: 7},
+	}
+	got := CollectSlowStageSQLIDs(rows)
+	if _, ok := got[5]; !ok {
+		t.Errorf("missing 5: %v", got)
+	}
+	if _, ok := got[7]; !ok {
+		t.Errorf("missing 7: %v", got)
+	}
+	if _, ok := got[-1]; ok {
+		t.Errorf("unexpected -1: %v", got)
+	}
+	if len(got) != 2 {
+		t.Errorf("len=%d want 2 (5 + 7)", len(got))
 	}
 }
 
