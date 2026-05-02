@@ -1,6 +1,7 @@
 package eventlog
 
 import (
+	stderrors "errors"
 	"fmt"
 	"net/url"
 	"path"
@@ -13,6 +14,19 @@ import (
 
 	cerrors "github.com/opay-bigdata/spark-cli/internal/errors"
 )
+
+// preserveCerror 透传已经是 *cerrors.Error 的错误(保留 code + hint),其他
+// 错误才包装成 LOG_UNREADABLE。历史实现统一用 cerrors.New(...err.Error()...)
+// 把所有错误重新包装,导致 SHS 等下层带 hint 的结构化错误经过 Locator 后 hint
+// 字段丢失到 message 里,呈现 "LOG_UNREADABLE: code: msg (hint: ...)" 这种
+// 嵌套错误。
+func preserveCerror(err error) error {
+	var ce *cerrors.Error
+	if stderrors.As(err, &ce) {
+		return ce
+	}
+	return cerrors.New(cerrors.CodeLogUnreadable, err.Error(), "")
+}
 
 // LogSource describes a resolved EventLog. Format == "v1" means URI points at
 // a single file and Parts is nil; Format == "v2" means URI points at the
@@ -99,7 +113,7 @@ func (l *Locator) fsFor(dirURI string) (fs.FS, error) {
 func (l *Locator) resolveV1(fsys fs.FS, dirURI, appID string) (LogSource, bool, error) {
 	all, err := fsys.List(dirURI, appID)
 	if err != nil {
-		return LogSource{}, false, cerrors.New(cerrors.CodeLogUnreadable, err.Error(), "")
+		return LogSource{}, false, preserveCerror(err)
 	}
 	// V1 single-file logs may carry an `_<attempt>` suffix when
 	// `spark.eventLog.rolling.enabled=false` and Spark assigns an attempt
@@ -147,7 +161,7 @@ func (l *Locator) resolveV1(fsys fs.FS, dirURI, appID string) (LogSource, bool, 
 	}
 	st, err := fsys.Stat(uri)
 	if err != nil {
-		return LogSource{}, false, cerrors.New(cerrors.CodeLogUnreadable, err.Error(), "")
+		return LogSource{}, false, preserveCerror(err)
 	}
 	base := path.Base(uri)
 	return LogSource{
@@ -165,7 +179,7 @@ func (l *Locator) resolveV2(fsys fs.FS, dirURI, appID string) (LogSource, bool, 
 	v2Name := "eventlog_v2_" + appID
 	dirs, err := fsys.List(dirURI, v2Name)
 	if err != nil {
-		return LogSource{}, false, cerrors.New(cerrors.CodeLogUnreadable, err.Error(), "")
+		return LogSource{}, false, preserveCerror(err)
 	}
 	// Spark V2 directory is either `eventlog_v2_<appId>` (no attempt) or
 	// `eventlog_v2_<appId>_<attempt>`. When multiple attempts coexist, pick
@@ -182,7 +196,7 @@ func (l *Locator) resolveV2(fsys fs.FS, dirURI, appID string) (LogSource, bool, 
 		}
 		st, err := fsys.Stat(d)
 		if err != nil {
-			return LogSource{}, false, cerrors.New(cerrors.CodeLogUnreadable, err.Error(), "")
+			return LogSource{}, false, preserveCerror(err)
 		}
 		if !st.IsDir {
 			continue
@@ -201,7 +215,7 @@ func (l *Locator) resolveV2(fsys fs.FS, dirURI, appID string) (LogSource, bool, 
 	}
 	parts, err := fsys.List(v2URI, "events_")
 	if err != nil {
-		return LogSource{}, false, cerrors.New(cerrors.CodeLogUnreadable, err.Error(), "")
+		return LogSource{}, false, preserveCerror(err)
 	}
 	type indexed struct {
 		idx         int

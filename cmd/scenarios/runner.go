@@ -223,9 +223,23 @@ func buildConfig(opts Options) (*config.Config, error) {
 		cfg.Timeout = opts.Timeout
 	}
 	if err := cfg.Validate(); err != nil {
-		return nil, cerrors.New(cerrors.CodeFlagInvalid, err.Error(), "")
+		return nil, cerrors.New(cerrors.CodeFlagInvalid, err.Error(), validateHint(err))
 	}
 	return cfg, nil
+}
+
+// validateHint 给 cfg.Validate() 错误一个可执行 hint。Validate 自身在 internal/config
+// 不依赖 internal/errors,所以 hint 由 runner 层补上,免得用户看到光秃秃 message
+// 还得自己猜下一步做什么。
+func validateHint(err error) string {
+	msg := err.Error()
+	if strings.Contains(msg, "log_dirs is empty") {
+		return "run `spark-cli config init` 写默认 config,或加 --log-dirs file:///path / hdfs://nn/path / shs://host:port"
+	}
+	if strings.Contains(msg, "timeout must be positive") {
+		return "config.yaml `timeout:` 或 --timeout 必须是正值,例如 30s"
+	}
+	return ""
 }
 
 func buildFS(cfg *config.Config, quiet bool, shsCacheDir string) (map[string]fs.FS, []io.Closer, error) {

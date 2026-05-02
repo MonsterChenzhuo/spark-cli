@@ -625,15 +625,46 @@ func (s *SHS) fetchZipToTemp(resp *http.Response) (*zip.Reader, io.Closer, strin
 	return zr, f, tmpPath, nil
 }
 
-// wrapTimeout 把 net/http 的 timeout 错误升级成 cerrors.Error 带 hint,告诉用户
-// 怎么救(改 --shs-timeout / SPARK_CLI_SHS_TIMEOUT / config.yaml)。非 timeout
-// 错误维持原 fmt.Errorf 包装,错误码由调用方上层处理(通常 LOG_UNREADABLE)。
+// wrapTimeout 把 net/http 错误升级成结构化 cerrors.Error,加可执行 hint:
+//   - timeout 类  → 提示调 --shs-timeout / SPARK_CLI_SHS_TIMEOUT / config.yaml
+//   - DNS / connect 类 → 提示检查 host 拼写、可达性
+//   - 其他网络 → 通用 hint(检查 SHS endpoint 与网络)
+//
+// 之前非 timeout 错误维持原 fmt.Errorf 包装,导致 `dial tcp: lookup ...: no
+// such host` 的错误虽然走 LOG_UNREADABLE rc=3 但 hint 字段空,用户看到光秃秃
+// "dial tcp ..."不知道下一步做什么。
 func (s *SHS) wrapTimeout(op string, err error) error {
+	msg := fmt.Sprintf("shs: %s: %v", op, err)
 	if isTimeoutError(err) {
 		hint := "increase --shs-timeout (current: " + s.timeout.String() + "), 或设 SPARK_CLI_SHS_TIMEOUT / config.yaml shs.timeout;大日志默认就需要几分钟"
-		return cerrors.New(cerrors.CodeLogUnreadable, fmt.Sprintf("shs: %s: %v", op, err), hint)
+		return cerrors.New(cerrors.CodeLogUnreadable, msg, hint)
 	}
-	return fmt.Errorf("shs: %s: %w", op, err)
+	if isDNSOrConnectError(err) {
+		hint := "检查 --log-dirs 里的 shs://host:port 是否拼写正确、SHS 服务可达;curl `" + s.httpURL + "/api/v1/applications` 验证一下"
+		return cerrors.New(cerrors.CodeLogUnreadable, msg, hint)
+	}
+	return cerrors.New(cerrors.CodeLogUnreadable, msg, "Spark History Server 请求失败,检查 --shs-timeout 与端点可达性")
+}
+
+// isDNSOrConnectError 判断网络错误是否是 DNS / TCP connect 类(用户常错):
+// host 拼错 / SHS 不在线 / 防火墙阻断。命中后 hint 引导用户检查 shs:// host。
+func isDNSOrConnectError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, sub := range []string{
+		"no such host",
+		"connection refused",
+		"network is unreachable",
+		"i/o timeout",
+		"dial tcp",
+	} {
+		if strings.Contains(msg, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 // isTimeoutError 识别 net/http 因 Client.Timeout 触发的超时:url.Error.Timeout()
