@@ -23,6 +23,11 @@ type globalState struct {
 	ExitCode      int
 }
 
+// CLIVersion 由 cmd 包在 init 时注入(走 -X github.com/.../cmd.version 链)。
+// scenarios 包用它给 SHS HTTP User-Agent 拼成 "spark-cli/<version>",让 SHS
+// 运维能从访问日志识别流量来源。空 / "dev" 时不影响正常诊断。
+var CLIVersion = "dev"
+
 var state = defaultState()
 
 func defaultState() globalState {

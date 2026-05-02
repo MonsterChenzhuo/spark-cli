@@ -16,6 +16,12 @@ import (
 
 var version = "dev"
 
+func init() {
+	// 把 ldflag 注入的 version 同步给 scenarios 包,SHS HTTP User-Agent 用它拼
+	// "spark-cli/<version>" 让 SHS 运维能从访问日志识别流量来源。
+	scenarios.CLIVersion = version
+}
+
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "spark-cli",

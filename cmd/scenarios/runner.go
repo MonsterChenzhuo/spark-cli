@@ -273,8 +273,9 @@ func buildFS(cfg *config.Config, quiet bool, shsCacheDir string) (map[string]fs.
 		case "shs":
 			if _, ok := out["shs"]; !ok {
 				sh := fs.NewSHS("shs://"+u.Host, cfg.SHS.Timeout, fs.SHSOptions{
-					Quiet:    quiet,
-					CacheDir: shsCacheDir,
+					Quiet:     quiet,
+					CacheDir:  shsCacheDir,
+					UserAgent: "spark-cli/" + CLIVersion,
 				})
 				out["shs"] = sh
 				closers = append(closers, sh)

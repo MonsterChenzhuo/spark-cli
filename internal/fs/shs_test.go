@@ -140,6 +140,33 @@ func shsBase(srv *httptest.Server) string {
 // SHSOptions{Quiet: true} 直接控制 stderr,不再读环境变量;每个测试构造 SHS
 // 时显式传 Quiet,免得依赖全局 env state。
 
+// SHS HTTP 请求设置了 User-Agent(round-7 加),让 SHS 运维能从访问日志区分
+// spark-cli 流量。这里启个 httptest 服务器拦截两次 GET,断言 User-Agent 头
+// 形如 "spark-cli/0.1.2"。
+func TestSHSSetsUserAgentHeader(t *testing.T) {
+	var seenUA string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/applications/", func(w http.ResponseWriter, r *http.Request) {
+		seenUA = r.Header.Get("User-Agent")
+		http.NotFound(w, r) // 让 fetchAttempt 返回 found=false 提前退出
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	s := NewSHS(shsBase(srv), 5*time.Second, SHSOptions{
+		Quiet:     true,
+		UserAgent: "spark-cli/0.1.2-test",
+	})
+	defer func() { _ = s.Close() }()
+
+	if _, err := s.List(shsBase(srv), "application_x"); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if seenUA != "spark-cli/0.1.2-test" {
+		t.Errorf("User-Agent=%q want %q", seenUA, "spark-cli/0.1.2-test")
+	}
+}
+
 func TestSHSAutoPicksMaxAttempt(t *testing.T) {
 	appID := "application_x"
 	zip2 := buildZip(t, map[string][]byte{appID + "_2": []byte("hello")})

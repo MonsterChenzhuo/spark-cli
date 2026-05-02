@@ -32,9 +32,12 @@ var _ FS = (*SHS)(nil)
 //     stdout TTY 状态计算得出。
 //   - CacheDir: 启用磁盘 zip 缓存的目录(同 application cache 共用根目录);留空
 //     则保持原行为(下载 zip → CreateTemp → Close 时删除)。
+//   - UserAgent: HTTP User-Agent 头,默认空(走 Go 默认 "Go-http-client/1.1")。
+//     生产场景设成 "spark-cli/<version>" 让 SHS 运维能从访问日志识别流量来源。
 type SHSOptions struct {
-	CacheDir string
-	Quiet    bool
+	CacheDir  string
+	Quiet     bool
+	UserAgent string
 }
 
 // SHS implements FS over the Spark History Server REST API
@@ -49,6 +52,7 @@ type SHS struct {
 	stderr     io.Writer     // 进度提示输出(Quiet=true 时为 io.Discard)
 	timeout    time.Duration // 同 httpClient.Timeout,用于错误 hint 中报告当前值
 	cacheDir   string        // 持久化 zip 的目录;空时不启用磁盘缓存
+	userAgent  string        // HTTP User-Agent;空时走 Go 默认
 
 	mu       sync.Mutex
 	bundles  map[string]*shsBundle // appID → fetched zip
@@ -89,7 +93,21 @@ func NewSHS(base string, timeout time.Duration, opts SHSOptions) *SHS {
 		stderr:     w,
 		timeout:    timeout,
 		cacheDir:   opts.CacheDir,
+		userAgent:  opts.UserAgent,
 	}
+}
+
+// httpGet 包一层 http.Client.Get,统一加 User-Agent 头(若设置)。这样 fetchAttempt
+// / fetchZip 等 HTTP 调用点不必各自设置一次。
+func (s *SHS) httpGet(url string) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if s.userAgent != "" {
+		req.Header.Set("User-Agent", s.userAgent)
+	}
+	return s.httpClient.Do(req)
 }
 
 func (s *SHS) Close() error {
@@ -458,7 +476,7 @@ func (s *SHS) sweepStaleCachedZips(dir, appID, keep string) {
 //     for /<appID>/<empty>/logs in that case, so we MUST drop the segment.
 func (s *SHS) fetchAttempt(appID string) (attempt string, found bool, lastUpdatedNS int64, err error) {
 	metaURL := fmt.Sprintf("%s/api/v1/applications/%s", s.httpURL, appID)
-	resp, err := s.httpClient.Get(metaURL)
+	resp, err := s.httpGet(metaURL)
 	if err != nil {
 		return "", false, 0, s.wrapTimeout(fmt.Sprintf("GET %s", metaURL), err)
 	}
@@ -525,7 +543,7 @@ func (s *SHS) fetchZip(appID, attempt, destPath string) (*zip.Reader, io.Closer,
 	} else {
 		logsURL = fmt.Sprintf("%s/api/v1/applications/%s/%s/logs", s.httpURL, appID, attempt)
 	}
-	resp, err := s.httpClient.Get(logsURL)
+	resp, err := s.httpGet(logsURL)
 	if err != nil {
 		return nil, nil, "", s.wrapTimeout(fmt.Sprintf("GET %s", logsURL), err)
 	}
