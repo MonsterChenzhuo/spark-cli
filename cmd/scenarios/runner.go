@@ -118,6 +118,7 @@ func Run(ctx context.Context, opts Options) int {
 	start := time.Now()
 	if cached, hit := ch.Get(src, fsys); hit {
 		env.AppName = cached.Name
+		env.AppDurationMs = cached.DurationMs
 		env.ParsedEvents = 0
 		env.ElapsedMs = time.Since(start).Milliseconds()
 		if err := buildScenarioBody(opts, cached, &env); err != nil {
@@ -131,6 +132,7 @@ func Run(ctx context.Context, opts Options) int {
 	}
 	ch.Put(src, fsys, app)
 	env.AppName = app.Name
+	env.AppDurationMs = app.DurationMs
 	env.ParsedEvents = parsed
 	env.ElapsedMs = time.Since(start).Milliseconds()
 

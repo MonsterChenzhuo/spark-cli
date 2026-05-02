@@ -448,6 +448,71 @@ func TestSpillRuleSuggestionQuantifiesPartitionTuning(t *testing.T) {
 	}
 }
 
+// TinyTasksRule 现在也用 wall_share 选 primary + similar_stages,evidence 加
+// wall_ms/wall_share,suggestion 给具体的目标 partition 数。
+func TestTinyTasksRulePicksMaxWallShareAsPrimary(t *testing.T) {
+	app := model.NewApplication()
+	app.DurationMs = 1_000_000
+
+	// stage 1: tasks=300,p50=20,wall_share=0.05
+	low := model.NewStage(1, 0, "low-wall-tiny", 300, 0)
+	low.SubmitMs = 0
+	low.CompleteMs = 50_000
+	low.Status = "succeeded"
+	for i := 0; i < 300; i++ {
+		low.TaskDurations.Add(20)
+	}
+	app.Stages[model.StageKey{ID: 1}] = low
+
+	// stage 2: tasks=500,p50=30,wall_share=0.3 — 应当被选 primary
+	high := model.NewStage(2, 0, "high-wall-tiny", 500, 0)
+	high.SubmitMs = 0
+	high.CompleteMs = 300_000
+	high.Status = "succeeded"
+	for i := 0; i < 500; i++ {
+		high.TaskDurations.Add(30)
+	}
+	app.Stages[model.StageKey{ID: 2}] = high
+
+	f := TinyTasksRule{}.Eval(app)
+	if got, _ := f.Evidence["stage_id"].(int); got != 2 {
+		t.Errorf("primary stage_id=%v want 2 (max wall_share)", got)
+	}
+	// suggestion 应当算出"降到 ~30"(500*30/500=30)
+	if !strings.Contains(f.Suggestion, "降到 ~30") {
+		t.Errorf("suggestion missing target partition number: %s", f.Suggestion)
+	}
+	sims, ok := f.Evidence["similar_stages"].([]map[string]any)
+	if !ok || len(sims) != 1 {
+		t.Fatalf("similar_stages=%v want 1", f.Evidence["similar_stages"])
+	}
+	if got, _ := sims[0]["stage_id"].(int); got != 1 {
+		t.Errorf("similar_stages[0].stage_id=%v want 1", got)
+	}
+}
+
+// IdleStageRule evidence 加 wall_share 字段,免得 agent 看到 wall_ms 还得自己除。
+func TestIdleStageRuleEvidenceIncludesWallShare(t *testing.T) {
+	app := model.NewApplication()
+	app.DurationMs = 1_000_000
+	app.MaxConcurrentExecutors = 6
+	s := model.NewStage(1, 0, "broadcast-wait", 1, 0)
+	s.SubmitMs = 0
+	s.CompleteMs = 121_000 // wall 121s,wall_share = 0.121
+	s.TotalRunMs = 200
+	s.Status = "succeeded"
+	app.Stages[model.StageKey{ID: 1}] = s
+
+	f := IdleStageRule{}.Eval(app)
+	ws, ok := f.Evidence["wall_share"].(float64)
+	if !ok {
+		t.Fatalf("evidence missing wall_share: %+v", f.Evidence)
+	}
+	if ws < 0.119 || ws > 0.123 {
+		t.Errorf("wall_share=%v want ~0.121", ws)
+	}
+}
+
 func TestSpillRuleSkipsPartitionEvidenceWhenNumTasksZero(t *testing.T) {
 	app := model.NewApplication()
 	s := model.NewStage(0, 0, "no-tasks", 0, 0)

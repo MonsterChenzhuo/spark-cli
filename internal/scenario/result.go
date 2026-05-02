@@ -60,15 +60,19 @@ func truncateSQL(s, mode string) string {
 // payload small (production logs with multi-line SQL would otherwise repeat
 // the same multi-KB string per row).
 type Envelope struct {
-	Scenario      string           `json:"scenario"`
-	AppID         string           `json:"app_id"`
-	AppName       string           `json:"app_name"`
-	LogPath       string           `json:"log_path"`
-	LogFormat     string           `json:"log_format"`
-	Compression   string           `json:"compression"`
-	Incomplete    bool             `json:"incomplete"`
-	ParsedEvents  int64            `json:"parsed_events"`
-	ElapsedMs     int64            `json:"elapsed_ms"`
+	Scenario     string `json:"scenario"`
+	AppID        string `json:"app_id"`
+	AppName      string `json:"app_name"`
+	LogPath      string `json:"log_path"`
+	LogFormat    string `json:"log_format"`
+	Compression  string `json:"compression"`
+	Incomplete   bool   `json:"incomplete"`
+	ParsedEvents int64  `json:"parsed_events"`
+	ElapsedMs    int64  `json:"elapsed_ms"`
+	// AppDurationMs 来自 SparkListenerApplicationEnd(没该事件时为 0,字段经
+	// omitempty 缺失)。给 agent 一个绝对秒数参照,看 wall_share 时不必再去
+	// app-summary 拿 duration_ms 才能换算。
+	AppDurationMs int64            `json:"app_duration_ms,omitempty"`
 	Columns       any              `json:"columns"`
 	Data          any              `json:"data"`
 	Summary       any              `json:"summary,omitempty"`

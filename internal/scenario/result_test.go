@@ -41,6 +41,24 @@ func TestEnvelopeMarshalsRequiredKeys(t *testing.T) {
 	}
 }
 
+// envelope 顶层 app_duration_ms 应当在为 0 时 omitempty 缺失;非 0 时保留。
+// 让 agent 看 wall_share 时有绝对参照,不必再去 app-summary 拿 duration。
+func TestEnvelopeOmitsAppDurationMsWhenZero(t *testing.T) {
+	env := Envelope{Scenario: "diagnose", AppDurationMs: 0}
+	b, _ := json.Marshal(env)
+	if got := string(b); contains(got, "app_duration_ms") {
+		t.Errorf("expected app_duration_ms omitted when 0, got %s", got)
+	}
+}
+
+func TestEnvelopeIncludesAppDurationMsWhenNonZero(t *testing.T) {
+	env := Envelope{Scenario: "diagnose", AppDurationMs: 4230802}
+	b, _ := json.Marshal(env)
+	if got := string(b); !contains(got, `"app_duration_ms":4230802`) {
+		t.Errorf("expected app_duration_ms=4230802 present, got %s", got)
+	}
+}
+
 func TestEnvelopeOmitsSummaryWhenNil(t *testing.T) {
 	env := Envelope{Scenario: "slow-stages"}
 	b, _ := json.Marshal(env)
