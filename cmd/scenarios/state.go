@@ -14,6 +14,7 @@ type globalState struct {
 	CacheDir      string
 	NoCache       bool
 	SHSTimeout    string
+	SQLDetail     string
 	Timeout       string
 	Format        string
 	Top           int
@@ -25,7 +26,7 @@ type globalState struct {
 var state = defaultState()
 
 func defaultState() globalState {
-	return globalState{Format: "json", Top: 10}
+	return globalState{Format: "json", Top: 10, SQLDetail: "truncate"}
 }
 
 // ExitCode reports the most recent scenario exit code.
@@ -50,6 +51,7 @@ func RegisterFlags(root *cobra.Command) {
 	root.PersistentFlags().StringVar(&state.CacheDir, "cache-dir", state.CacheDir, "Directory for the parsed-application cache (defaults to $XDG_CACHE_HOME/spark-cli or ~/.cache/spark-cli)")
 	root.PersistentFlags().BoolVar(&state.NoCache, "no-cache", state.NoCache, "Bypass the parsed-application cache for this invocation (do not read or write)")
 	root.PersistentFlags().StringVar(&state.SHSTimeout, "shs-timeout", state.SHSTimeout, "HTTP timeout for shs:// requests, e.g. 60s")
+	root.PersistentFlags().StringVar(&state.SQLDetail, "sql-detail", state.SQLDetail, "SQL description detail in sql_executions: truncate(default ~500 runes) | full | none")
 }
 
 func splitLogDirs(s string) []string {

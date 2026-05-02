@@ -36,8 +36,12 @@ type Options struct {
 	// NoProgress 来自 --no-progress flag,与 SPARK_CLI_QUIET 环境变量、stdout
 	// TTY 检测一并由 resolveQuiet 合成最终的 SHS 静默决定。
 	NoProgress bool
-	Stdout     io.Writer
-	Stderr     io.Writer
+	// SQLDetail 控制 envelope.sql_executions 中每条 description 的呈现形态:
+	// "truncate"(默认 ~500 rune)、"full"(完整 SQL)、"none"(整段 omit)。
+	// 空字符串 / 非法值由 scenario.NormalizeSQLDetail 落到 truncate。
+	SQLDetail string
+	Stdout    io.Writer
+	Stderr    io.Writer
 }
 
 func Run(ctx context.Context, opts Options) int {
@@ -209,6 +213,9 @@ func buildConfig(opts Options) (*config.Config, error) {
 	}
 	if opts.SHSTimeout > 0 {
 		cfg.SHS.Timeout = opts.SHSTimeout
+	}
+	if opts.SQLDetail != "" {
+		cfg.SQL.Detail = opts.SQLDetail
 	}
 	if opts.Timeout > 0 {
 		cfg.Timeout = opts.Timeout

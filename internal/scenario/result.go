@@ -1,10 +1,54 @@
 package scenario
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/opay-bigdata/spark-cli/internal/model"
 )
+
+// SQL description 默认截断阈值。500 rune 大概 1.5 KB(英文)~ 1 KB(中文混合),
+// 一次 SQL ETL 的核心意图通常前 500 字就够 agent 判读,不再拖累整个 envelope
+// 体积。需要完整 SQL 时使用 --sql-detail=full。
+const sqlTruncateRunes = 500
+
+// SQLDetailModes 允许值;非法值由 normalize 落到 SQLDetailDefault。
+const (
+	SQLDetailFull     = "full"
+	SQLDetailTruncate = "truncate"
+	SQLDetailNone     = "none"
+	SQLDetailDefault  = SQLDetailTruncate
+)
+
+// NormalizeSQLDetail 把空 / 未识别值规范化到默认 truncate。所有调用方都通过它
+// 拿最终模式,免得每处自己判空。
+func NormalizeSQLDetail(mode string) string {
+	switch mode {
+	case SQLDetailFull, SQLDetailTruncate, SQLDetailNone:
+		return mode
+	default:
+		return SQLDetailDefault
+	}
+}
+
+// truncateSQL 把 description 按 detail 模式裁剪。"full" 原样;"none" 返回空字符串
+// (BuildSQLExecutionMap 配套整段 omit);其他(默认 truncate)取前 sqlTruncateRunes
+// 个 rune,过长追加 "...(truncated, total N chars)" 让 agent 知道被截断了。
+//
+// 用 rune 而非 byte 切片,免得在中文 SQL 里把 UTF-8 多字节字符切坏。
+func truncateSQL(s, mode string) string {
+	switch NormalizeSQLDetail(mode) {
+	case SQLDetailFull:
+		return s
+	case SQLDetailNone:
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= sqlTruncateRunes {
+		return s
+	}
+	return string(runes[:sqlTruncateRunes]) + fmt.Sprintf("...(truncated, total %d chars)", len(runes))
+}
 
 // Envelope is the canonical JSON shape returned by every scenario.
 // Data is `any` because gc-pressure returns an object, others return arrays.
@@ -124,7 +168,16 @@ func firstNonEmptyLine(s string) string {
 //
 // Returns nil when no stage links to any SQL execution OR every linked execution
 // only carries callsite noise — keeps the envelope `omitempty` field absent.
-func BuildSQLExecutionMap(app *model.Application) map[int64]string {
+//
+// detail 控制每条 description 的输出形态(见 SQLDetail* 常量):
+//   - "none"    → 直接返回 nil(整段 sql_executions 走 omitempty 缺失)
+//   - "truncate"(默认)→ 每条最多保留前 500 个 rune,过长追加 truncate 标记
+//   - "full"    → 原样输出完整 SQL(可能是几 KB,适合人工排查不适合 agent)
+func BuildSQLExecutionMap(app *model.Application, detail string) map[int64]string {
+	mode := NormalizeSQLDetail(detail)
+	if mode == SQLDetailNone {
+		return nil
+	}
 	if len(app.StageToSQL) == 0 {
 		return nil
 	}
@@ -139,7 +192,7 @@ func BuildSQLExecutionMap(app *model.Application) map[int64]string {
 			continue
 		}
 		seen[id] = struct{}{}
-		out[id] = desc
+		out[id] = truncateSQL(desc, mode)
 	}
 	if len(out) == 0 {
 		return nil

@@ -2,6 +2,8 @@ package scenario
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/opay-bigdata/spark-cli/internal/model"
@@ -73,7 +75,7 @@ func TestBuildSQLExecutionMapDeduplicatesAndApplesFallback(t *testing.T) {
 	app.StageToSQL[3] = 7
 	app.StageToSQL[4] = 9 // 没有可用描述,应当跳过
 
-	m := BuildSQLExecutionMap(app)
+	m := BuildSQLExecutionMap(app, "full")
 
 	if got := m[5]; got != "select * from t" {
 		t.Errorf("id=5 desc=%q want %q", got, "select * from t")
@@ -91,7 +93,7 @@ func TestBuildSQLExecutionMapDeduplicatesAndApplesFallback(t *testing.T) {
 
 func TestBuildSQLExecutionMapEmptyWhenNoLinks(t *testing.T) {
 	app := model.NewApplication()
-	if m := BuildSQLExecutionMap(app); m != nil {
+	if m := BuildSQLExecutionMap(app, "full"); m != nil {
 		t.Errorf("expected nil map when no stages link to SQL, got %v", m)
 	}
 }
@@ -115,7 +117,7 @@ func TestBuildSQLExecutionMapDropsCallSiteOnlyEntries(t *testing.T) {
 	app.StageToSQL[1] = 10
 	app.StageToSQL[2] = 11
 
-	m := BuildSQLExecutionMap(app)
+	m := BuildSQLExecutionMap(app, "full")
 	if _, ok := m[10]; ok {
 		t.Errorf("id=10 应被过滤(全是 callsite 噪音),实际 %q", m[10])
 	}
@@ -134,8 +136,73 @@ func TestBuildSQLExecutionMapNilWhenAllNoise(t *testing.T) {
 		}
 		app.StageToSQL[int(i)] = i
 	}
-	if m := BuildSQLExecutionMap(app); m != nil {
+	if m := BuildSQLExecutionMap(app, "full"); m != nil {
 		t.Errorf("80 个全噪音条目应让 map 整体 omit(返回 nil),实际 %d 项", len(m))
+	}
+}
+
+// truncate 是默认行为(等价于不传 / 传空 / 传非法值),保护 envelope 不被几 KB
+// 的 SQL 重复撑爆。truncate 模式应当输出前 sqlTruncateRunes 个 rune + 标记后缀。
+func TestBuildSQLExecutionMapTruncatesByDefault(t *testing.T) {
+	app := model.NewApplication()
+	long := strings.Repeat("a", sqlTruncateRunes+200) // 700 个 rune,远超阈值
+	app.SQLExecutions[5] = &model.SQLExecution{ID: 5, Description: long}
+	app.StageToSQL[1] = 5
+
+	for _, mode := range []string{"", "truncate", "garbage", "TRUNCATE"} {
+		m := BuildSQLExecutionMap(app, mode)
+		got, ok := m[5]
+		if !ok {
+			t.Fatalf("mode=%q: id=5 missing", mode)
+		}
+		if !strings.HasSuffix(got, fmt.Sprintf("...(truncated, total %d chars)", len(long))) {
+			tail := got
+			if len(got) > 80 {
+				tail = got[len(got)-80:]
+			}
+			t.Errorf("mode=%q: missing truncate suffix, tail=%q", mode, tail)
+		}
+		runeCount := len([]rune(got))
+		if runeCount < sqlTruncateRunes || runeCount > sqlTruncateRunes+80 {
+			t.Errorf("mode=%q: runeCount=%d want roughly sqlTruncateRunes(%d) + suffix",
+				mode, runeCount, sqlTruncateRunes)
+		}
+	}
+}
+
+// truncate 不应破坏 UTF-8 多字节字符(中文 SQL 是真实场景),按 rune 切割是关键。
+func TestBuildSQLExecutionMapTruncateRespectsUTF8(t *testing.T) {
+	app := model.NewApplication()
+	zh := strings.Repeat("中", sqlTruncateRunes+50)
+	app.SQLExecutions[5] = &model.SQLExecution{ID: 5, Description: zh}
+	app.StageToSQL[1] = 5
+	m := BuildSQLExecutionMap(app, "truncate")
+	got := m[5]
+	if strings.ContainsRune(got, '�') {
+		t.Errorf("truncate broke UTF-8 (got replacement char in description)")
+	}
+}
+
+// "none" 模式整段 sql_executions 走 omitempty 缺失,适合 envelope 极致瘦身的场景
+// (agent 压根不需要 SQL 文本时)。
+func TestBuildSQLExecutionMapNoneReturnsNil(t *testing.T) {
+	app := model.NewApplication()
+	app.SQLExecutions[5] = &model.SQLExecution{ID: 5, Description: "select * from t"}
+	app.StageToSQL[1] = 5
+	if m := BuildSQLExecutionMap(app, "none"); m != nil {
+		t.Errorf("mode=none should return nil, got %v", m)
+	}
+}
+
+// "full" 模式返回原始 SQL,与历史行为一致(供已经依赖完整 SQL 的程序消费方使用)。
+func TestBuildSQLExecutionMapFullReturnsOriginal(t *testing.T) {
+	app := model.NewApplication()
+	body := strings.Repeat("a", sqlTruncateRunes+200)
+	app.SQLExecutions[5] = &model.SQLExecution{ID: 5, Description: body}
+	app.StageToSQL[1] = 5
+	m := BuildSQLExecutionMap(app, "full")
+	if m[5] != body {
+		t.Errorf("full mode should preserve original SQL")
 	}
 }
 

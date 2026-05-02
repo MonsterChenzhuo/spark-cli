@@ -32,11 +32,19 @@ type SHSConfig struct {
 	Timeout time.Duration `yaml:"timeout"`
 }
 
+// SQLConfig 控制 SQL description 在 envelope 顶层 sql_executions map 中的呈现。
+// Detail 合法值:"truncate"(默认) / "full" / "none"。空值 + 非法值由 normalize
+// 落到 truncate。
+type SQLConfig struct {
+	Detail string `yaml:"detail"`
+}
+
 type Config struct {
 	LogDirs []string      `yaml:"log_dirs"`
 	HDFS    HDFSConfig    `yaml:"hdfs"`
 	Cache   CacheConfig   `yaml:"cache"`
 	SHS     SHSConfig     `yaml:"shs"`
+	SQL     SQLConfig     `yaml:"sql"`
 	Timeout time.Duration `yaml:"timeout"`
 }
 
@@ -60,7 +68,11 @@ func configDir() string {
 }
 
 func Load() (*Config, error) {
-	cfg := &Config{Timeout: defaultTimeout, SHS: SHSConfig{Timeout: defaultSHSTimeout}}
+	cfg := &Config{
+		Timeout: defaultTimeout,
+		SHS:     SHSConfig{Timeout: defaultSHSTimeout},
+		SQL:     SQLConfig{Detail: "truncate"},
+	}
 	path := filepath.Join(configDir(), "config.yaml")
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -76,7 +88,8 @@ func Load() (*Config, error) {
 		SHS     struct {
 			Timeout string `yaml:"timeout"`
 		} `yaml:"shs"`
-		Timeout string `yaml:"timeout"`
+		SQL     SQLConfig `yaml:"sql"`
+		Timeout string    `yaml:"timeout"`
 	}{}
 	if err := yaml.Unmarshal(b, &raw); err != nil {
 		return nil, err
@@ -84,6 +97,9 @@ func Load() (*Config, error) {
 	cfg.LogDirs = raw.LogDirs
 	cfg.HDFS = raw.HDFS
 	cfg.Cache = raw.Cache
+	if raw.SQL.Detail != "" {
+		cfg.SQL.Detail = raw.SQL.Detail
+	}
 	if raw.Timeout != "" {
 		d, err := time.ParseDuration(raw.Timeout)
 		if err != nil {
@@ -124,6 +140,9 @@ func ApplyEnv(cfg *Config) {
 			cfg.Timeout = d
 		}
 	}
+	if v := os.Getenv("SPARK_CLI_SQL_DETAIL"); v != "" {
+		cfg.SQL.Detail = v
+	}
 }
 
 type FlagOverrides struct {
@@ -132,6 +151,7 @@ type FlagOverrides struct {
 	HadoopConfDir string
 	CacheDir      string
 	SHSTimeout    time.Duration
+	SQLDetail     string
 	Timeout       time.Duration
 }
 
@@ -150,6 +170,9 @@ func ApplyFlags(cfg *Config, f FlagOverrides) {
 	}
 	if f.SHSTimeout > 0 {
 		cfg.SHS.Timeout = f.SHSTimeout
+	}
+	if f.SQLDetail != "" {
+		cfg.SQL.Detail = f.SQLDetail
 	}
 	if f.Timeout > 0 {
 		cfg.Timeout = f.Timeout
