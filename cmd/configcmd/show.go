@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -35,6 +37,7 @@ func newShowCmd() *cobra.Command {
 			}
 			src := detectSources(cfg)
 			config.ApplyEnv(cfg)
+			applyRootFlagOverrides(cmd, cfg, &src)
 			switch format {
 			case "json":
 				return renderJSON(cmd.OutOrStdout(), cfg, src)
@@ -101,6 +104,68 @@ func detectSources(cfg *config.Config) sources {
 		src.Timeout = "env"
 	}
 	return src
+}
+
+// applyRootFlagOverrides 让 root persistent flag(--log-dirs / --cache-dir /
+// --hdfs-user / --hadoop-conf-dir / --shs-timeout / --sql-detail / --timeout)
+// 覆盖到 cfg 与 src 上。这样 `config show --cache-dir /tmp/x` 显示的
+// cache.dir 才能反映用户当下传的 flag,而不是仍报 yaml/default 的旧值,
+// 让 source 标签从 "default"/"file"/"env" 升级到 "flag"。
+func applyRootFlagOverrides(cmd *cobra.Command, cfg *config.Config, src *sources) {
+	if cmd == nil {
+		return
+	}
+	flags := cmd.Root().PersistentFlags()
+	get := func(name string) (string, bool) {
+		f := flags.Lookup(name)
+		if f == nil || !f.Changed {
+			return "", false
+		}
+		return f.Value.String(), true
+	}
+	if v, ok := get("log-dirs"); ok && v != "" {
+		cfg.LogDirs = splitCSV(v)
+		src.LogDirs = "flag"
+	}
+	if v, ok := get("cache-dir"); ok && v != "" {
+		cfg.Cache.Dir = v
+		src.CacheDir = "flag"
+	}
+	if v, ok := get("hdfs-user"); ok && v != "" {
+		cfg.HDFS.User = v
+		src.HDFSUser = "flag"
+	}
+	if v, ok := get("hadoop-conf-dir"); ok && v != "" {
+		cfg.HDFS.ConfDir = v
+		src.HadoopConfDir = "flag"
+	}
+	if v, ok := get("shs-timeout"); ok && v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.SHS.Timeout = d
+			src.SHSTimeout = "flag"
+		}
+	}
+	if v, ok := get("sql-detail"); ok && v != "" {
+		cfg.SQL.Detail = v
+		src.SQLDetail = "flag"
+	}
+	if v, ok := get("timeout"); ok && v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Timeout = d
+			src.Timeout = "flag"
+		}
+	}
+}
+
+func splitCSV(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // renderJSON 输出 effective configuration 的结构化形态。每个字段含 value

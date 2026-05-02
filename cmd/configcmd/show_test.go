@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/opay-bigdata/spark-cli/internal/config"
 )
 
@@ -189,6 +191,51 @@ func TestRenderJSONEmitsAllFieldsWithSources(t *testing.T) {
 	}
 	if got["sql.detail"]["value"] != "full" {
 		t.Errorf("sql.detail value=%v want full", got["sql.detail"]["value"])
+	}
+}
+
+// `config show --cache-dir /tmp/x` 应当让 cache.dir 字段 source 标 "flag",
+// value 反映 flag 值。round-13 修 — 之前 detectSources 只看 yaml/env,
+// 完全忽略 root persistent flag。
+func TestApplyRootFlagOverrides(t *testing.T) {
+	root := &cobra.Command{Use: "spark-cli"}
+	root.PersistentFlags().String("cache-dir", "", "")
+	root.PersistentFlags().String("sql-detail", "", "")
+	root.PersistentFlags().String("shs-timeout", "", "")
+	if err := root.PersistentFlags().Set("cache-dir", "/tmp/x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.PersistentFlags().Set("sql-detail", "full"); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.PersistentFlags().Set("shs-timeout", "10m"); err != nil {
+		t.Fatal(err)
+	}
+
+	child := &cobra.Command{Use: "show"}
+	root.AddCommand(child)
+
+	cfg := &config.Config{Cache: config.CacheConfig{Dir: "/from/yaml"}}
+	src := sources{CacheDir: "file", SQLDetail: "default", SHSTimeout: "default"}
+	applyRootFlagOverrides(child, cfg, &src)
+
+	if cfg.Cache.Dir != "/tmp/x" {
+		t.Errorf("cfg.Cache.Dir=%q want /tmp/x", cfg.Cache.Dir)
+	}
+	if src.CacheDir != "flag" {
+		t.Errorf("src.CacheDir=%q want flag", src.CacheDir)
+	}
+	if cfg.SQL.Detail != "full" {
+		t.Errorf("cfg.SQL.Detail=%q want full", cfg.SQL.Detail)
+	}
+	if src.SQLDetail != "flag" {
+		t.Errorf("src.SQLDetail=%q want flag", src.SQLDetail)
+	}
+	if cfg.SHS.Timeout != 10*time.Minute {
+		t.Errorf("cfg.SHS.Timeout=%v want 10m", cfg.SHS.Timeout)
+	}
+	if src.SHSTimeout != "flag" {
+		t.Errorf("src.SHSTimeout=%q want flag", src.SHSTimeout)
 	}
 }
 
