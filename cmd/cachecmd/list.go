@@ -35,7 +35,7 @@ func newListCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List cached parsed applications + SHS zip files with sizes",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			dir := cacheDir()
+			dir := resolveCacheDir(cmd)
 			out := scanCache(dir)
 			switch format {
 			case "json":
@@ -54,9 +54,21 @@ func newListCmd() *cobra.Command {
 	return c
 }
 
-// cacheDir 解析出当前生效的 cache 路径。SPARK_CLI_CACHE_DIR > internal/cache.DefaultDir。
-// 这里不读 yaml(yaml 走 config.Load 链),保持 cache list 命令快速、独立。
-func cacheDir() string {
+// resolveCacheDir 解析当前生效的 cache 路径。优先级:
+//
+//  1. --cache-dir flag(root persistent flag,所有子命令继承)
+//  2. SPARK_CLI_CACHE_DIR 环境变量
+//  3. internal/cache.DefaultDir($XDG_CACHE_HOME/spark-cli / ~/.cache/spark-cli)
+//
+// 不读 yaml(yaml 走 config.Load 链),保持 cache 命令快速、独立。
+func resolveCacheDir(cmd *cobra.Command) string {
+	if cmd != nil {
+		if f := cmd.Root().PersistentFlags().Lookup("cache-dir"); f != nil && f.Changed {
+			if v := f.Value.String(); v != "" {
+				return v
+			}
+		}
+	}
 	if v := os.Getenv("SPARK_CLI_CACHE_DIR"); v != "" {
 		return v
 	}

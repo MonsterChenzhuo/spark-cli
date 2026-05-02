@@ -25,7 +25,7 @@ SHS zip <appID>_<lastUpdated>.zip).
 
 Use --dry-run to print what would be removed without actually deleting.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			dir := cacheDir()
+			dir := resolveCacheDir(cmd)
 			if _, err := os.Stat(dir); err != nil {
 				fmt.Fprintf(cmd.OutOrStdout(), "cache dir %s does not exist; nothing to clear\n", dir)
 				return nil

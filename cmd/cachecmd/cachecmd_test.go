@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 func writeTmp(t *testing.T, dir, rel string, size int) string {
@@ -18,6 +20,38 @@ func writeTmp(t *testing.T, dir, rel string, size int) string {
 		t.Fatal(err)
 	}
 	return full
+}
+
+// resolveCacheDir 优先级:--cache-dir flag > SPARK_CLI_CACHE_DIR env > DefaultDir。
+// round-11 修 — list/clear 之前只读 env,忽略 root persistent flag。
+func TestResolveCacheDirRespectsRootFlag(t *testing.T) {
+	t.Setenv("SPARK_CLI_CACHE_DIR", "/from/env")
+
+	root := newRootStub()
+	root.PersistentFlags().String("cache-dir", "", "")
+	if err := root.PersistentFlags().Set("cache-dir", "/from/flag"); err != nil {
+		t.Fatal(err)
+	}
+	child := &cobra.Command{Use: "list"}
+	root.AddCommand(child)
+	got := resolveCacheDir(child)
+	if got != "/from/flag" {
+		t.Errorf("resolveCacheDir=%q want /from/flag (flag should win over env)", got)
+	}
+
+	// flag 没设时退回 env
+	root2 := newRootStub()
+	root2.PersistentFlags().String("cache-dir", "", "")
+	child2 := &cobra.Command{Use: "list"}
+	root2.AddCommand(child2)
+	got2 := resolveCacheDir(child2)
+	if got2 != "/from/env" {
+		t.Errorf("resolveCacheDir=%q want /from/env (env fallback)", got2)
+	}
+}
+
+func newRootStub() *cobra.Command {
+	return &cobra.Command{Use: "spark-cli"}
 }
 
 // scanCache 应当列出所有 application gob.zst 与 shs/<host>/<id>_<v>.zip,
