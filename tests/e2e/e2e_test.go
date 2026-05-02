@@ -55,6 +55,46 @@ func TestE2E_AllScenarios_TinyApp(t *testing.T) {
 	}
 }
 
+// 所有 5 场景的 envelope 顶层都应该输出 app_duration_ms(fixture 有
+// ApplicationEnd 事件,DurationMs > 0)。round-2 加的字段必须在所有场景都生效,
+// 不要某个 dispatch 路径漏掉。
+func TestE2E_AllScenariosEmitAppDurationMs(t *testing.T) {
+	dir := t.TempDir()
+	src, err := os.ReadFile(filepath.Join("..", "testdata", "tiny_app.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(dir, "application_1_1")
+	if err := os.WriteFile(logPath, src, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, sc := range []string{"app-summary", "slow-stages", "data-skew", "gc-pressure", "diagnose"} {
+		t.Run(sc, func(t *testing.T) {
+			cmd.ResetForTest()
+			var stdout, stderr bytes.Buffer
+			rc := cmd.RunWith(context.Background(),
+				[]string{sc, "application_1_1", "--log-dirs", "file://" + dir, "--format", "json"},
+				&stdout, &stderr)
+			if rc != 0 {
+				t.Fatalf("rc=%d stderr=%s", rc, stderr.String())
+			}
+			var m map[string]any
+			if err := json.Unmarshal(stdout.Bytes(), &m); err != nil {
+				t.Fatalf("not json: %v\n%s", err, stdout.String())
+			}
+			d, ok := m["app_duration_ms"]
+			if !ok {
+				t.Errorf("scenario=%s missing app_duration_ms\n%s", sc, stdout.String())
+				return
+			}
+			if v, ok := d.(float64); !ok || v <= 0 {
+				t.Errorf("scenario=%s app_duration_ms=%v want > 0", sc, d)
+			}
+		})
+	}
+}
+
 // 用户输错命令(typo)应当报 USER_ERR (rc=2) 而非 INTERNAL (rc=1)。
 // 历史 bug:cobra "unknown command" 错误未被 wrap,默认走 INTERNAL,
 // 让用户以为撞了内部 bug。

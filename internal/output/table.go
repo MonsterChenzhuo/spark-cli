@@ -17,7 +17,31 @@ func WriteTable(w io.Writer, env scenario.Envelope) error {
 	}
 	cols := toStringSlice(env.Columns)
 	rows := toRowSlice(env.Data)
+	// app-summary 是 single-row 多列(含 nested 数组)场景:横向布局会变成
+	// 1200+ 字符宽的一行,nested 字段被 stringify 成几百字符 inline JSON,
+	// 终端完全不可读。改成 "key | value" 纵向输出 —— 与 markdown 模式一致。
+	if len(rows) == 1 {
+		renderKeyValue(w, cols, rows[0])
+		return nil
+	}
 	return renderTable(w, cols, rows)
+}
+
+// renderKeyValue 把单 row 渲染成两列纵向输出:左列字段名,右列值。nested
+// array / map 仍用 inline JSON(stringify)塞 value 列,但每个字段独占一行,
+// 视觉上比 1200 字符宽的横向行清爽得多。
+func renderKeyValue(w io.Writer, cols []string, row map[string]any) {
+	keyWidth := len("field")
+	for _, c := range cols {
+		if len(c) > keyWidth {
+			keyWidth = len(c)
+		}
+	}
+	fmt.Fprintf(w, "%s  value\n", padRight("field", keyWidth))
+	fmt.Fprintf(w, "%s  %s\n", strings.Repeat("-", keyWidth), strings.Repeat("-", 5))
+	for _, c := range cols {
+		fmt.Fprintf(w, "%s  %s\n", padRight(c, keyWidth), stringify(row[c]))
+	}
 }
 
 func writeGCSegments(w io.Writer, env scenario.Envelope) error {

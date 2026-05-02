@@ -29,6 +29,54 @@ func TestTableRendersHeaderAndRows(t *testing.T) {
 	}
 }
 
+// app-summary 是 single-row 多列(含 nested 数组)场景:历史横向布局让一行
+// 1200+ 字符,nested 字段 stringify 成几百字符 inline JSON,终端不可读。改成
+// "field | value" 纵向输出。
+func TestTableSingleRowGoesVertical(t *testing.T) {
+	env := scenario.Envelope{
+		Scenario: "app-summary",
+		Columns:  []string{"app_id", "duration_ms", "top_stages"},
+		Data: []any{
+			map[string]any{"app_id": "app_x", "duration_ms": 4231,
+				"top_stages": []any{map[string]any{"stage_id": 1}}},
+		},
+	}
+	var buf bytes.Buffer
+	if err := WriteTable(&buf, env); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "field") || !strings.Contains(out, "value") {
+		t.Errorf("expected vertical key/value layout, got:\n%s", out)
+	}
+	for _, want := range []string{"app_id", "app_x", "duration_ms", "4231", "top_stages"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestTableMultiRowStaysHorizontal(t *testing.T) {
+	env := scenario.Envelope{
+		Scenario: "slow-stages",
+		Columns:  []string{"stage_id", "duration_ms"},
+		Data: []any{
+			map[string]any{"stage_id": 1, "duration_ms": 100},
+			map[string]any{"stage_id": 2, "duration_ms": 200},
+		},
+	}
+	var buf bytes.Buffer
+	if err := WriteTable(&buf, env); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	// 多 row 不该触发 vertical 模式 — 表头第一行应当含两个列名
+	parts := strings.SplitN(out, "\n", 3)
+	if len(parts) < 2 || !strings.Contains(parts[1], "stage_id") || !strings.Contains(parts[1], "duration_ms") {
+		t.Errorf("expected horizontal header line, got:\n%s", out)
+	}
+}
+
 func TestTableRendersGCDoubleSegment(t *testing.T) {
 	env := scenario.Envelope{
 		Scenario: "gc-pressure",
