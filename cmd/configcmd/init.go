@@ -50,12 +50,23 @@ func newInitCmd() *cobra.Command {
 			if nn != "" {
 				fmt.Fprintf(&b, "  - hdfs://%s%s\n", nn, hpath)
 			}
+			b.WriteString("# 多个 log_dirs 按顺序探测,支持的 scheme:file:// / hdfs://nn:port/path / shs://host:port\n")
+			b.WriteString("\n")
 			b.WriteString("hdfs:\n")
 			fmt.Fprintf(&b, "  user: %s\n", huser)
 			if hconf != "" {
 				fmt.Fprintf(&b, "  conf_dir: %s\n", hconf)
 			}
+			b.WriteString("\n")
 			fmt.Fprintf(&b, "timeout: %s\n", to)
+			b.WriteString("\n")
+			b.WriteString("# 可选段(都有默认值,留空即可,这里列出来方便用户改):\n")
+			b.WriteString("# shs:\n")
+			b.WriteString("#   timeout: 5m       # SHS HTTP 拉 zip 的总超时(生产 zip 几个 GB 是常态)\n")
+			b.WriteString("# cache:\n")
+			b.WriteString("#   dir: \"\"           # 应用缓存路径,留空走 $XDG_CACHE_HOME/spark-cli 或 ~/.cache/spark-cli\n")
+			b.WriteString("# sql:\n")
+			b.WriteString("#   detail: truncate  # sql_executions 字段呈现:truncate(默认 ~500 rune) | full | none\n")
 
 			path := filepath.Join(dir, "config.yaml")
 			if err := os.WriteFile(path, []byte(b.String()), 0644); err != nil {
