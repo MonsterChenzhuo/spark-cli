@@ -135,12 +135,9 @@ func shsBase(srv *httptest.Server) string {
 	return "shs://" + u.Host
 }
 
-// TestMain 静默 SHS 的下载进度提示,免得在 go test 输出里制造噪音。
-// 实际进度提示由 NewSHS 检查同名环境变量决定是否启用。
-func TestMain(m *testing.M) {
-	_ = os.Setenv("SPARK_CLI_QUIET", "1")
-	os.Exit(m.Run())
-}
+// 历史上 TestMain 通过 SPARK_CLI_QUIET=1 静默 SHS 进度提示。NewSHS 现在通过
+// SHSOptions{Quiet: true} 直接控制 stderr,不再读环境变量;每个测试构造 SHS
+// 时显式传 Quiet,免得依赖全局 env state。
 
 func TestSHSAutoPicksMaxAttempt(t *testing.T) {
 	appID := "application_x"
@@ -159,7 +156,7 @@ func TestSHSAutoPicksMaxAttempt(t *testing.T) {
 	srv := newSHSTestServer(t, apps, nil, 0, false)
 	defer srv.Close()
 
-	s := NewSHS(shsBase(srv), 5*time.Second)
+	s := NewSHS(shsBase(srv), 5*time.Second, SHSOptions{Quiet: true})
 	defer func() { _ = s.Close() }()
 
 	uris, err := s.List(shsBase(srv), appID)
@@ -199,7 +196,7 @@ func TestSHSV1Open(t *testing.T) {
 	srv := newSHSTestServer(t, apps, nil, 0, false)
 	defer srv.Close()
 
-	s := NewSHS(shsBase(srv), 5*time.Second)
+	s := NewSHS(shsBase(srv), 5*time.Second, SHSOptions{Quiet: true})
 	defer func() { _ = s.Close() }()
 
 	uris, err := s.List(shsBase(srv), appID)
@@ -238,7 +235,7 @@ func TestSHSV2Layout(t *testing.T) {
 	srv := newSHSTestServer(t, apps, nil, 0, false)
 	defer srv.Close()
 
-	s := NewSHS(shsBase(srv), 5*time.Second)
+	s := NewSHS(shsBase(srv), 5*time.Second, SHSOptions{Quiet: true})
 	defer func() { _ = s.Close() }()
 
 	rootURIs, err := s.List(shsBase(srv), "eventlog_v2_"+appID)
@@ -297,7 +294,7 @@ func TestSHSV1WithZstdSuffix(t *testing.T) {
 	srv := newSHSTestServer(t, apps, nil, 0, false)
 	defer srv.Close()
 
-	s := NewSHS(shsBase(srv), 5*time.Second)
+	s := NewSHS(shsBase(srv), 5*time.Second, SHSOptions{Quiet: true})
 	defer func() { _ = s.Close() }()
 
 	uris, err := s.List(shsBase(srv), appID)
@@ -335,7 +332,7 @@ func TestSHSAttemptlessAppFetchesNoSegmentLogs(t *testing.T) {
 	srv := newSHSTestServer(t, apps, nil, 0, false)
 	defer srv.Close()
 
-	s := NewSHS(shsBase(srv), 5*time.Second)
+	s := NewSHS(shsBase(srv), 5*time.Second, SHSOptions{Quiet: true})
 	defer func() { _ = s.Close() }()
 
 	uris, err := s.List(shsBase(srv), appID)
@@ -385,7 +382,7 @@ func TestSHSAttemptlessAppV2Layout(t *testing.T) {
 	srv := newSHSTestServer(t, apps, nil, 0, false)
 	defer srv.Close()
 
-	s := NewSHS(shsBase(srv), 5*time.Second)
+	s := NewSHS(shsBase(srv), 5*time.Second, SHSOptions{Quiet: true})
 	defer func() { _ = s.Close() }()
 
 	rootURIs, err := s.List(shsBase(srv), "eventlog_v2_"+appID)
@@ -407,7 +404,7 @@ func TestSHSAttemptlessAppV2Layout(t *testing.T) {
 func TestSHSAppNotFound(t *testing.T) {
 	srv := newSHSTestServer(t, map[string]*shsApp{}, nil, 0, false)
 	defer srv.Close()
-	s := NewSHS(shsBase(srv), 5*time.Second)
+	s := NewSHS(shsBase(srv), 5*time.Second, SHSOptions{Quiet: true})
 	defer func() { _ = s.Close() }()
 	uris, err := s.List(shsBase(srv), "application_missing")
 	if err != nil {
@@ -428,7 +425,7 @@ func TestSHSHTTPTimeout(t *testing.T) {
 	}
 	srv := newSHSTestServer(t, apps, nil, 200*time.Millisecond, false)
 	defer srv.Close()
-	s := NewSHS(shsBase(srv), 50*time.Millisecond)
+	s := NewSHS(shsBase(srv), 50*time.Millisecond, SHSOptions{Quiet: true})
 	defer func() { _ = s.Close() }()
 	_, err := s.List(shsBase(srv), "application_x")
 	if err == nil {
@@ -460,7 +457,7 @@ func TestSHSLargeZipSpillsToTempfile(t *testing.T) {
 	}
 	srv := newSHSTestServer(t, apps, nil, 0, false)
 	defer srv.Close()
-	s := NewSHS(shsBase(srv), 5*time.Second)
+	s := NewSHS(shsBase(srv), 5*time.Second, SHSOptions{Quiet: true})
 	s.threshold = 1 // force tempfile path even for tiny zips
 	defer func() { _ = s.Close() }()
 	if _, err := s.List(shsBase(srv), appID); err != nil {
@@ -490,7 +487,7 @@ func TestSHSCloseRemovesTempfiles(t *testing.T) {
 	}
 	srv := newSHSTestServer(t, apps, nil, 0, false)
 	defer srv.Close()
-	s := NewSHS(shsBase(srv), 5*time.Second)
+	s := NewSHS(shsBase(srv), 5*time.Second, SHSOptions{Quiet: true})
 	s.threshold = 1
 	if _, err := s.List(shsBase(srv), appID); err != nil {
 		t.Fatalf("List: %v", err)
@@ -528,7 +525,7 @@ func TestSHSReusesBundleAcrossCalls(t *testing.T) {
 	var count int64
 	srv := newSHSTestServer(t, apps, &count, 0, false)
 	defer srv.Close()
-	s := NewSHS(shsBase(srv), 5*time.Second)
+	s := NewSHS(shsBase(srv), 5*time.Second, SHSOptions{Quiet: true})
 	defer func() { _ = s.Close() }()
 
 	if _, err := s.List(shsBase(srv), appID); err != nil { // V1 lookup → empty

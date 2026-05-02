@@ -33,8 +33,11 @@ type Options struct {
 	Format        string
 	Top           int
 	DryRun        bool
-	Stdout        io.Writer
-	Stderr        io.Writer
+	// NoProgress 来自 --no-progress flag,与 SPARK_CLI_QUIET 环境变量、stdout
+	// TTY 检测一并由 resolveQuiet 合成最终的 SHS 静默决定。
+	NoProgress bool
+	Stdout     io.Writer
+	Stderr     io.Writer
 }
 
 func Run(ctx context.Context, opts Options) int {
@@ -50,7 +53,8 @@ func Run(ctx context.Context, opts Options) int {
 		return writeErr(opts.Stderr, err)
 	}
 
-	fsByScheme, closers, err := buildFS(cfg)
+	quiet := resolveQuiet(opts.NoProgress, stdoutIsTTY())
+	fsByScheme, closers, err := buildFS(cfg, quiet)
 	if err != nil {
 		return writeErr(opts.Stderr, err)
 	}
@@ -205,7 +209,7 @@ func buildConfig(opts Options) (*config.Config, error) {
 	return cfg, nil
 }
 
-func buildFS(cfg *config.Config) (map[string]fs.FS, []io.Closer, error) {
+func buildFS(cfg *config.Config, quiet bool) (map[string]fs.FS, []io.Closer, error) {
 	out := map[string]fs.FS{}
 	var closers []io.Closer
 	hdfsAddr := ""
@@ -235,7 +239,8 @@ func buildFS(cfg *config.Config) (map[string]fs.FS, []io.Closer, error) {
 			}
 		case "shs":
 			if _, ok := out["shs"]; !ok {
-				sh := fs.NewSHS("shs://"+u.Host, cfg.SHS.Timeout)
+				// CacheDir 留空(Fix 6 阶段);Fix 3 启用磁盘 zip 缓存时改成 cfg.Cache.Dir
+				sh := fs.NewSHS("shs://"+u.Host, cfg.SHS.Timeout, fs.SHSOptions{Quiet: quiet})
 				out["shs"] = sh
 				closers = append(closers, sh)
 			}

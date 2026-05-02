@@ -45,6 +45,7 @@ func buildOpts(scenario, appID string, cc *cobra.Command) Options {
 		Format:        state.Format,
 		Top:           state.Top,
 		DryRun:        state.DryRun,
+		NoProgress:    state.NoProgress,
 		Stdout:        cc.OutOrStdout(),
 		Stderr:        cc.ErrOrStderr(),
 	}

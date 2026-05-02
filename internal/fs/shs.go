@@ -23,6 +23,19 @@ import (
 
 var _ FS = (*SHS)(nil)
 
+// SHSOptions 控制 SHS 实例行为。所有字段都可选;由 cmd/scenarios runner 集中决断后
+// 注入,SHS 内部不再读 SPARK_CLI_QUIET / cache_dir 等环境变量,避免行为分散在多处。
+//
+//   - Quiet: true → 进度提示走 io.Discard;false → 写到 os.Stderr。
+//     由 cmd/scenarios.resolveQuiet 综合 --no-progress flag、SPARK_CLI_QUIET 与
+//     stdout TTY 状态计算得出。
+//   - CacheDir: 启用磁盘 zip 缓存的目录(同 application cache 共用根目录);留空
+//     则保持原行为(下载 zip → CreateTemp → Close 时删除)。
+type SHSOptions struct {
+	CacheDir string
+	Quiet    bool
+}
+
 // SHS implements FS over the Spark History Server REST API
 // (`GET /api/v1/applications/<id>/<attempt>/logs` returns a zip). The zip is
 // fetched once per appID per process and exposed as a virtual filesystem so
@@ -32,8 +45,9 @@ type SHS struct {
 	httpURL    string // e.g. "http://host:port"
 	httpClient *http.Client
 	threshold  int64         // bytes; zips larger than this spill to tempfile
-	stderr     io.Writer     // 进度提示输出(SPARK_CLI_QUIET 时为 io.Discard)
+	stderr     io.Writer     // 进度提示输出(Quiet=true 时为 io.Discard)
 	timeout    time.Duration // 同 httpClient.Timeout,用于错误 hint 中报告当前值
+	cacheDir   string        // 持久化 zip 的目录;空时不启用磁盘缓存
 
 	mu       sync.Mutex
 	bundles  map[string]*shsBundle // appID → fetched zip
@@ -53,15 +67,15 @@ type shsBundle struct {
 // "shs://host:port". TLS is not supported in v1 — the transport always uses
 // "http://". A non-positive timeout defaults to 5 min (生产 zip 几 GB 是常态)。
 //
-// `stderr` 默认是 os.Stderr,首次为某 appID 拉 zip 时会写一行进度提示,免得用户
-// 以为 CLI 挂了。设置 SPARK_CLI_QUIET=1 可全局静默(同时影响下载提示和潜在的
-// 后续提示);测试可直接修改 stderr 字段。
-func NewSHS(base string, timeout time.Duration) *SHS {
+// opts.Quiet 决定首次拉 zip 时的进度提示是否走 io.Discard;runner 已经把
+// --no-progress flag、SPARK_CLI_QUIET、TTY 检测合并好,SHS 不再自己读 env。
+// opts.CacheDir 启用磁盘 zip 缓存(在 bundleFor 里实现)。
+func NewSHS(base string, timeout time.Duration, opts SHSOptions) *SHS {
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
 	}
 	var w io.Writer = os.Stderr
-	if os.Getenv("SPARK_CLI_QUIET") != "" {
+	if opts.Quiet {
 		w = io.Discard
 	}
 	httpURL := strings.Replace(base, "shs://", "http://", 1)
@@ -73,6 +87,7 @@ func NewSHS(base string, timeout time.Duration) *SHS {
 		bundles:    map[string]*shsBundle{},
 		stderr:     w,
 		timeout:    timeout,
+		cacheDir:   opts.CacheDir,
 	}
 }
 
