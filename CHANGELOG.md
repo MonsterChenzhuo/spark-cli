@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Round-3 polish (same 2026-05-02 dogfooding session)
+
+- **`slow-stages` row gains `wall_share`** (mirrors `data-skew` row), saving the agent a `dur / app_duration_ms` mental division when ranking stages by ROI.
+- **`sql_executions` map filtered to row-used IDs.** `BuildSQLExecutionMap` now takes an `onlyIDs map[int64]struct{}` arg; dispatch passes the SQL ids actually referenced by the current scenario rows. `slow-stages --top 5` no longer leaks unrelated SQL like `SHOW DATABASES` into the envelope.
+- **Cobra "unknown command / unknown flag / missing arg" → `USER_ERR` (rc=2).** Previously fell through to `INTERNAL` (rc=1) with the user thinking they'd hit a bug; now wrapped as `cerrors.New(FLAG_INVALID, msg, "see spark-cli --help")` in root.go's Execute / RunWith. Existing structured errors pass through unchanged.
+- **`spark-cli config show` lists `sql.detail`.** Was missing from the output table since the `--sql-detail` config landed; show.go now detects yaml / `SPARK_CLI_SQL_DETAIL` env / default sources.
+- **`app-summary --format markdown` renders single-row scenarios as vertical key/value table** instead of a 25-column horizontal monster with nested-array cells running hundreds of chars wide. Multi-row scenarios (slow-stages / data-skew / diagnose) keep the horizontal layout — horizontal still wins for "scan many rows pick one" browsing.
+- **Lower-layer `cerrors.Error` hints preserved through Locator.** `internal/eventlog/locate.go` was wrapping every `fsys.List/Stat` error as `cerrors.New(LogUnreadable, err.Error(), "")` — but when the underlying err was already a `*cerrors.Error` (SHS network errors with proper hints), `.Error()` flattened "CODE: msg (hint: ...)" into the new message and wiped the hint field. New `preserveCerror` helper passes `*cerrors.Error` through unchanged; only plain errors get re-wrapped.
+- **SHS network errors all structured** with actionable hints: timeouts → `--shs-timeout` guidance; DNS / connect-refused / no-such-host → "check shs:// host spelling; curl `<endpoint>/api/v1/applications` to verify reachability"; everything else → generic SHS hint. Previously only timeouts had hints.
+- **`cfg.Validate()` errors now carry hints** via runner.go's `validateHint`. `log_dirs is empty` → "run `spark-cli config init` 写默认 config,或加 --log-dirs file:///path / hdfs://nn/path / shs://host:port"; `timeout must be positive` → example value.
+
 ### Round-2 dogfooding refinements (2026-05-02 same session)
 
 - **Envelope `app_duration_ms`**: top-level field across all five scenarios, populated from `model.Application.DurationMs` (omitted when `app.DurationMs == 0` / no ApplicationEnd event). Lets agents convert `wall_share` to absolute seconds without an extra `app-summary` round-trip.

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Round-3 打磨(同一 2026-05-02 dogfooding 会话内继续迭代)
+
+- **`slow-stages` row 加 `wall_share` 字段**(对齐 `data-skew` row),省下 agent `dur / app_duration_ms` 的心算。
+- **`sql_executions` 按 row 用到的 sql_id 过滤**:`BuildSQLExecutionMap` 加 `onlyIDs map[int64]struct{}` 参数,dispatch 传入当前场景 row 实际引用的 sql_id 集合。`slow-stages --top 5` 不再让 `SHOW DATABASES` 等无关 SQL 漏到 envelope。
+- **Cobra "unknown command / unknown flag / missing arg" 错误归 `USER_ERR` (rc=2)**:历史走 `INTERNAL` (rc=1) 让用户以为撞了内部 bug。root.go 的 Execute / RunWith 加 wrapCobraError —— 已经是 `*cerrors.Error` 的错误原样返回,其他 wrap 成 `cerrors.New(FLAG_INVALID, msg, "see spark-cli --help")`。
+- **`spark-cli config show` 输出 `sql.detail` 行**:`--sql-detail` 配置落地时漏改 show.go,补上 yaml / `SPARK_CLI_SQL_DETAIL` env / default 三层来源检测。
+- **`app-summary --format markdown` single-row 场景走纵向 `field | value` 表格**:历史 25 列横向表格 + nested 数组(top_stages_*)stringify 成几百字符 inline JSON 塞单元格,人类完全不可读。多 row 场景(slow-stages / data-skew / diagnose)仍走横向表格 —— 横向适合"扫多 row 选感兴趣的"动作。
+- **下层 `cerrors.Error` 的 hint 不再被 Locator 抹掉**:`internal/eventlog/locate.go` 5 处 wrap `fsys.List/Stat` 错误统一用 `cerrors.New(LogUnreadable, err.Error(), "")`,但下层 err 自己已经是 `*cerrors.Error`(SHS 抛的带 hint 的网络错误)时,`.Error()` 会把 "CODE: msg (hint: ...)" 拼成字符串塞 message,hint 字段彻底丢失。抽 `preserveCerror` helper:`*cerrors.Error` 原样向上传,其他才包成 LOG_UNREADABLE。
+- **SHS 网络错误全部结构化 + 可执行 hint**:timeout → 调 `--shs-timeout` 指引;DNS / connect-refused / no-such-host → "检查 shs:// host 拼写、SHS 可达性;curl `<endpoint>/api/v1/applications` 验证";其他 → 通用 SHS hint。原来只 timeout 错误带 hint。
+- **`cfg.Validate()` 错误现在带 hint**:runner.go `validateHint` 按错误内容补可执行指引:`log_dirs is empty` → "run `spark-cli config init` 写默认 config,或加 --log-dirs ...";`timeout must be positive` → 例子值。
+
 ### Round-2 真实日志再审视(同一会话内继续迭代)
 
 - **Envelope 顶层 `app_duration_ms`**:5 个场景统一输出,值来自 `model.Application.DurationMs`(没 ApplicationEnd 时 omitempty 缺失)。Agent 看 `wall_share` 时不必额外跑 `app-summary` 拿绝对秒数。
