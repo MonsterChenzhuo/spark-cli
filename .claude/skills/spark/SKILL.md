@@ -25,7 +25,7 @@ The user must provide a Spark `applicationId` (e.g. `application_1735000000_0001
    - `gc_pressure` critical → `spark-cli gc-pressure <appId>`(`data` 是 executor 行扁平数组,直接读 `data[].gc_ratio` 找压力高的 executor)。The `gc_pressure` finding now embeds `spark_executor_memory` in evidence — quote it before suggesting tuning.
    - `disk_spill` triggered → `spark-cli slow-stages <appId>` and read `spill_disk_gb`. Evidence 现在还带 `partitions`(stage 实际 task 数)和 `est_partition_size_mb`(`shuffle_read / num_tasks` 转 MB)—— 建议时把 `est_partition_size_mb` 跟 `spark_executor_memory` 比较,直接给出"partition size 已经超 executor 内存,把 shuffle.partitions 翻到 X"这种带数字的建议,不要套模板。
    - `failed_tasks` triggered → if `evidence.blacklisted_hosts` is non-empty, those hosts have been excluded ≥2 times; report them by name and tell the user the failure looks node-level (hardware/network/disk), not random task flakiness. Otherwise ask for driver logs.
-   - `tiny_tasks` triggered → 分区过细,建议 `coalesce` / 调低 `spark.sql.shuffle.partitions`
+   - `tiny_tasks` triggered → 分区过细,evidence 现在带 `wall_share` / `wall_ms` + 多 stage 命中时含 `similar_stages`;suggestion 直接给"降到 ~N partition"的具体目标(基于"目标 task ~500ms"经验式),不必自己再算
    - `idle_stage` triggered → stage wall-clock 远大于 executor 实际工作时间(driver 端 broadcast/串行计算/调度等待),用 `spark-cli slow-stages <appId>` 看具体 stage,然后排查执行计划
    - All `ok` but user reports slowness → `spark-cli slow-stages <appId> --top 5`
 
@@ -59,10 +59,13 @@ Every command emits one JSON object on stdout:
   "incomplete": false,
   "parsed_events": 482113,
   "elapsed_ms": 1842,
+  "app_duration_ms": 4230802,
   "columns": [...],
   "data": [...]
 }
 ```
+
+`app_duration_ms` 是应用 wall 时长(`SparkListenerApplicationEnd - SparkListenerApplicationStart`),omitempty 在 `app.DurationMs == 0`(没 ApplicationEnd 事件)时缺失。所有 5 场景一致输出 —— 看 `wall_share` 时直接换算绝对秒数,不必再额外跑 `app-summary`。
 
 Exceptions:
 - `gc-pressure` returns `data: [{executor_id, host, tasks, run_ms, gc_ms, gc_ratio, verdict}, ...]` —— 跟其他场景一致是数组(每行一个 executor),不再像早期 spec 那样有 by_stage / by_executor 双段

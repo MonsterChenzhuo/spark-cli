@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Round-2 真实日志再审视(同一会话内继续迭代)
+
+- **Envelope 顶层 `app_duration_ms`**:5 个场景统一输出,值来自 `model.Application.DurationMs`(没 ApplicationEnd 时 omitempty 缺失)。Agent 看 `wall_share` 时不必额外跑 `app-summary` 拿绝对秒数。
+- **`TinyTasksRule` 对齐 `similar_stages` 模式**:历史按 map 迭代顺序选第一 stage(测试 flaky / 实测漏报),现在收集所有 `tasks >= 200 && p50 < 100ms` 候选,按 wall_share 倒序选 primary(平局回退 tasks 多者),其余进 `evidence.similar_stages`。Evidence 加 `wall_ms` / `wall_share`;suggestion 用"目标 task ~500ms"经验式直接给目标 partition 数(如 1828 tasks @ p50=23ms → "降到 ~84"),不再泛泛"考虑 coalesce"。
+- **`IdleStageRule.evidence` 加 `wall_share`**,agent 不必再 wall_ms / app.DurationMs 自己除。
+- **Output table / markdown 渲染 struct row 修复**(本次 dogfooding 用 `--format markdown` 才发现的潜伏 bug):`toRowSlice` 现在对 struct 元素走 JSON round-trip 转 map,`--format table` / `--format markdown` 不再静默只输出表头。
+- **`gc-pressure` data 形态文档修正** —— SKILL.md / README / README.zh.md 三处把过期的 `{by_stage, by_executor}` 描述改为实际的扁平 executor 数组。
+- **`SpillRule` 跟 `SkewRule` 一样用 `similar_stages` 模式**,suggestion 基于 `est_partition_size_mb` 直接给 `advisoryPartitionSizeInBytes=64m` + 目标 partition 数,不再泛泛"提高 shuffle.partitions"。
+- **`SkewRule` suggestion** 加 `wall_share` 百分比 + similar_stages 数量,不嵌套括号;AQE skewJoin 已开启时 suggestion 直接给 `skewedPartitionFactor=2 + skewedPartitionThresholdInBytes=64m` 具体调参。
+- **`data-skew` row 默认按 `wall_share` 倒序**(平局回退 skew_factor),对齐 `SkewRule.primary` 策略。原 f-倒序会把"f 极端但 wall 占比小"的 stage 排顶,真瓶颈 wall_share 高的 stage 反而被推到末尾。
+- **`top_busy_stages` 加 `wall_share >= 1%` floor**:几秒级 stage 即便 busy_ratio 高也不当"真热点"。CPU 不是瓶颈的应用 `top_busy_stages` 会直接返回空数组,agent 立刻看出方向 → 转 `top_io_bound_stages`。
+
 ### Agent 友好性一揽子改进(2026-05-02 真实日志 dogfooding 驱动)
 
 - **BREAKING — `sql_executions` 顶层 map description 默认截断到前 500 个 rune**(UTF-8 安全,中文 SQL 不会切坏),过长追加 `...(truncated, total <N> chars)` 标记。生产 ETL SQL 单条常 5K+ tokens,长 agent 会话经常被一份 envelope 吃光上下文。`--sql-detail=full`(或 `SPARK_CLI_SQL_DETAIL=full`、yaml `sql.detail: full`)还原原始 SQL,`--sql-detail=none` 让整段 map 缺失。

@@ -11,6 +11,7 @@ Guidance for Claude Code (and other AI agents) working in this repository.
 每条场景命令 (`app-summary` / `slow-stages` / `data-skew` / `gc-pressure` / `diagnose`) 在 stdout 输出**一个** `scenario.Envelope` JSON 对象;错误统一走 stderr,格式 `{"error":{"code","message","hint"}}`,退出码 `0/1/2/3`。改动任何场景或输出层时**不要破坏这个信封形状** —— `tests/e2e/e2e_test.go` 是契约守门人。
 
 特例:
+- envelope 顶层 `app_duration_ms` 来自 `model.Application.DurationMs`(`SparkListenerApplicationEnd - Start`),`omitempty` 在没 ApplicationEnd 事件时缺失。所有 5 场景一致输出 —— agent 看 `wall_share` 就能直接换算绝对秒数,不必再额外跑 `app-summary`
 - `gc-pressure` 的 `data` 是数组 (与其他场景一致),非对象 —— 早期 spec 设想的双段已收敛为单段
 - `diagnose` 的信封额外带 `summary: {critical, warn, ok, top_findings_by_impact?, findings_wall_coverage?}`。`top_findings_by_impact` 是按 `wall_share` 倒序的 `[{rule_id, severity, wall_share}]` 摘要,只收录有 `stage_id` 关联且 `wall_share > 0` 的 finding;**`wall_share` 取 finding 命中所有 stage(primary + similar_stages)的 max**(用 max 而非 sum,避免并行 stage 时 > 1.0 让人迷惑;全局总覆盖留给 findings_wall_coverage)。`findings_wall_coverage` 是这些 wall_share 按 stage 去重后加和(同一 stage 多个 finding 取 max),**cap 到 1.0**(stage 在 wall 上并行时 naive sum 可能 > 1,语义上不应超 100%);**< 0.05 表示瓶颈不在 finding 范围内**(常见为作业结构碎片化 / driver-side 等待),agent 应当跳到 `app-summary.top_busy_stages` / `top_io_bound_stages`。两个字段在 `app.DurationMs == 0`(没 ApplicationEnd 事件)时一并 omitempty 缺失
 - **`severity` 是诊断置信度,不是 ROI 优先级**:`disk_spill warn (wall_share 0.5)` 实际比 `data_skew critical (wall_share 0.05)` 更值得修;按 severity 字符串排优先级会错位,永远以 `top_findings_by_impact` 为准。文档此处说明给 LLM agent / 人类 reader 共同看。

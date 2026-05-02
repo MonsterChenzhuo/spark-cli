@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Round-2 dogfooding refinements (2026-05-02 same session)
+
+- **Envelope `app_duration_ms`**: top-level field across all five scenarios, populated from `model.Application.DurationMs` (omitted when `app.DurationMs == 0` / no ApplicationEnd event). Lets agents convert `wall_share` to absolute seconds without an extra `app-summary` round-trip.
+- **`TinyTasksRule` aligned with the `similar_stages` pattern.** Was previously single-stage / map-iteration-order primary; now collects all `tasks >= 200 && p50 < 100ms` candidates, picks primary by `wall_share` desc (ties resolved by `tasks` desc), surfaces the rest as `evidence.similar_stages`. Evidence gains `wall_ms` / `wall_share`; suggestion now computes a concrete target partition count using the "~500 ms/task" heuristic (e.g. 1828 tasks @ p50=23ms → "降到 ~84 partition") instead of the generic "consider coalesce".
+- **`IdleStageRule.evidence` adds `wall_share`**, so agents stop dividing `wall_ms` by `app.DurationMs` themselves.
+- **Output table / markdown render struct rows** (long-standing latent bug found via `--format markdown` on the dogfooding run): `toRowSlice` now JSON-round-trips struct elements into maps, so `--format table` / `--format markdown` no longer silently produce header-only output for any scenario.
+- **`gc-pressure` data-shape doc fix** — replaced the stale `{by_stage, by_executor}` description in SKILL.md / README / README.zh.md with the actual flat-array shape.
+- **`SpillRule` follows the `similar_stages` pattern**, mirroring SkewRule. Suggestion now computes `advisoryPartitionSizeInBytes=64m` + the target partition count from `est_partition_size_mb`, instead of the generic "raise shuffle.partitions".
+- **`SkewRule` suggestion** adds `wall_share` percentage and similar-stages count without nested brackets; AQE-skewJoin-on path now proposes concrete `skewedPartitionFactor=2 + skewedPartitionThresholdInBytes=64m`.
+- **`data-skew` row default ordering** switched from `max(skew_factor, input_skew_factor)` desc to `wall_share` desc (ties resolved by skew_factor), aligning with `SkewRule.primary` selection. Wall_share-large stages no longer get pushed to the bottom by extreme-but-low-impact `input_skew_factor`.
+- **`top_busy_stages` adds a `wall_share >= 1%` floor** so few-second stages with high `busy_ratio` no longer pose as "real CPU hotspots". Apps where every CPU-busy stage is sub-1% wall return an empty `top_busy_stages`, signalling the agent to read `top_io_bound_stages` instead.
+
 ### Agent-friendly UX overhaul (driven by 2026-05-02 dogfooding session)
 
 - **BREAKING — `sql_executions` map descriptions truncated by default.** Each entry is cut to the first 500 runes (UTF-8-safe) with a `...(truncated, total <N> chars)` marker. Production ETL SQL is routinely 5K+ tokens per execution; long agent sessions used to lose context to a single envelope. `--sql-detail=full` (or `SPARK_CLI_SQL_DETAIL=full`, or `sql.detail: full` in YAML) restores the original; `--sql-detail=none` omits the entire map.
