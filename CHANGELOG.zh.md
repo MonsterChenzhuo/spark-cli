@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Round 4-8 打磨(同一 2026-05-02 dogfooding 会话内继续迭代)
+
+输出 / UX:
+- **`--format table` single-row 场景走纵向**(对齐 round-3 markdown 改动)。`app-summary` 不再输出 1200+ 字符的横向超宽行 + nested 字段塞 inline JSON。
+- **markdown / table header 显示应用 wall**(`· app: 70.5min` / `· app: 30.0s`),人类不必再看 `app_duration_ms` 自己换算。
+- **markdown 单元格转义 `|` 与换行**。SQL 文本含 pipe(`select a | b from t`)不再破坏表格列结构。
+- **markdown / table 输出 `envelope.sql_executions` 段**:`### sql_executions` + 每 id 一个代码块(markdown)/ `=== sql_executions ===` + 每 id 一行(table)。人类用非 JSON 格式时也能看到 SQL。
+- **抽 formatAppDuration 共用 helper**:< 60s 走 "X.Xs",否则 "X.Xmin"。
+- **`config init` 写 yaml 含 `# shs:` / `# cache:` / `# sql:` 注释**,用户初始化时能立即发现 `sql.detail` 等可调字段。
+
+错误 / hint:
+- **SHS 非 200 状态码走结构化 `cerrors.Error{LogUnreadable}` + 分类 hint**:5xx → "联系运维或稍后重试";401/403 → "v1 不支持鉴权";其他 4xx → "检查 --log-dirs 或 curl 同 URL"。
+- **`spark-cli unknown-foo` 报 USER_ERR (rc=2)**,FLAG_INVALID envelope + "see spark-cli --help" hint,不再走 INTERNAL (rc=1) 让用户以为撞 bug。
+- **`--version` flag 自动支持**(原本只有 `version` subcommand,`--version` 报 unknown flag),输出格式与 subcommand 完全一致。
+
+CLI / 接口:
+- **`--log-dirs` / `--no-progress` / `--shs-timeout` 帮助文案重写**:`--log-dirs` 列出三种 scheme(`file://` / `hdfs://` / `shs://`);`--no-progress` 说明 TTY 自动检测;`--shs-timeout` 标注默认 5m。
+- **SHS HTTP 请求带 `User-Agent: spark-cli/<version>`**,SHS 运维能从访问日志识别 spark-cli 流量来源。
+
+代码质量:
+- **dispatch.go 用 `rowsToAny[T]` generic helper**(Go 1.22),避免 4 个 case 各重复 3 行 typed→`[]any` 循环。
+- **`GCPressureColumns()` 加反射测试守门**:4 个场景(AppSummary / SlowStages / DataSkew / GCPressure)一致性达成;CLAUDE.md 从"三处反射守门"更新为"四处"。
+- **e2e 覆盖 `--format table` + `--format markdown` × 5 场景** 与所有 envelope 的 `app_duration_ms` 字段;新加 `TestE2E_VersionFlagAndCommandMatch` / `TestE2E_FormatTableAndMarkdownSmoke`。
+
 ### Round-3 打磨(同一 2026-05-02 dogfooding 会话内继续迭代)
 
 - **`slow-stages` row 加 `wall_share` 字段**(对齐 `data-skew` row),省下 agent `dur / app_duration_ms` 的心算。

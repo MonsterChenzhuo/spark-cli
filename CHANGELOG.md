@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Rounds 4-8 polish (same 2026-05-02 dogfooding session)
+
+Output / UX:
+- **`--format table` single-row scenarios go vertical** (mirrors round-3's markdown change). `app-summary` no longer prints a 1200+ char horizontal row with nested-array cells stuffed inline.
+- **markdown / table header now shows app wall** (`· app: 70.5min` / `· app: 30.0s`), so humans don't have to read `app_duration_ms` and convert.
+- **markdown cells escape `|` and newlines.** SQL text containing pipes (`select a | b from t`) no longer breaks the table layout into mis-aligned columns.
+- **markdown / table render `envelope.sql_executions` as a section** — `### sql_executions` + per-id fenced code block (markdown) / `=== sql_executions ===` + per-id line (table). Humans using non-JSON formats now see SQL alongside stage rows.
+- **Single shared `formatAppDuration` helper** between markdown / table headers; auto-picks "X.Xs" under 60s and "X.Xmin" otherwise.
+- **`config init` writes optional sections as YAML comments** (`# shs:`, `# cache:`, `# sql:`) so users discover `sql.detail` etc. on first init instead of having to grep docs.
+
+Errors / hints:
+- **SHS non-200 status codes go through structured `cerrors.Error{LogUnreadable}`** with category-specific hints: 5xx → "联系运维或稍后重试", 401/403 → "v1 不支持鉴权,检查后端", other 4xx → "检查 --log-dirs 或 curl 同 URL".
+- **`spark-cli unknown-foo` returns USER_ERR (rc=2)** with a `FLAG_INVALID` envelope and "see spark-cli --help" hint, instead of falling through to `INTERNAL` (rc=1).
+- **`--version` flag now works** (alongside the existing `version` subcommand) with identical "spark-cli <ver>" output.
+
+CLI / surface:
+- **`--log-dirs` / `--no-progress` / `--shs-timeout` help text rewritten** to match current behavior — `--log-dirs` now lists all three schemes (`file://` / `hdfs://` / `shs://`); `--no-progress` mentions TTY auto-detect; `--shs-timeout` calls out the 5-minute default.
+- **SHS HTTP requests now send `User-Agent: spark-cli/<version>`** so SHS operators can identify spark-cli traffic in their access logs.
+
+Code-quality:
+- **dispatch.go uses a `rowsToAny[T]` generic helper** instead of repeating the typed-row-to-`[]any` loop in 4 case branches.
+- **`GCPressureColumns()` gains the reflection-based field-match test** — making all 4 scenarios (AppSummary / SlowStages / DataSkew / GCPressure) consistently guarded; CLAUDE.md updated from "三处反射守门" to "四处".
+- **e2e covers `--format table` + `--format markdown` for all 5 scenarios** plus the `app_duration_ms` field in every envelope; new `TestE2E_VersionFlagAndCommandMatch` and `TestE2E_FormatTableAndMarkdownSmoke`.
+
 ### Round-3 polish (same 2026-05-02 dogfooding session)
 
 - **`slow-stages` row gains `wall_share`** (mirrors `data-skew` row), saving the agent a `dur / app_duration_ms` mental division when ranking stages by ROI.
