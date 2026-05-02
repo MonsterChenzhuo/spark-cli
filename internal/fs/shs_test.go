@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -545,5 +546,192 @@ func TestSHSReusesBundleAcrossCalls(t *testing.T) {
 	// 1 metadata + 1 logs == 2 server hits, regardless of how many FS calls
 	if got != 2 {
 		t.Errorf("expected 2 server requests (1 meta + 1 logs); got %d", got)
+	}
+}
+
+// 历史 bug:每次 CLI 调用都重新下载 SHS zip,即使 application cache 命中也要等
+// 4-7 秒下载几 GB。SHSOptions.CacheDir 启用后,第二个 SHS 实例(模拟下次 CLI
+// 调用)应当复用磁盘上的 zip,只发 metadata JSON 调用,不再发 /logs。
+func TestSHSReusesDiskCachedZip(t *testing.T) {
+	appID := "application_x"
+	z := buildZip(t, map[string][]byte{appID + "_1": []byte("hello")})
+	apps := map[string]*shsApp{
+		appID: {
+			ID:       appID,
+			Attempts: []shsAttempt{{AttemptID: "1", LastUpdatedEpoch: 100}},
+			zips:     map[string][]byte{"1": z},
+		},
+	}
+	var logsCount int64
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/applications/", func(w http.ResponseWriter, r *http.Request) {
+		rest := strings.TrimPrefix(r.URL.Path, "/api/v1/applications/")
+		parts := strings.Split(rest, "/")
+		app, ok := apps[parts[0]]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if len(parts) == 1 {
+			meta := struct {
+				ID       string       `json:"id"`
+				Attempts []shsAttempt `json:"attempts"`
+			}{ID: app.ID, Attempts: app.Attempts}
+			_ = json.NewEncoder(w).Encode(meta)
+			return
+		}
+		if (len(parts) == 3 && parts[2] == "logs") || (len(parts) == 2 && parts[1] == "logs") {
+			atomic.AddInt64(&logsCount, 1)
+			body := app.zips["1"]
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+			_, _ = w.Write(body)
+			return
+		}
+		http.NotFound(w, r)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	cacheDir := t.TempDir()
+
+	// 第一次:空缓存 → 下载 + 落盘
+	s1 := NewSHS(shsBase(srv), 5*time.Second, SHSOptions{Quiet: true, CacheDir: cacheDir})
+	if _, err := s1.List(shsBase(srv), appID); err != nil {
+		t.Fatalf("first List: %v", err)
+	}
+	if got := atomic.LoadInt64(&logsCount); got != 1 {
+		t.Fatalf("first run logs hits=%d want 1", got)
+	}
+	_ = s1.Close()
+
+	// 第二次:磁盘命中 → 不再发 /logs
+	s2 := NewSHS(shsBase(srv), 5*time.Second, SHSOptions{Quiet: true, CacheDir: cacheDir})
+	defer func() { _ = s2.Close() }()
+	if _, err := s2.List(shsBase(srv), appID); err != nil {
+		t.Fatalf("second List: %v", err)
+	}
+	if got := atomic.LoadInt64(&logsCount); got != 1 {
+		t.Errorf("second run logs hits=%d want 1 (disk cache should reuse zip)", got)
+	}
+}
+
+// lastUpdated 变了应该让磁盘缓存失效:重新下载 + sweep 旧 attempt 的 zip。
+func TestSHSInvalidatesOnLastUpdatedChange(t *testing.T) {
+	appID := "application_x"
+	z := buildZip(t, map[string][]byte{appID + "_1": []byte("hello")})
+	currentLastUpdated := int64(100)
+	var logsCount int64
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/applications/", func(w http.ResponseWriter, r *http.Request) {
+		rest := strings.TrimPrefix(r.URL.Path, "/api/v1/applications/")
+		parts := strings.Split(rest, "/")
+		if parts[0] != appID {
+			http.NotFound(w, r)
+			return
+		}
+		if len(parts) == 1 {
+			meta := struct {
+				ID       string       `json:"id"`
+				Attempts []shsAttempt `json:"attempts"`
+			}{
+				ID: appID,
+				Attempts: []shsAttempt{{
+					AttemptID:        "1",
+					LastUpdatedEpoch: atomic.LoadInt64(&currentLastUpdated),
+				}},
+			}
+			_ = json.NewEncoder(w).Encode(meta)
+			return
+		}
+		if (len(parts) == 3 && parts[2] == "logs") || (len(parts) == 2 && parts[1] == "logs") {
+			atomic.AddInt64(&logsCount, 1)
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(z)))
+			_, _ = w.Write(z)
+			return
+		}
+		http.NotFound(w, r)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	cacheDir := t.TempDir()
+
+	s1 := NewSHS(shsBase(srv), 5*time.Second, SHSOptions{Quiet: true, CacheDir: cacheDir})
+	if _, err := s1.List(shsBase(srv), appID); err != nil {
+		t.Fatalf("first List: %v", err)
+	}
+	_ = s1.Close()
+
+	// 改 lastUpdated → 触发新下载
+	atomic.StoreInt64(&currentLastUpdated, 200)
+	s2 := NewSHS(shsBase(srv), 5*time.Second, SHSOptions{Quiet: true, CacheDir: cacheDir})
+	defer func() { _ = s2.Close() }()
+	if _, err := s2.List(shsBase(srv), appID); err != nil {
+		t.Fatalf("second List: %v", err)
+	}
+	if got := atomic.LoadInt64(&logsCount); got != 2 {
+		t.Errorf("logs hits=%d want 2 (lastUpdated change should re-download)", got)
+	}
+	// 旧文件应当被 sweep
+	host := strings.TrimPrefix(shsBase(srv), "shs://")
+	hostSafe := strings.ReplaceAll(host, ":", "_")
+	dir := filepath.Join(cacheDir, "shs", hostSafe)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir cache: %v", err)
+	}
+	zipCount := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".zip") {
+			zipCount++
+		}
+	}
+	if zipCount != 1 {
+		t.Errorf("zip files=%d want 1 (sweep should drop stale attempt)", zipCount)
+	}
+}
+
+// 缓存层永远不让 CLI 失败:损坏的 cache 文件应当被自动剔除并重新下载。
+func TestSHSCorruptCacheRecovers(t *testing.T) {
+	appID := "application_x"
+	z := buildZip(t, map[string][]byte{appID + "_1": []byte("hello")})
+	apps := map[string]*shsApp{
+		appID: {
+			ID:       appID,
+			Attempts: []shsAttempt{{AttemptID: "1", LastUpdatedEpoch: 100}},
+			zips:     map[string][]byte{"1": z},
+		},
+	}
+	srv := newSHSTestServer(t, apps, nil, 0, false)
+	defer srv.Close()
+	cacheDir := t.TempDir()
+
+	host := strings.TrimPrefix(shsBase(srv), "shs://")
+	hostSafe := strings.ReplaceAll(host, ":", "_")
+	dir := filepath.Join(cacheDir, "shs", hostSafe)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// 100 来自上面 LastUpdatedEpoch * Millisecond → ns
+	corruptPath := filepath.Join(dir, fmt.Sprintf("%s_%d.zip", appID, 100*int64(time.Millisecond)))
+	if err := os.WriteFile(corruptPath, []byte("not a real zip"), 0o644); err != nil {
+		t.Fatalf("write corrupt: %v", err)
+	}
+
+	s := NewSHS(shsBase(srv), 5*time.Second, SHSOptions{Quiet: true, CacheDir: cacheDir})
+	defer func() { _ = s.Close() }()
+	uris, err := s.List(shsBase(srv), appID)
+	if err != nil {
+		t.Fatalf("List: %v (cache layer must not surface errors)", err)
+	}
+	if len(uris) != 1 {
+		t.Fatalf("got URIs %v, want 1", uris)
+	}
+	// 损坏文件被替换为有效 zip
+	fi, err := os.Stat(corruptPath)
+	if err != nil {
+		t.Fatalf("stat after recovery: %v", err)
+	}
+	if fi.Size() < int64(len(z))/2 {
+		t.Errorf("recovered zip size=%d looks too small (likely still corrupt body)", fi.Size())
 	}
 }

@@ -54,7 +54,17 @@ func Run(ctx context.Context, opts Options) int {
 	}
 
 	quiet := resolveQuiet(opts.NoProgress, stdoutIsTTY())
-	fsByScheme, closers, err := buildFS(cfg, quiet)
+	// shsCacheDir: SHS zip 持久化路径。--no-cache 时旁路(走 system temp,与
+	// application cache 行为一致),其余复用 application cache 的同一根目录,
+	// 命中时第二次 CLI 调用绕过几 GB 的 zip 重下。
+	shsCacheDir := ""
+	if !opts.NoCache {
+		shsCacheDir = cfg.Cache.Dir
+		if shsCacheDir == "" {
+			shsCacheDir = cache.DefaultDir()
+		}
+	}
+	fsByScheme, closers, err := buildFS(cfg, quiet, shsCacheDir)
 	if err != nil {
 		return writeErr(opts.Stderr, err)
 	}
@@ -209,7 +219,7 @@ func buildConfig(opts Options) (*config.Config, error) {
 	return cfg, nil
 }
 
-func buildFS(cfg *config.Config, quiet bool) (map[string]fs.FS, []io.Closer, error) {
+func buildFS(cfg *config.Config, quiet bool, shsCacheDir string) (map[string]fs.FS, []io.Closer, error) {
 	out := map[string]fs.FS{}
 	var closers []io.Closer
 	hdfsAddr := ""
@@ -239,8 +249,10 @@ func buildFS(cfg *config.Config, quiet bool) (map[string]fs.FS, []io.Closer, err
 			}
 		case "shs":
 			if _, ok := out["shs"]; !ok {
-				// CacheDir 留空(Fix 6 阶段);Fix 3 启用磁盘 zip 缓存时改成 cfg.Cache.Dir
-				sh := fs.NewSHS("shs://"+u.Host, cfg.SHS.Timeout, fs.SHSOptions{Quiet: quiet})
+				sh := fs.NewSHS("shs://"+u.Host, cfg.SHS.Timeout, fs.SHSOptions{
+					Quiet:    quiet,
+					CacheDir: shsCacheDir,
+				})
 				out["shs"] = sh
 				closers = append(closers, sh)
 			}

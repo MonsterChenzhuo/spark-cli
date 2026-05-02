@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -290,6 +291,14 @@ func splitSHSURI(uri string) (host, appID, inner string, err error) {
 // Returns (nil, nil) when the SHS reports 404 (no such app or no attempts) so
 // the locator can fall through to APP_NOT_FOUND. All other failures return an
 // error.
+//
+// 磁盘缓存(s.cacheDir 非空时启用):先调 fetchAttempt 拿到 lastUpdated(便宜 JSON),
+// 计算 <cacheDir>/shs/<host>/<appID>_<lastUpdatedNS>.zip 路径。
+//   - 文件存在且能 zip-parse → 直接 reuse(跳过下载)
+//   - 文件损坏 / 缺失 → 下载并落盘(tmp + rename),清理同 host/appID 但旧 lastUpdated
+//     的 sibling zip
+//
+// 缓存层永远不让 CLI 失败:任何缓存读盘错误都 fallback 到下载。
 func (s *SHS) bundleFor(host, appID string) (*shsBundle, error) {
 	s.mu.Lock()
 	if b, ok := s.bundles[appID]; ok {
@@ -297,8 +306,6 @@ func (s *SHS) bundleFor(host, appID string) (*shsBundle, error) {
 		return b, nil
 	}
 	s.mu.Unlock()
-
-	_ = host // host is implicit in s.httpURL; SHS instance is per-base
 
 	attempt, found, lastUpdated, err := s.fetchAttempt(appID)
 	if err != nil {
@@ -308,18 +315,38 @@ func (s *SHS) bundleFor(host, appID string) (*shsBundle, error) {
 		return nil, nil
 	}
 
-	// 提示一行,免得用户看着 CLI 静默卡几分钟以为挂了。生产 zip 几 GB 是常态,
-	// 哪怕缓存命中(之后命令)首次也要走这里下载来判 V1/V2 layout。
-	if s.stderr != nil {
-		fmt.Fprintf(s.stderr, "spark-cli: downloading EventLog zip from SHS for %s (timeout %s; set SPARK_CLI_QUIET=1 to silence) ...\n", appID, s.timeout)
+	cachePath := s.zipCachePath(host, appID, lastUpdated)
+
+	var (
+		zr      *zip.Reader
+		backing io.Closer
+		tmpPath string
+	)
+	// 磁盘命中:直接 open + zip-parse,跳过下载
+	if cachePath != "" {
+		if r, c, ok := openCachedZip(cachePath); ok {
+			zr = r
+			backing = c
+		}
 	}
-	zipStart := time.Now()
-	zr, backing, tmpPath, err := s.fetchZip(appID, attempt)
-	if err != nil {
-		return nil, err
-	}
-	if s.stderr != nil {
-		fmt.Fprintf(s.stderr, "spark-cli: SHS zip for %s ready in %s\n", appID, time.Since(zipStart).Round(time.Millisecond))
+	if zr == nil {
+		// 提示一行,免得用户看着 CLI 静默卡几分钟以为挂了。生产 zip 几 GB 是常态。
+		if s.stderr != nil {
+			fmt.Fprintf(s.stderr, "spark-cli: downloading EventLog zip from SHS for %s (timeout %s; set SPARK_CLI_QUIET=1 to silence) ...\n", appID, s.timeout)
+		}
+		zipStart := time.Now()
+		var err error
+		zr, backing, tmpPath, err = s.fetchZip(appID, attempt, cachePath)
+		if err != nil {
+			return nil, err
+		}
+		if s.stderr != nil {
+			fmt.Fprintf(s.stderr, "spark-cli: SHS zip for %s ready in %s\n", appID, time.Since(zipStart).Round(time.Millisecond))
+		}
+		// 落盘到 cacheDir 时,扫掉同 host/appID 但旧 lastUpdated 的 sibling
+		if cachePath != "" && tmpPath == "" {
+			s.sweepStaleCachedZips(filepath.Dir(cachePath), appID, filepath.Base(cachePath))
+		}
 	}
 
 	entries := make(map[string]*zip.File, len(zr.File))
@@ -355,10 +382,66 @@ func (s *SHS) bundleFor(host, appID string) (*shsBundle, error) {
 	}
 	s.bundles[appID] = b
 	if tmpPath != "" {
+		// 仅 system temp 路径需要 Close 时清理;cache 路径(tmpPath="")由失效逻辑管理
 		s.tmpfiles = append(s.tmpfiles, tmpPath)
 	}
 	s.mu.Unlock()
 	return b, nil
+}
+
+// zipCachePath 给定 host 与 lastUpdated 算磁盘缓存路径。host 中 ":" 替换成 "_"
+// 兼容跨平台文件名;cacheDir 为空时返回空字符串(禁用缓存)。
+func (s *SHS) zipCachePath(host, appID string, lastUpdatedNS int64) string {
+	if s.cacheDir == "" || appID == "" {
+		return ""
+	}
+	safeHost := strings.ReplaceAll(host, ":", "_")
+	if safeHost == "" {
+		safeHost = "default"
+	}
+	return filepath.Join(s.cacheDir, "shs", safeHost, fmt.Sprintf("%s_%d.zip", appID, lastUpdatedNS))
+}
+
+// openCachedZip 试图打开已经下载好的 zip。任何错误(缺失、权限、损坏)都返回
+// ok=false,让调用方 fallback 到下载,缓存层永远不让 CLI 失败。损坏文件会被
+// 即时删除,免得下次还误命中。
+func openCachedZip(path string) (*zip.Reader, io.Closer, bool) {
+	f, err := os.Open(path) //nolint:gosec // path 由 zipCachePath 拼接,host/appID 已 sanitize
+	if err != nil {
+		return nil, nil, false
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, nil, false
+	}
+	zr, err := zip.NewReader(f, fi.Size())
+	if err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return nil, nil, false
+	}
+	return zr, f, true
+}
+
+// sweepStaleCachedZips 删除 dir 下与 keep 同 appID prefix 但 lastUpdated 旧的 zip
+// 文件。失败一律忽略 —— 缓存层不让 CLI 失败,顶多多占点磁盘。
+func (s *SHS) sweepStaleCachedZips(dir, appID, keep string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	prefix := appID + "_"
+	for _, e := range entries {
+		name := e.Name()
+		if name == keep || e.IsDir() {
+			continue
+		}
+		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".zip") {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, name))
+	}
 }
 
 // fetchAttempt selects the appropriate attempt segment for the SHS logs URL.
@@ -425,7 +508,14 @@ func (s *SHS) fetchAttempt(appID string) (attempt string, found bool, lastUpdate
 	return a.AttemptID, true, lastUpdatedNS, nil
 }
 
-func (s *SHS) fetchZip(appID, attempt string) (*zip.Reader, io.Closer, string, error) {
+// fetchZip 下载 attempt 的 zip。
+//
+// destPath 非空:写到 destPath(原子 tmp+rename),然后 os.Open 用作 zip backing,
+// 返回 tmpPath="" —— 由 cache 层管理生命周期(失效 / sweep)。
+//
+// destPath 空:小 zip(<= s.threshold 且 Content-Length 已知)走内存,大 zip 走
+// system temp,返回 tmpPath 让 Close 时删除(原行为)。
+func (s *SHS) fetchZip(appID, attempt, destPath string) (*zip.Reader, io.Closer, string, error) {
 	// Empty attempt means SHS returned an attempts[] entry with no attemptId,
 	// in which case the logs are served at /api/v1/applications/<id>/logs;
 	// inserting an empty segment yields a 404.
@@ -445,7 +535,8 @@ func (s *SHS) fetchZip(appID, attempt string) (*zip.Reader, io.Closer, string, e
 	}
 
 	cl := resp.ContentLength
-	if cl >= 0 && cl <= s.threshold {
+	// 小 zip 内存路径仅在不需要持久化(destPath="")时走;否则一律落盘到 cache。
+	if destPath == "" && cl >= 0 && cl <= s.threshold {
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return nil, nil, "", s.wrapTimeout("read zip body", err)
@@ -457,6 +548,58 @@ func (s *SHS) fetchZip(appID, attempt string) (*zip.Reader, io.Closer, string, e
 		return zr, nil, "", nil
 	}
 
+	if destPath != "" {
+		return s.fetchZipToCache(resp, destPath)
+	}
+	return s.fetchZipToTemp(resp)
+}
+
+// fetchZipToCache 把 resp.Body 落到 destPath(tmp + rename),返回 tmpPath="" 表示
+// "由缓存层管理生命周期"。Close 时不会删除 destPath。
+func (s *SHS) fetchZipToCache(resp *http.Response, destPath string) (*zip.Reader, io.Closer, string, error) {
+	dir := filepath.Dir(destPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, nil, "", fmt.Errorf("shs: mkdir cache: %w", err)
+	}
+	f, err := os.CreateTemp(dir, filepath.Base(destPath)+".tmp.*")
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("shs: create cache tmp: %w", err)
+	}
+	tmpPath := f.Name()
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
+		return nil, nil, "", s.wrapTimeout("write zip to cache", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return nil, nil, "", fmt.Errorf("shs: close cache tmp: %w", err)
+	}
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return nil, nil, "", fmt.Errorf("shs: rename cache: %w", err)
+	}
+	final, err := os.Open(destPath) //nolint:gosec // destPath 来自 zipCachePath,已 sanitize
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("shs: open cache: %w", err)
+	}
+	fi, err := final.Stat()
+	if err != nil {
+		_ = final.Close()
+		return nil, nil, "", fmt.Errorf("shs: stat cache: %w", err)
+	}
+	zr, err := zip.NewReader(final, fi.Size())
+	if err != nil {
+		_ = final.Close()
+		_ = os.Remove(destPath)
+		return nil, nil, "", fmt.Errorf("shs: parse zip: %w", err)
+	}
+	return zr, final, "", nil
+}
+
+// fetchZipToTemp 走原 system temp 路径(用户禁用缓存或大 zip 流式接收时)。
+// 返回的 tmpPath 会被记录到 s.tmpfiles,Close 时删除。
+func (s *SHS) fetchZipToTemp(resp *http.Response) (*zip.Reader, io.Closer, string, error) {
 	f, err := os.CreateTemp("", "spark-cli-shs-*.zip")
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("shs: create tempfile: %w", err)
