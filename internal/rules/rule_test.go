@@ -1,6 +1,7 @@
 package rules
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/opay-bigdata/spark-cli/internal/model"
@@ -389,6 +390,61 @@ func TestSpillRuleEmbedsSparkConf(t *testing.T) {
 	}
 	if got, _ := f.Evidence["est_partition_size_mb"].(float64); got < 4.99 || got > 5.01 {
 		t.Errorf("evidence est_partition_size_mb=%v want ~5.0", got)
+	}
+}
+
+// 多 stage spill 时 SpillRule 应当列出 similar_stages,跟 SkewRule 设计一致;
+// suggestion 也应明示"还有 N 个 stage 同样问题"。
+func TestSpillRuleEmitsSimilarStagesAndCountInSuggestion(t *testing.T) {
+	app := model.NewApplication()
+	// 三个 stage,spill 12 / 5 / 2 GB
+	for i, gb := range []int64{12, 5, 2} {
+		s := model.NewStage(i, 0, "spill-"+string(rune('a'+i)), 100, 0)
+		s.TotalSpillDisk = gb * 1024 * 1024 * 1024
+		s.TotalShuffleReadBytes = 200 * 1024 * 1024 // 让 partition_size 估算非零
+		app.Stages[model.StageKey{ID: i}] = s
+	}
+	f := SpillRule{}.Eval(app)
+	if got, _ := f.Evidence["stage_id"].(int); got != 0 {
+		t.Errorf("primary stage_id=%v want 0 (max spill)", got)
+	}
+	sims, ok := f.Evidence["similar_stages"].([]map[string]any)
+	if !ok || len(sims) != 2 {
+		t.Fatalf("similar_stages=%v want 2 entries", f.Evidence["similar_stages"])
+	}
+	// 按 spill 倒序
+	if got, _ := sims[0]["stage_id"].(int); got != 1 {
+		t.Errorf("similar_stages[0].stage_id=%v want 1", got)
+	}
+	if got, _ := sims[1]["stage_id"].(int); got != 2 {
+		t.Errorf("similar_stages[1].stage_id=%v want 2", got)
+	}
+	if !strings.Contains(f.Suggestion, "还命中 2 个 stage") {
+		t.Errorf("suggestion missing similar_stages count, got: %s", f.Suggestion)
+	}
+	// 文案不应嵌套括号(以前 (wall_share %(scope)) 这种)
+	if strings.Contains(f.Suggestion, "((") || strings.Contains(f.Suggestion, "))") {
+		t.Errorf("suggestion has nested brackets: %s", f.Suggestion)
+	}
+}
+
+// suggestion 在 partition_size > 64MB 阈值时应当给出可执行的
+// `advisoryPartitionSizeInBytes=64m` 建议 + 算出目标 partition 数。
+func TestSpillRuleSuggestionQuantifiesPartitionTuning(t *testing.T) {
+	app := model.NewApplication()
+	app.SparkConf["spark.executor.memory"] = "14G"
+	s := model.NewStage(23, 0, "big-spill", 33, 0)
+	s.TotalSpillDisk = 10 * 1024 * 1024 * 1024
+	// 7.5 GB shuffle_read / 33 task → ~232 MB/partition
+	s.TotalShuffleReadBytes = int64(7.5 * 1024 * 1024 * 1024)
+	app.Stages[model.StageKey{ID: 23}] = s
+
+	f := SpillRule{}.Eval(app)
+	if !strings.Contains(f.Suggestion, "advisoryPartitionSizeInBytes=64m") {
+		t.Errorf("suggestion should propose advisoryPartitionSizeInBytes=64m, got: %s", f.Suggestion)
+	}
+	if !strings.Contains(f.Suggestion, "partition 从 33 提到") {
+		t.Errorf("suggestion should compute target partition count, got: %s", f.Suggestion)
 	}
 }
 

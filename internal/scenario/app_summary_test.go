@@ -98,6 +98,39 @@ func TestAppSummaryTopStagesIncludeBusyRatio(t *testing.T) {
 	}
 }
 
+// wall_share 已知 + 太低(< 1%)的 stage 即使 busy_ratio 高也不该入 top_busy_stages
+// —— 几秒级 stage 的 CPU 瓶颈对整体 wall 影响 < 1%,展示给 agent 反而误导。
+// `app.DurationMs == 0` 时 wall_share = 0 视作未知,这条过滤不触发(此测试覆盖
+// app.DurationMs == 0 + busy_ratio > 0.8 的所有 stage 仍出现的场景)。
+func TestAppSummaryTopBusyStagesExcludesNegligibleWallShare(t *testing.T) {
+	app := model.NewApplication()
+	app.MaxConcurrentExecutors = 10
+	app.StartMs = 0
+	app.EndMs = 1_000_000
+	app.DurationMs = 1_000_000
+
+	// 1. tiny: wall 5s(占 0.5%,远低于阈值)、busy_ratio 0.99 — 应被排除
+	tiny := model.NewStage(1, 0, "tiny-burst", 100, 0)
+	tiny.SubmitMs = 0
+	tiny.CompleteMs = 5_000
+	tiny.TotalRunMs = 50_000
+	tiny.Status = "succeeded"
+	app.Stages[model.StageKey{ID: 1}] = tiny
+
+	// 2. real: wall 600s(占 60%)、busy_ratio 0.95 — 应保留
+	real := model.NewStage(2, 0, "real-hotspot", 100, 0)
+	real.SubmitMs = 0
+	real.CompleteMs = 600_000
+	real.TotalRunMs = 5_700_000
+	real.Status = "succeeded"
+	app.Stages[model.StageKey{ID: 2}] = real
+
+	row := AppSummary(app)
+	if len(row.TopBusyStages) != 1 || row.TopBusyStages[0].StageID != 2 {
+		t.Fatalf("top_busy_stages should keep only the real hotspot, got %+v", row.TopBusyStages)
+	}
+}
+
 // 真实 ETL 经常一边有大量 driver-side 等待 stage(busy_ratio 接近 0)、一边有
 // 几个 executor 真正吃 CPU 的 stage(busy_ratio ~1)。`top_stages_by_duration`
 // 按 wall 排会被 driver-side 等待 stage 占据,看不到真 CPU 瓶颈。

@@ -69,6 +69,57 @@ func TestDataSkewFiltersAndRanks(t *testing.T) {
 	}
 }
 
+// data-skew row 排序应当按 wall_share 倒序(平局回退 skew_factor),与 SkewRule
+// 选 primary 用 wall_share 的策略一致。历史按 f 排会把"f 极端但 wall 低"的
+// stage 排到顶,真正最值得修的高 wall_share stage 反而被推到末尾。
+func TestDataSkewSortsByWallShareThenSkewFactor(t *testing.T) {
+	app := model.NewApplication()
+	app.DurationMs = 1_000_000
+
+	// stage 1: wall_share 0.3, skew f≈30(极端 ratio,但 wall 占比中等)
+	s1 := model.NewStage(1, 0, "low-wall-extreme", 100, 0)
+	s1.SubmitMs = 0
+	s1.CompleteMs = 300_000
+	s1.Status = "succeeded"
+	for i := 0; i < 95; i++ {
+		s1.TaskDurations.Add(100)
+		s1.TaskInputBytes.Add(1024)
+	}
+	for i := 0; i < 5; i++ {
+		s1.TaskDurations.Add(3000)
+		s1.TaskInputBytes.Add(50 * 1024 * 1024)
+	}
+	s1.MaxInputBytes = 50 * 1024 * 1024
+	app.Stages[model.StageKey{ID: 1}] = s1
+
+	// stage 2: wall_share 0.7, skew f≈10(中等 ratio,但 wall 大)
+	s2 := model.NewStage(2, 0, "high-wall-mid", 100, 0)
+	s2.SubmitMs = 0
+	s2.CompleteMs = 700_000
+	s2.Status = "succeeded"
+	for i := 0; i < 95; i++ {
+		s2.TaskDurations.Add(1000)
+		s2.TaskInputBytes.Add(10 * 1024 * 1024)
+	}
+	for i := 0; i < 5; i++ {
+		s2.TaskDurations.Add(15_000)
+		s2.TaskInputBytes.Add(20 * 1024 * 1024)
+	}
+	s2.MaxInputBytes = 20 * 1024 * 1024
+	app.Stages[model.StageKey{ID: 2}] = s2
+
+	rows := DataSkew(app, 10)
+	if len(rows) != 2 {
+		t.Fatalf("rows=%d want 2", len(rows))
+	}
+	if rows[0].StageID != 2 {
+		t.Errorf("first row stage_id=%d want 2 (max wall_share)", rows[0].StageID)
+	}
+	if rows[1].StageID != 1 {
+		t.Errorf("second row stage_id=%d want 1", rows[1].StageID)
+	}
+}
+
 func TestDataSkewVerdictDowngradesOnUniformInput(t *testing.T) {
 	app := model.NewApplication()
 	s := model.NewStage(1, 0, "uniform", 100, 0)

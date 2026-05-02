@@ -74,7 +74,14 @@ func DataSkew(app *model.Application, top int) []DataSkewRow {
 			SQLExecutionID:  sqlID,
 		})
 	}
+	// 排序:优先 wall_share 倒序(最值得修的 stage 排前),平局 / 0 时回退到
+	// max(skew_factor, input_skew_factor)。历史上按 f 排序会把"f 极端但 wall
+	// 占比小"的 stage 推到顶,把真值得修的 wall_share 大 stage 挤到末尾,与
+	// SkewRule 选 primary 的 wall_share 策略冲突。
 	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].WallShare != out[j].WallShare {
+			return out[i].WallShare > out[j].WallShare
+		}
 		fi := math.Max(out[i].SkewFactor, out[i].InputSkewFactor)
 		fj := math.Max(out[j].SkewFactor, out[j].InputSkewFactor)
 		return fi > fj

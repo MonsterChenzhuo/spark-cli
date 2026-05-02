@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 
 	"github.com/opay-bigdata/spark-cli/internal/model"
 )
@@ -145,12 +146,16 @@ func (SkewRule) Eval(app *model.Application) Finding {
 	if skewJoin != "" {
 		evidence["spark_sql_adaptive_skewjoin_enabled"] = skewJoin
 	}
+	similarCount := 0
+	if v, ok := evidence["similar_stages"].([]map[string]any); ok {
+		similarCount = len(v)
+	}
 	return Finding{
 		RuleID:     SkewRule{}.ID(),
 		Severity:   sev,
 		Title:      SkewRule{}.Title(),
 		Evidence:   evidence,
-		Suggestion: skewSuggestion(primary.s.ID, int64(primary.p50), int64(primary.p99), aqe, skewJoin),
+		Suggestion: skewSuggestion(primary.s.ID, int64(primary.p50), int64(primary.p99), primary.wallShare, similarCount, aqe, skewJoin),
 	}
 }
 
@@ -205,15 +210,28 @@ func isIdleStage(s *model.Stage, app *model.Application) bool {
 	return float64(s.TotalRunMs)/float64(wall*slots) < 0.2
 }
 
-func skewSuggestion(stageID int, p50, p99 int64, aqe, skewJoin string) string {
+func skewSuggestion(stageID int, p50, p99 int64, wallShareVal float64, similarCount int, aqe, skewJoin string) string {
 	hint := "检查 join key 分布或开启 AQE skew join"
 	if skewJoin == "true" {
-		hint = "AQE skewJoin 已开启仍长尾，检查 join key 分布或调整 spark.sql.adaptive.skewJoin.skewedPartitionFactor"
+		hint = "AQE skewJoin 已开启仍长尾,试 `spark.sql.adaptive.skewJoin.skewedPartitionFactor=2` + `spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes=64m` 拉低门槛,或在最大 join key 上做 salting"
 	} else if skewJoin == "false" || (aqe != "" && aqe != "true") {
-		hint = "建议启用 spark.sql.adaptive.enabled=true 与 spark.sql.adaptive.skewJoin.enabled=true，并复查 join key 分布"
+		hint = "建议启用 `spark.sql.adaptive.enabled=true` 与 `spark.sql.adaptive.skewJoin.enabled=true`,并复查 join key 分布"
 	}
-	return fmt.Sprintf("stage %d 任务长尾严重，median %dms / P99 %dms。%s。",
-		stageID, p50, p99, hint)
+	// 头部:wall_share 和 similar_stages 数量在同一个括号里,避免嵌套。
+	parts := []string{fmt.Sprintf("stage %d 任务长尾严重", stageID)}
+	notes := []string{}
+	if wallShareVal > 0 {
+		notes = append(notes, fmt.Sprintf("wall_share %.0f%%", wallShareVal*100))
+	}
+	if similarCount > 0 {
+		notes = append(notes, fmt.Sprintf("还命中 %d 个 stage 见 evidence.similar_stages", similarCount))
+	}
+	if len(notes) > 0 {
+		parts[0] += "(" + strings.Join(notes, ";") + ")"
+	}
+	parts = append(parts, fmt.Sprintf("median %dms / P99 %dms", p50, p99))
+	parts = append(parts, hint)
+	return strings.Join(parts, ",") + "。"
 }
 
 func round3(f float64) float64 {

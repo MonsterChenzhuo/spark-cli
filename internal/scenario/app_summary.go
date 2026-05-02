@@ -86,6 +86,13 @@ func AppSummaryColumns() []string {
 // stage(broadcast / planning / collect / listing 等),不应进入热点榜。
 const topBusyStagesMinRatio = 0.8
 
+// topBusyStagesMinWallShare: stage wall 占应用 wall 不到此阈值时,即使 busy_ratio
+// 很高也不当"值得调优的真热点" —— 几秒级 stage 调好了对整体 wall 影响 < 1%,
+// 把这种 stage 列进 top_busy_stages 反而误导 agent。`app.DurationMs == 0` 时
+// wall_share 算 0,被视作"未知",此阈值不生效(避免没 ApplicationEnd 事件
+// 的日志全线被排除)。
+const topBusyStagesMinWallShare = 0.01
+
 // topBusyStagesLimit: 输出前 N 个真热点。3 与 top_stages_by_duration 对齐,
 // LLM / agent 一次扫到 3 个就够定方向。
 const topBusyStagesLimit = 3
@@ -98,6 +105,16 @@ const (
 	topIOBoundMaxBusyRatio              = 0.8                // 与 top_busy_stages 阈值刚好互补,不会双面命中
 	topIOBoundLimit                     = 3
 )
+
+type stageDigest struct {
+	id           int
+	name         string
+	dur          int64
+	busy         float64
+	spillBytes   int64
+	shuffleBytes int64
+	wallShare    float64
+}
 
 func AppSummary(app *model.Application) AppSummaryRow {
 	row := AppSummaryRow{
@@ -127,16 +144,19 @@ func AppSummary(app *model.Application) AppSummaryRow {
 		row.GCRatio = round3(float64(app.TotalGCMs) / float64(app.TotalRunMs))
 	}
 
-	type sd struct {
-		id           int
-		name         string
-		dur          int64
-		busy         float64
-		spillBytes   int64
-		shuffleBytes int64
-		wallShare    float64
-	}
-	var all []sd
+	all := collectStageDigests(app, &row)
+	sort.Slice(all, func(i, j int) bool { return all[i].dur > all[j].dur })
+	row.TopStagesByDuration = pickTopStagesByDuration(all)
+	row.TopBusyStages = pickTopBusyStages(all)
+	row.TopIOBoundStages = pickTopIOBoundStages(all)
+	return row
+}
+
+// collectStageDigests 把 app.Stages 拍平成 stageDigest 切片,顺便累加
+// row.StagesFailed / StagesSkipped(原始数据本来就是单次循环里完成的,
+// 不抽出来 AppSummary 直接破 gocyclo 阈值)。
+func collectStageDigests(app *model.Application, row *AppSummaryRow) []stageDigest {
+	var all []stageDigest
 	for _, s := range app.Stages {
 		switch s.Status {
 		case "failed":
@@ -148,7 +168,7 @@ func AppSummary(app *model.Application) AppSummaryRow {
 		if dur < 0 {
 			dur = 0
 		}
-		all = append(all, sd{
+		all = append(all, stageDigest{
 			id:           s.ID,
 			name:         s.Name,
 			dur:          dur,
@@ -158,23 +178,38 @@ func AppSummary(app *model.Application) AppSummaryRow {
 			wallShare:    dataSkewWallShare(s, app),
 		})
 	}
-	sort.Slice(all, func(i, j int) bool { return all[i].dur > all[j].dur })
+	return all
+}
+
+// pickTopStagesByDuration 取按 dur 倒序的前 3,包含 driver-side 等待 stage。
+// 调用方应已先按 dur 倒序排好。
+func pickTopStagesByDuration(all []stageDigest) []TopStage {
 	n := 3
 	if len(all) < n {
 		n = len(all)
 	}
+	out := make([]TopStage, 0, n)
 	for i := 0; i < n; i++ {
-		row.TopStagesByDuration = append(row.TopStagesByDuration, TopStage{
+		out = append(out, TopStage{
 			StageID: all[i].id, Name: all[i].name, DurationMs: all[i].dur, BusyRatio: all[i].busy,
 		})
 	}
+	return out
+}
 
-	// top_busy_stages: 过滤 + 按 busy*duration 倒序,与 by_duration 切面正交。
-	busy := make([]sd, 0, len(all))
+// pickTopBusyStages 过滤 + 按 busy*duration 倒序,与 by_duration 切面正交。
+// wall_share 已知(>0)且 < 1% 的 stage 被排除 —— 即便 busy_ratio 高,几秒级
+// stage 不是真正值得调优的 CPU 热点。wall_share == 0 视为未知,不触发过滤。
+func pickTopBusyStages(all []stageDigest) []TopStage {
+	busy := make([]stageDigest, 0, len(all))
 	for _, s := range all {
-		if s.busy >= topBusyStagesMinRatio {
-			busy = append(busy, s)
+		if s.busy < topBusyStagesMinRatio {
+			continue
 		}
+		if s.wallShare > 0 && s.wallShare < topBusyStagesMinWallShare {
+			continue
+		}
+		busy = append(busy, s)
 	}
 	sort.Slice(busy, func(i, j int) bool {
 		return float64(busy[i].dur)*busy[i].busy > float64(busy[j].dur)*busy[j].busy
@@ -183,17 +218,19 @@ func AppSummary(app *model.Application) AppSummaryRow {
 	if len(busy) < limit {
 		limit = len(busy)
 	}
+	out := make([]TopStage, 0, limit)
 	for i := 0; i < limit; i++ {
-		row.TopBusyStages = append(row.TopBusyStages, TopStage{
+		out = append(out, TopStage{
 			StageID: busy[i].id, Name: busy[i].name, DurationMs: busy[i].dur, BusyRatio: busy[i].busy,
 		})
 	}
+	return out
+}
 
-	// top_io_bound_stages: busy_ratio < 0.8 且 spill / shuffle_read 一项达标的 stage。
-	// 这是 TopBusyStages 的互补切面 —— spill 主导的 stage executor 都在等盘,busy_ratio
-	// 被压得很低,在 TopBusyStages 里看不到但才是真瓶颈。按 wall_share 倒序输出,直接
-	// 锁定"占 wall 大但 IO 主导"的优化目标。
-	ioBound := make([]sd, 0, len(all))
+// pickTopIOBoundStages 取 busy_ratio < 0.8 但 spill / shuffle_read 一项达标的 stage,
+// 按 wall_share 倒序输出。与 TopBusyStages 互补,锁定"占 wall 大但 IO 主导"的瓶颈。
+func pickTopIOBoundStages(all []stageDigest) []TopIOBoundStage {
+	ioBound := make([]stageDigest, 0, len(all))
 	for _, s := range all {
 		if s.dur <= 0 {
 			continue
@@ -213,12 +250,13 @@ func AppSummary(app *model.Application) AppSummaryRow {
 		}
 		return ioBound[i].dur > ioBound[j].dur
 	})
-	ioLimit := topIOBoundLimit
-	if len(ioBound) < ioLimit {
-		ioLimit = len(ioBound)
+	limit := topIOBoundLimit
+	if len(ioBound) < limit {
+		limit = len(ioBound)
 	}
-	for i := 0; i < ioLimit; i++ {
-		row.TopIOBoundStages = append(row.TopIOBoundStages, TopIOBoundStage{
+	out := make([]TopIOBoundStage, 0, limit)
+	for i := 0; i < limit; i++ {
+		out = append(out, TopIOBoundStage{
 			StageID:       ioBound[i].id,
 			Name:          ioBound[i].name,
 			DurationMs:    ioBound[i].dur,
@@ -228,7 +266,7 @@ func AppSummary(app *model.Application) AppSummaryRow {
 			WallShare:     round3(ioBound[i].wallShare),
 		})
 	}
-	return row
+	return out
 }
 
 // stageBusyRatio = TotalRunMs / (wall * effective_slots), clamped to [0,1].
