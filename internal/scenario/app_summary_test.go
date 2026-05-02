@@ -154,6 +154,96 @@ func TestAppSummaryTopBusyStagesFiltersAndRanks(t *testing.T) {
 	}
 }
 
+// 真实场景:某个 stage spill 9 GB+ 但 busy_ratio 仅 0.05(任务都在等盘 IO),
+// `top_busy_stages` 0.8 阈值会把它过滤掉 —— agent 只看 top_busy_stages 完全错过
+// 这种最大瓶颈。`top_io_bound_stages` 用 spill / shuffle_read 大头 + busy_ratio < 0.8
+// 的过滤条件单独提出来,让 agent 直接锁定 IO 主导的真瓶颈。
+func TestAppSummaryTopIOBoundStagesPicksSpillAndShuffle(t *testing.T) {
+	app := model.NewApplication()
+	app.MaxConcurrentExecutors = 10
+	app.StartMs = 0
+	app.EndMs = 1_000_000
+	app.DurationMs = 1_000_000
+
+	// stage 1: spill 5 GB,busy_ratio 0.05,wall 600s —— 应入榜首
+	bigSpill := model.NewStage(1, 0, "big-spill", 100, 0)
+	bigSpill.SubmitMs = 0
+	bigSpill.CompleteMs = 600_000
+	bigSpill.TotalRunMs = 300_000
+	bigSpill.TotalSpillDisk = 5 * 1024 * 1024 * 1024
+	bigSpill.Status = "succeeded"
+	app.Stages[model.StageKey{ID: 1}] = bigSpill
+
+	// stage 2: shuffle_read 3 GB,busy_ratio 0.1,wall 200s —— 也应入榜
+	bigShuffle := model.NewStage(2, 0, "big-shuffle", 100, 0)
+	bigShuffle.SubmitMs = 0
+	bigShuffle.CompleteMs = 200_000
+	bigShuffle.TotalRunMs = 200_000
+	bigShuffle.TotalShuffleReadBytes = 3 * 1024 * 1024 * 1024
+	bigShuffle.Status = "succeeded"
+	app.Stages[model.StageKey{ID: 2}] = bigShuffle
+
+	// stage 3: busy_ratio 0.95(CPU 热点),不应入 IO-bound 榜(由 top_busy_stages 覆盖)
+	hot := model.NewStage(3, 0, "hot-cpu", 100, 0)
+	hot.SubmitMs = 0
+	hot.CompleteMs = 100_000
+	hot.TotalRunMs = 950_000
+	hot.TotalSpillDisk = 5 * 1024 * 1024 * 1024 // 哪怕也有 spill,busy_ratio 高就跳过
+	hot.Status = "succeeded"
+	app.Stages[model.StageKey{ID: 3}] = hot
+
+	// stage 4: spill 100 MB,达不到 0.5 GB 阈值,不入榜
+	smallSpill := model.NewStage(4, 0, "small-spill", 100, 0)
+	smallSpill.SubmitMs = 0
+	smallSpill.CompleteMs = 50_000
+	smallSpill.TotalRunMs = 5_000
+	smallSpill.TotalSpillDisk = 100 * 1024 * 1024
+	smallSpill.Status = "succeeded"
+	app.Stages[model.StageKey{ID: 4}] = smallSpill
+
+	row := AppSummary(app)
+	if len(row.TopIOBoundStages) != 2 {
+		t.Fatalf("top_io_bound_stages=%d want 2 (big-spill + big-shuffle)", len(row.TopIOBoundStages))
+	}
+	// 按 wall_share 倒序:bigSpill (0.6) > bigShuffle (0.2)
+	if row.TopIOBoundStages[0].StageID != 1 {
+		t.Errorf("rank 0 stage_id=%d want 1 (bigger wall_share)", row.TopIOBoundStages[0].StageID)
+	}
+	if row.TopIOBoundStages[1].StageID != 2 {
+		t.Errorf("rank 1 stage_id=%d want 2", row.TopIOBoundStages[1].StageID)
+	}
+	if got := row.TopIOBoundStages[0].SpillDiskGB; got < 4.99 || got > 5.01 {
+		t.Errorf("spill_disk_gb=%v want ~5.0", got)
+	}
+	if got := row.TopIOBoundStages[0].WallShare; got < 0.59 || got > 0.61 {
+		t.Errorf("wall_share=%v want ~0.6", got)
+	}
+}
+
+func TestAppSummaryTopIOBoundStagesEmptyWhenAllBusy(t *testing.T) {
+	app := model.NewApplication()
+	app.MaxConcurrentExecutors = 10
+	app.StartMs = 0
+	app.EndMs = 100_000
+	app.DurationMs = 100_000
+
+	// 所有 stage busy_ratio >= 0.9 + 大 spill 也应被排除(由 top_busy_stages 覆盖)
+	for i := 1; i <= 3; i++ {
+		s := model.NewStage(i, 0, "hot", 100, 0)
+		s.SubmitMs = 0
+		s.CompleteMs = 50_000
+		s.TotalRunMs = 480_000 // busy_ratio ≈ 0.96
+		s.TotalSpillDisk = 5 * 1024 * 1024 * 1024
+		s.Status = "succeeded"
+		app.Stages[model.StageKey{ID: i}] = s
+	}
+
+	row := AppSummary(app)
+	if len(row.TopIOBoundStages) != 0 {
+		t.Errorf("top_io_bound_stages=%d want 0 (all stages are CPU-bound)", len(row.TopIOBoundStages))
+	}
+}
+
 func TestAppSummaryBusyRatioClampsToOne(t *testing.T) {
 	app := model.NewApplication()
 	app.MaxConcurrentExecutors = 1

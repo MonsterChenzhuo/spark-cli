@@ -13,6 +13,22 @@ type TopStage struct {
 	BusyRatio  float64 `json:"busy_ratio"`
 }
 
+// TopIOBoundStage 描述"wall 占比大但 executor 不忙"的 stage —— 通常是任务在
+// 大量 spill 落盘 / 等 shuffle / 网络阻塞,busy_ratio 因此被压得很低。
+// 与 TopBusyStages(busy_ratio >= 0.8 的 CPU 热点)正交:看 spill 大头 stage
+// 时只看 TopBusyStages 会全错过,这条数组就是把"占 wall 大但 IO 主导"的 stage
+// 单独提出来,让 agent 直接盯到真正吃 wall 的 stage(如 spill 9.86 GB 但
+// busy_ratio 仅 0.048 的场景)。
+type TopIOBoundStage struct {
+	StageID       int     `json:"stage_id"`
+	Name          string  `json:"name"`
+	DurationMs    int64   `json:"duration_ms"`
+	BusyRatio     float64 `json:"busy_ratio"`
+	SpillDiskGB   float64 `json:"spill_disk_gb"`
+	ShuffleReadGB float64 `json:"shuffle_read_gb"`
+	WallShare     float64 `json:"wall_share"`
+}
+
 type AppSummaryRow struct {
 	AppID                  string     `json:"app_id"`
 	AppName                string     `json:"app_name"`
@@ -41,6 +57,12 @@ type AppSummaryRow struct {
 	// 等待 stage 过滤掉,只保留 busy_ratio > 0.8 且按 busy_ratio*duration 倒序的
 	// 真正 executor 热点 —— 这才是值得调并行 / 调 SQL plan 的优化候选。
 	TopBusyStages []TopStage `json:"top_busy_stages"`
+	// TopIOBoundStages 与 TopBusyStages 正交,补充 spill / shuffle 主导的 stage。
+	// 真实 ETL 经常出现 stage spill 9 GB+ 但 busy_ratio < 0.1(任务都在等盘),
+	// 它们被 TopBusyStages 阈值过滤掉但才是真瓶颈。本字段按 wall_share 倒序
+	// 输出 spill_disk_gb >= 0.5 或 shuffle_read_gb >= 1 的非忙 stage(busy_ratio < 0.8),
+	// 让 agent 直接锁定"占 wall 大但 IO 主导"的优化候选。
+	TopIOBoundStages []TopIOBoundStage `json:"top_io_bound_stages"`
 }
 
 func AppSummaryColumns() []string {
@@ -56,6 +78,7 @@ func AppSummaryColumns() []string {
 		"total_gc_ms", "total_run_ms", "gc_ratio",
 		"top_stages_by_duration",
 		"top_busy_stages",
+		"top_io_bound_stages",
 	}
 }
 
@@ -66,6 +89,15 @@ const topBusyStagesMinRatio = 0.8
 // topBusyStagesLimit: 输出前 N 个真热点。3 与 top_stages_by_duration 对齐,
 // LLM / agent 一次扫到 3 个就够定方向。
 const topBusyStagesLimit = 3
+
+// IO-bound 阈值:一项满足即可入候选(spill 与 shuffle_read 各自的"算大头"门槛)。
+// 设计意图:不让"几十 MB 的小 spill / 小 shuffle"挤掉真正 GB 级的 IO 热点。
+const (
+	topIOBoundMinSpillBytes       int64 = 512 * 1024 * 1024  // 0.5 GB
+	topIOBoundMinShuffleReadBytes int64 = 1024 * 1024 * 1024 // 1 GB
+	topIOBoundMaxBusyRatio              = 0.8                // 与 top_busy_stages 阈值刚好互补,不会双面命中
+	topIOBoundLimit                     = 3
+)
 
 func AppSummary(app *model.Application) AppSummaryRow {
 	row := AppSummaryRow{
@@ -96,10 +128,13 @@ func AppSummary(app *model.Application) AppSummaryRow {
 	}
 
 	type sd struct {
-		id   int
-		name string
-		dur  int64
-		busy float64
+		id           int
+		name         string
+		dur          int64
+		busy         float64
+		spillBytes   int64
+		shuffleBytes int64
+		wallShare    float64
 	}
 	var all []sd
 	for _, s := range app.Stages {
@@ -113,7 +148,15 @@ func AppSummary(app *model.Application) AppSummaryRow {
 		if dur < 0 {
 			dur = 0
 		}
-		all = append(all, sd{id: s.ID, name: s.Name, dur: dur, busy: stageBusyRatio(s, app.MaxConcurrentExecutors)})
+		all = append(all, sd{
+			id:           s.ID,
+			name:         s.Name,
+			dur:          dur,
+			busy:         stageBusyRatio(s, app.MaxConcurrentExecutors),
+			spillBytes:   s.TotalSpillDisk,
+			shuffleBytes: s.TotalShuffleReadBytes,
+			wallShare:    dataSkewWallShare(s, app),
+		})
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i].dur > all[j].dur })
 	n := 3
@@ -143,6 +186,46 @@ func AppSummary(app *model.Application) AppSummaryRow {
 	for i := 0; i < limit; i++ {
 		row.TopBusyStages = append(row.TopBusyStages, TopStage{
 			StageID: busy[i].id, Name: busy[i].name, DurationMs: busy[i].dur, BusyRatio: busy[i].busy,
+		})
+	}
+
+	// top_io_bound_stages: busy_ratio < 0.8 且 spill / shuffle_read 一项达标的 stage。
+	// 这是 TopBusyStages 的互补切面 —— spill 主导的 stage executor 都在等盘,busy_ratio
+	// 被压得很低,在 TopBusyStages 里看不到但才是真瓶颈。按 wall_share 倒序输出,直接
+	// 锁定"占 wall 大但 IO 主导"的优化目标。
+	ioBound := make([]sd, 0, len(all))
+	for _, s := range all {
+		if s.dur <= 0 {
+			continue
+		}
+		if s.busy >= topIOBoundMaxBusyRatio {
+			continue
+		}
+		if s.spillBytes < topIOBoundMinSpillBytes && s.shuffleBytes < topIOBoundMinShuffleReadBytes {
+			continue
+		}
+		ioBound = append(ioBound, s)
+	}
+	sort.Slice(ioBound, func(i, j int) bool {
+		// wall_share 0 时(app.DurationMs==0)退化为按 dur 倒序,保持稳定排序
+		if ioBound[i].wallShare != ioBound[j].wallShare {
+			return ioBound[i].wallShare > ioBound[j].wallShare
+		}
+		return ioBound[i].dur > ioBound[j].dur
+	})
+	ioLimit := topIOBoundLimit
+	if len(ioBound) < ioLimit {
+		ioLimit = len(ioBound)
+	}
+	for i := 0; i < ioLimit; i++ {
+		row.TopIOBoundStages = append(row.TopIOBoundStages, TopIOBoundStage{
+			StageID:       ioBound[i].id,
+			Name:          ioBound[i].name,
+			DurationMs:    ioBound[i].dur,
+			BusyRatio:     ioBound[i].busy,
+			SpillDiskGB:   bytesToGB(ioBound[i].spillBytes),
+			ShuffleReadGB: bytesToGB(ioBound[i].shuffleBytes),
+			WallShare:     round3(ioBound[i].wallShare),
 		})
 	}
 	return row
