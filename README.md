@@ -133,6 +133,9 @@ mismatch, write errors) degrade silently to "miss + reparse".
 | `spark-cli slow-stages <appId>` | Stages by wall time |
 | `spark-cli data-skew <appId>` | Skewed stages |
 | `spark-cli gc-pressure <appId>` | GC ratio per stage / executor |
+| `spark-cli config show [--format json]` | Print effective configuration (yaml / env / default sources) |
+| `spark-cli cache list` / `cache clear [--app <id>] [--dry-run]` | Inspect / prune the parsed-application + SHS zip caches |
+| `spark-cli version` (also `--version`) | Print spark-cli version |
 
 All accept `--top N`, `--format json|table|markdown`, `--dry-run`, `--log-dirs`,
 `--cache-dir`, `--no-cache`, `--shs-timeout`, `--no-progress`,

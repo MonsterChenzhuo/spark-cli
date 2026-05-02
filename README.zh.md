@@ -127,6 +127,9 @@ spark-cli diagnose application_1771556836054_861265 \
 | `spark-cli slow-stages <appId>` | 按耗时排序的 Stage |
 | `spark-cli data-skew <appId>` | 倾斜 Stage |
 | `spark-cli gc-pressure <appId>` | 每 Stage / Executor 的 GC 占比 |
+| `spark-cli config show [--format json]` | 打印当前生效配置(yaml / env / default 来源标注) |
+| `spark-cli cache list` / `cache clear [--app <id>] [--dry-run]` | 查看 / 清理本地的应用 + SHS zip 缓存 |
+| `spark-cli version` (与 `--version`) | 打印 spark-cli 版本 |
 
 均支持 `--top N`、`--format json|table|markdown`、`--dry-run`、`--log-dirs`、
 `--cache-dir`、`--no-cache`、`--shs-timeout`、`--no-progress`、
