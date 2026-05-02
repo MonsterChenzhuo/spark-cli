@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/opay-bigdata/spark-cli/internal/scenario"
@@ -20,11 +21,33 @@ func WriteTable(w io.Writer, env scenario.Envelope) error {
 	// app-summary 是 single-row 多列(含 nested 数组)场景:横向布局会变成
 	// 1200+ 字符宽的一行,nested 字段被 stringify 成几百字符 inline JSON,
 	// 终端完全不可读。改成 "key | value" 纵向输出 —— 与 markdown 模式一致。
+	var renderErr error
 	if len(rows) == 1 {
 		renderKeyValue(w, cols, rows[0])
-		return nil
+	} else {
+		renderErr = renderTable(w, cols, rows)
 	}
-	return renderTable(w, cols, rows)
+	renderSQLExecutionsTable(w, env.SQLExecutions)
+	return renderErr
+}
+
+// renderSQLExecutionsTable 把 envelope.sql_executions 在 table format 下渲染成
+// 段落形式("=== sql_executions ===" + "id=N: ...")。slow-stages / data-skew
+// 的 row 不带完整 SQL,人类用 --format table 时正需要 SQL 辅助判断。
+func renderSQLExecutionsTable(w io.Writer, m map[int64]string) {
+	if len(m) == 0 {
+		return
+	}
+	keys := make([]int64, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "=== sql_executions ===")
+	for _, k := range keys {
+		fmt.Fprintf(w, "id=%d: %s\n", k, m[k])
+	}
 }
 
 // renderKeyValue 把单 row 渲染成两列纵向输出:左列字段名,右列值。nested

@@ -3,6 +3,7 @@ package output
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/opay-bigdata/spark-cli/internal/scenario"
@@ -31,10 +32,32 @@ func WriteMarkdown(w io.Writer, env scenario.Envelope) error {
 	// 适合"扫多个 stage / finding 选感兴趣的"的浏览动作。
 	if len(rows) == 1 {
 		renderMDKeyValue(w, cols, rows[0])
-		return nil
+	} else {
+		renderMD(w, cols, rows)
 	}
-	renderMD(w, cols, rows)
+	renderSQLExecutionsMD(w, env.SQLExecutions)
 	return nil
+}
+
+// renderSQLExecutionsMD 把 envelope.sql_executions(slow-stages / data-skew 顶层
+// 共享的 SQL 文本)渲染成可读的代码块段落。historic markdown 输出只渲染
+// columns/data 主表,SQL 文本只在 JSON 模式可见 —— 但人类用 markdown 看 stage
+// 时正需要 SQL 文本辅助判断。
+func renderSQLExecutionsMD(w io.Writer, m map[int64]string) {
+	if len(m) == 0 {
+		return
+	}
+	keys := make([]int64, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "### sql_executions")
+	for _, k := range keys {
+		fmt.Fprintln(w)
+		fmt.Fprintf(w, "**id=%d**:\n\n```\n%s\n```\n", k, m[k])
+	}
 }
 
 // formatAppDuration 把 envelope.app_duration_ms 渲染成 markdown / table 头部
