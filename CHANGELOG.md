@@ -5,6 +5,8 @@
 ### Rounds 4-8 polish (same 2026-05-02 dogfooding session)
 
 Output / UX:
+- **`diagnose` now reports executor under-supply** via a new `executor_supply` rule when static `spark.executor.instances` greatly exceeds EventLog-observed executors, with wording that separates EventLog evidence from YARN RM root cause.
+- **`app-summary` shows executor request config** (`dynamic_allocation_enabled`, `configured_executor_instances`, executor cores/memory/overhead) next to observed executor counts, so under-allocation is visible without fetching the environment page separately.
 - **`--format table` single-row scenarios go vertical** (mirrors round-3's markdown change). `app-summary` no longer prints a 1200+ char horizontal row with nested-array cells stuffed inline.
 - **markdown / table header now shows app wall** (`· app: 70.5min` / `· app: 30.0s`), so humans don't have to read `app_duration_ms` and convert.
 - **markdown cells escape `|` and newlines.** SQL text containing pipes (`select a | b from t`) no longer breaks the table layout into mis-aligned columns.

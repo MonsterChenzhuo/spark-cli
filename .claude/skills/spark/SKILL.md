@@ -27,9 +27,11 @@ The user must provide a Spark `applicationId` (e.g. `application_1735000000_0001
    - `failed_tasks` triggered → if `evidence.blacklisted_hosts` is non-empty, those hosts have been excluded ≥2 times; report them by name and tell the user the failure looks node-level (hardware/network/disk), not random task flakiness. Otherwise ask for driver logs.
    - `tiny_tasks` triggered → 分区过细,evidence 现在带 `wall_share` / `wall_ms` + 多 stage 命中时含 `similar_stages`;suggestion 直接给"降到 ~N partition"的具体目标(基于"目标 task ~500ms"经验式),不必自己再算
    - `idle_stage` triggered → stage wall-clock 远大于 executor 实际工作时间(driver 端 broadcast/串行计算/调度等待),用 `spark-cli slow-stages <appId>` 看具体 stage,然后排查执行计划
+   - `executor_supply` triggered → 静态配置的 `spark.executor.instances` 大于 EventLog 实际注册/并发 executor。**只能说明 executor 供给不足,不能从 EventLog 直接断言 YARN 为什么没分配**;引用 evidence 里的 `configured_executor_instances` / `max_concurrent_executors` / `executors_added`,然后让用户查 YARN RM/AM 的 pending containers、user limit、队列容量、节点标签、reserved containers、container 资源碎片。
    - All `ok` but user reports slowness → `spark-cli slow-stages <appId> --top 5`
 
 3. **For overview**: `spark-cli app-summary <appId>`。app-summary 同时输出三个互补切面,**永远要三个一起看**才能不漏瓶颈:
+   - 先看 `dynamic_allocation_enabled` / `configured_executor_instances` / `executors_added` / `max_concurrent_executors`。静态申请数远大于实际 executor 时,瓶颈先按 YARN executor 供给不足处理;但原因必须去 RM/AM 查,EventLog 不含调度器拒绝原因。
    - `top_stages_by_duration[]` 按 wall 倒序(包含 driver-side 等待 stage),**先看 busy_ratio** 再决定是否下钻。
    - **`top_busy_stages[]`** —— `busy_ratio > 0.8` 的 stage 按 `busy_ratio * duration_ms` 倒序。这是真正吃 CPU 的 executor 热点;driver-side 等待 stage 自动过滤掉。
    - **`top_io_bound_stages[]`** —— `busy_ratio < 0.8` 但 `spill_disk_gb >= 0.5` 或 `shuffle_read_gb >= 1` 的 stage,按 wall_share 倒序。这是 spill / shuffle 主导的"大 wall + 低 busy"瓶颈,**只看 top_busy_stages 会全错过**(典型场景:stage spill 9 GB,executor 都在等盘,busy_ratio 仅 0.05;这种 stage 才是真值得修的)。

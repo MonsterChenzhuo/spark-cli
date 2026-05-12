@@ -2,6 +2,8 @@ package scenario
 
 import (
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/opay-bigdata/spark-cli/internal/model"
 )
@@ -30,29 +32,34 @@ type TopIOBoundStage struct {
 }
 
 type AppSummaryRow struct {
-	AppID                  string     `json:"app_id"`
-	AppName                string     `json:"app_name"`
-	User                   string     `json:"user"`
-	DurationMs             int64      `json:"duration_ms"`
-	ExecutorsAdded         int        `json:"executors_added"`
-	ExecutorsRemoved       int        `json:"executors_removed"`
-	MaxConcurrentExecutors int        `json:"max_concurrent_executors"`
-	JobsTotal              int        `json:"jobs_total"`
-	JobsFailed             int        `json:"jobs_failed"`
-	StagesTotal            int        `json:"stages_total"`
-	StagesFailed           int        `json:"stages_failed"`
-	StagesSkipped          int        `json:"stages_skipped"`
-	TasksTotal             int64      `json:"tasks_total"`
-	TasksFailed            int64      `json:"tasks_failed"`
-	TotalInputGB           float64    `json:"total_input_gb"`
-	TotalOutputGB          float64    `json:"total_output_gb"`
-	TotalShuffleReadGB     float64    `json:"total_shuffle_read_gb"`
-	TotalShuffleWriteGB    float64    `json:"total_shuffle_write_gb"`
-	TotalSpillDiskGB       float64    `json:"total_spill_disk_gb"`
-	TotalGCMs              int64      `json:"total_gc_ms"`
-	TotalRunMs             int64      `json:"total_run_ms"`
-	GCRatio                float64    `json:"gc_ratio"`
-	TopStagesByDuration    []TopStage `json:"top_stages_by_duration"`
+	AppID                       string     `json:"app_id"`
+	AppName                     string     `json:"app_name"`
+	User                        string     `json:"user"`
+	DurationMs                  int64      `json:"duration_ms"`
+	DynamicAllocationEnabled    string     `json:"dynamic_allocation_enabled"`
+	ConfiguredExecutorInstances int        `json:"configured_executor_instances"`
+	ExecutorCores               string     `json:"executor_cores"`
+	ExecutorMemory              string     `json:"executor_memory"`
+	ExecutorMemoryOverhead      string     `json:"executor_memory_overhead"`
+	ExecutorsAdded              int        `json:"executors_added"`
+	ExecutorsRemoved            int        `json:"executors_removed"`
+	MaxConcurrentExecutors      int        `json:"max_concurrent_executors"`
+	JobsTotal                   int        `json:"jobs_total"`
+	JobsFailed                  int        `json:"jobs_failed"`
+	StagesTotal                 int        `json:"stages_total"`
+	StagesFailed                int        `json:"stages_failed"`
+	StagesSkipped               int        `json:"stages_skipped"`
+	TasksTotal                  int64      `json:"tasks_total"`
+	TasksFailed                 int64      `json:"tasks_failed"`
+	TotalInputGB                float64    `json:"total_input_gb"`
+	TotalOutputGB               float64    `json:"total_output_gb"`
+	TotalShuffleReadGB          float64    `json:"total_shuffle_read_gb"`
+	TotalShuffleWriteGB         float64    `json:"total_shuffle_write_gb"`
+	TotalSpillDiskGB            float64    `json:"total_spill_disk_gb"`
+	TotalGCMs                   int64      `json:"total_gc_ms"`
+	TotalRunMs                  int64      `json:"total_run_ms"`
+	GCRatio                     float64    `json:"gc_ratio"`
+	TopStagesByDuration         []TopStage `json:"top_stages_by_duration"`
 	// TopBusyStages 把 `top_stages_by_duration` 里 busy_ratio 接近 0 的 driver-side
 	// 等待 stage 过滤掉,只保留 busy_ratio > 0.8 且按 busy_ratio*duration 倒序的
 	// 真正 executor 热点 —— 这才是值得调并行 / 调 SQL plan 的优化候选。
@@ -68,6 +75,8 @@ type AppSummaryRow struct {
 func AppSummaryColumns() []string {
 	return []string{
 		"app_id", "app_name", "user", "duration_ms",
+		"dynamic_allocation_enabled", "configured_executor_instances",
+		"executor_cores", "executor_memory", "executor_memory_overhead",
 		"executors_added", "executors_removed", "max_concurrent_executors",
 		"jobs_total", "jobs_failed",
 		"stages_total", "stages_failed", "stages_skipped",
@@ -118,24 +127,29 @@ type stageDigest struct {
 
 func AppSummary(app *model.Application) AppSummaryRow {
 	row := AppSummaryRow{
-		AppID:                  app.ID,
-		AppName:                app.Name,
-		User:                   app.User,
-		ExecutorsAdded:         app.ExecutorsAdded,
-		ExecutorsRemoved:       app.ExecutorsRemoved,
-		MaxConcurrentExecutors: app.MaxConcurrentExecutors,
-		JobsTotal:              app.JobsTotal,
-		JobsFailed:             app.JobsFailed,
-		StagesTotal:            len(app.Stages),
-		TasksTotal:             app.TasksTotal,
-		TasksFailed:            app.TasksFailed,
-		TotalInputGB:           bytesToGB(app.TotalInputBytes),
-		TotalOutputGB:          bytesToGB(app.TotalOutputBytes),
-		TotalShuffleReadGB:     bytesToGB(app.TotalShuffleReadBytes),
-		TotalShuffleWriteGB:    bytesToGB(app.TotalShuffleWriteBytes),
-		TotalSpillDiskGB:       bytesToGB(app.TotalSpillDisk),
-		TotalGCMs:              app.TotalGCMs,
-		TotalRunMs:             app.TotalRunMs,
+		AppID:                       app.ID,
+		AppName:                     app.Name,
+		User:                        app.User,
+		DynamicAllocationEnabled:    app.SparkConf["spark.dynamicAllocation.enabled"],
+		ConfiguredExecutorInstances: parsePositiveInt(app.SparkConf["spark.executor.instances"]),
+		ExecutorCores:               app.SparkConf["spark.executor.cores"],
+		ExecutorMemory:              app.SparkConf["spark.executor.memory"],
+		ExecutorMemoryOverhead:      app.SparkConf["spark.executor.memoryOverhead"],
+		ExecutorsAdded:              app.ExecutorsAdded,
+		ExecutorsRemoved:            app.ExecutorsRemoved,
+		MaxConcurrentExecutors:      app.MaxConcurrentExecutors,
+		JobsTotal:                   app.JobsTotal,
+		JobsFailed:                  app.JobsFailed,
+		StagesTotal:                 len(app.Stages),
+		TasksTotal:                  app.TasksTotal,
+		TasksFailed:                 app.TasksFailed,
+		TotalInputGB:                bytesToGB(app.TotalInputBytes),
+		TotalOutputGB:               bytesToGB(app.TotalOutputBytes),
+		TotalShuffleReadGB:          bytesToGB(app.TotalShuffleReadBytes),
+		TotalShuffleWriteGB:         bytesToGB(app.TotalShuffleWriteBytes),
+		TotalSpillDiskGB:            bytesToGB(app.TotalSpillDisk),
+		TotalGCMs:                   app.TotalGCMs,
+		TotalRunMs:                  app.TotalRunMs,
 	}
 	if app.EndMs > app.StartMs {
 		row.DurationMs = app.EndMs - app.StartMs
@@ -303,4 +317,12 @@ func round3(f float64) float64 {
 		x += 0.5
 	}
 	return float64(int64(x)) / 1000
+}
+
+func parsePositiveInt(raw string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
 }

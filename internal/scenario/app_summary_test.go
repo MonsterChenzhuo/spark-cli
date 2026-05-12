@@ -67,6 +67,32 @@ func TestAppSummaryComputesGCRatioAndTopStages(t *testing.T) {
 	}
 }
 
+func TestAppSummaryIncludesExecutorRequestConfig(t *testing.T) {
+	app := model.NewApplication()
+	app.SparkConf["spark.dynamicAllocation.enabled"] = "false"
+	app.SparkConf["spark.executor.instances"] = "50"
+	app.SparkConf["spark.executor.cores"] = "4"
+	app.SparkConf["spark.executor.memory"] = "4G"
+	app.SparkConf["spark.executor.memoryOverhead"] = "1024"
+
+	row := AppSummary(app)
+	if row.DynamicAllocationEnabled != "false" {
+		t.Errorf("dynamic_allocation_enabled=%q want false", row.DynamicAllocationEnabled)
+	}
+	if row.ConfiguredExecutorInstances != 50 {
+		t.Errorf("configured_executor_instances=%d want 50", row.ConfiguredExecutorInstances)
+	}
+	if row.ExecutorCores != "4" {
+		t.Errorf("executor_cores=%q want 4", row.ExecutorCores)
+	}
+	if row.ExecutorMemory != "4G" {
+		t.Errorf("executor_memory=%q want 4G", row.ExecutorMemory)
+	}
+	if row.ExecutorMemoryOverhead != "1024" {
+		t.Errorf("executor_memory_overhead=%q want 1024", row.ExecutorMemoryOverhead)
+	}
+}
+
 func TestAppSummaryTopStagesIncludeBusyRatio(t *testing.T) {
 	app := model.NewApplication()
 	app.MaxConcurrentExecutors = 10
