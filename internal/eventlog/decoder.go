@@ -2,9 +2,11 @@ package eventlog
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 
 	"github.com/opay-bigdata/spark-cli/internal/model"
 
@@ -13,32 +15,62 @@ import (
 
 const maxScanLine = 16 << 20 // 16MB per JSONL line
 
+type DecodeOptions struct {
+	AllowTruncatedTail bool
+}
+
 func Decode(r io.Reader, agg *model.Aggregator) (int, error) {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 1<<20), maxScanLine)
+	return DecodeWithOptions(r, agg, DecodeOptions{})
+}
+
+func DecodeWithOptions(r io.Reader, agg *model.Aggregator, opts DecodeOptions) (int, error) {
+	br := bufio.NewReaderSize(r, 1<<20)
 	parsed := 0
-	for scanner.Scan() {
-		line := scanner.Bytes()
+	for {
+		line, readErr := br.ReadBytes('\n')
+		if len(line) > maxScanLine {
+			return parsed, cerrors.New(cerrors.CodeLogParseFailed,
+				"event JSONL line exceeds 16MB", "file may be corrupted")
+		}
+		if len(line) == 0 && readErr == io.EOF {
+			break
+		}
+		if readErr != nil && readErr != io.EOF {
+			return parsed, cerrors.New(cerrors.CodeLogUnreadable, readErr.Error(), "")
+		}
+		atEOF := readErr == io.EOF
+		line = bytes.TrimRight(line, "\r\n")
 		if len(line) == 0 {
+			if atEOF {
+				break
+			}
 			continue
 		}
 		var base evtBase
 		if err := json.Unmarshal(line, &base); err != nil {
+			if opts.AllowTruncatedTail && atEOF && isUnexpectedJSONTail(err) {
+				return parsed, nil
+			}
 			return parsed, cerrors.New(cerrors.CodeLogParseFailed, err.Error(), "line "+itoa(parsed+1))
 		}
 		if err := dispatch(base.Event, line, agg); err != nil {
 			return parsed, err
 		}
 		parsed++
-	}
-	if err := scanner.Err(); err != nil {
-		if errors.Is(err, bufio.ErrTooLong) {
-			return parsed, cerrors.New(cerrors.CodeLogParseFailed,
-				"event JSONL line exceeds 16MB", "file may be corrupted")
+		if atEOF {
+			break
 		}
-		return parsed, cerrors.New(cerrors.CodeLogUnreadable, err.Error(), "")
 	}
 	return parsed, nil
+}
+
+func isUnexpectedJSONTail(err error) bool {
+	var syntaxErr *json.SyntaxError
+	if errors.As(err, &syntaxErr) && strings.Contains(err.Error(), "unexpected end of JSON input") {
+		return true
+	}
+	return strings.Contains(err.Error(), "unexpected end of JSON input") ||
+		strings.Contains(err.Error(), "unexpected EOF")
 }
 
 func itoa(n int) string {

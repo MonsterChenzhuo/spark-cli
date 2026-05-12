@@ -40,6 +40,17 @@ type LogSource struct {
 	SizeBytes   int64
 }
 
+type incompleteReporter interface {
+	IsIncomplete(uri string) bool
+}
+
+func backendIncomplete(fsys fs.FS, uri string) bool {
+	if r, ok := fsys.(incompleteReporter); ok {
+		return r.IsIncomplete(uri)
+	}
+	return false
+}
+
 // stripEventLogSuffixes peels .inprogress (possibly repeated) and a single
 // trailing codec extension. Shared between normalizeAppID and resolveV1 so the
 // two stay in lockstep when codec extensions are added.
@@ -168,7 +179,7 @@ func (l *Locator) resolveV1(fsys fs.FS, dirURI, appID string) (LogSource, bool, 
 		URI:         uri,
 		Format:      "v1",
 		Compression: DetectCompression(base),
-		Incomplete:  strings.HasSuffix(base, ".inprogress"),
+		Incomplete:  strings.HasSuffix(base, ".inprogress") || backendIncomplete(fsys, uri),
 		SizeBytes:   st.Size,
 	}, true, nil
 }
@@ -275,7 +286,7 @@ func (l *Locator) resolveV2(fsys fs.FS, dirURI, appID string) (LogSource, bool, 
 		URI:         v2URI,
 		Format:      "v2",
 		Compression: compression,
-		Incomplete:  incomplete,
+		Incomplete:  incomplete || backendIncomplete(fsys, v2URI),
 		Parts:       urls,
 		SizeBytes:   totalSize,
 	}, true, nil

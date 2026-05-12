@@ -1,6 +1,7 @@
 package eventlog
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,13 @@ import (
 
 	"github.com/opay-bigdata/spark-cli/internal/fs"
 )
+
+type incompleteFS struct {
+	*fs.Local
+	incomplete map[string]bool
+}
+
+func (f incompleteFS) IsIncomplete(uri string) bool { return f.incomplete[uri] }
 
 func writeFile(t *testing.T, p string) {
 	t.Helper()
@@ -71,6 +79,34 @@ func TestResolveV1Inprogress(t *testing.T) {
 		t.Errorf("got %+v", src)
 	}
 }
+
+func TestResolveUsesBackendIncompleteReporter(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "application_1_a")
+	writeFile(t, path)
+	local := fs.NewLocal()
+	fsys := incompleteFS{
+		Local:      local,
+		incomplete: map[string]bool{"file://" + path: true},
+	}
+	loc := NewLocator(map[string]fs.FS{"file": fsys}, []string{"file://" + dir})
+	src, err := loc.Resolve("application_1_a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !src.Incomplete {
+		t.Fatalf("source = %+v, want Incomplete=true", src)
+	}
+}
+
+var _ fs.FS = incompleteFS{}
+var _ interface {
+	Open(string) (io.ReadCloser, error)
+	Stat(string) (fs.FileInfo, error)
+	List(string, string) ([]string, error)
+	Close() error
+	IsIncomplete(string) bool
+} = incompleteFS{}
 
 func TestResolveAmbiguous(t *testing.T) {
 	dir := t.TempDir()

@@ -63,6 +63,7 @@ type shsBundle struct {
 	appID       string
 	attemptID   string
 	lastUpdated int64 // unix nanoseconds
+	completed   bool
 	reader      *zip.Reader
 	backing     io.Closer
 	entries     map[string]*zip.File // full inner-zip path → entry
@@ -152,6 +153,21 @@ func (s *SHS) Open(uri string) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("shs: entry %s not found in app %s", inner, appID)
 	}
 	return f.Open()
+}
+
+// IsIncomplete reports whether SHS metadata says the selected application
+// attempt is still running. SHS zip entries do not always carry `.inprogress`,
+// so the eventlog locator uses this side-channel for LogSource.Incomplete.
+func (s *SHS) IsIncomplete(uri string) bool {
+	host, appID, _, err := splitSHSURI(uri)
+	if err != nil || appID == "" {
+		return false
+	}
+	b, err := s.bundleFor(host, appID)
+	if err != nil || b == nil {
+		return false
+	}
+	return !b.completed
 }
 
 // Stat reports a FileInfo for the zip entry or synthetic directory at uri.
@@ -325,7 +341,7 @@ func (s *SHS) bundleFor(host, appID string) (*shsBundle, error) {
 	}
 	s.mu.Unlock()
 
-	attempt, found, lastUpdated, err := s.fetchAttempt(appID)
+	attempt, found, lastUpdated, completed, err := s.fetchAttempt(appID)
 	if err != nil {
 		return nil, err
 	}
@@ -381,6 +397,7 @@ func (s *SHS) bundleFor(host, appID string) (*shsBundle, error) {
 		appID:       appID,
 		attemptID:   attempt,
 		lastUpdated: lastUpdated,
+		completed:   completed,
 		reader:      zr,
 		backing:     backing,
 		entries:     entries,
@@ -464,7 +481,7 @@ func (s *SHS) sweepStaleCachedZips(dir, appID, keep string) {
 
 // fetchAttempt selects the appropriate attempt segment for the SHS logs URL.
 //
-// Return shape: (attempt, found, lastUpdatedNS, err).
+// Return shape: (attempt, found, lastUpdatedNS, completed, err).
 //
 //   - found=false: SHS reported 404 or attempts is empty → caller treats as
 //     APP_NOT_FOUND.
@@ -474,18 +491,18 @@ func (s *SHS) sweepStaleCachedZips(dir, appID, keep string) {
 //     omits attemptId (Spark 3.4+ default); logs URL is
 //     /api/v1/applications/<appID>/logs (no attempt segment). SHS returns 404
 //     for /<appID>/<empty>/logs in that case, so we MUST drop the segment.
-func (s *SHS) fetchAttempt(appID string) (attempt string, found bool, lastUpdatedNS int64, err error) {
+func (s *SHS) fetchAttempt(appID string) (attempt string, found bool, lastUpdatedNS int64, completed bool, err error) {
 	metaURL := fmt.Sprintf("%s/api/v1/applications/%s", s.httpURL, appID)
 	resp, err := s.httpGet(metaURL)
 	if err != nil {
-		return "", false, 0, s.wrapTimeout(fmt.Sprintf("GET %s", metaURL), err)
+		return "", false, 0, true, s.wrapTimeout(fmt.Sprintf("GET %s", metaURL), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
-		return "", false, 0, nil
+		return "", false, 0, true, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", false, 0, s.wrapStatusErr(metaURL, resp.StatusCode)
+		return "", false, 0, true, s.wrapStatusErr(metaURL, resp.StatusCode)
 	}
 	var meta struct {
 		ID       string `json:"id"`
@@ -493,13 +510,14 @@ func (s *SHS) fetchAttempt(appID string) (attempt string, found bool, lastUpdate
 			AttemptID        string `json:"attemptId"`
 			LastUpdated      string `json:"lastUpdated"`
 			LastUpdatedEpoch int64  `json:"lastUpdatedEpoch"`
+			Completed        *bool  `json:"completed"`
 		} `json:"attempts"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
-		return "", false, 0, fmt.Errorf("shs: decode metadata: %w", err)
+		return "", false, 0, true, fmt.Errorf("shs: decode metadata: %w", err)
 	}
 	if len(meta.Attempts) == 0 {
-		return "", false, 0, nil
+		return "", false, 0, true, nil
 	}
 	bestN := -1
 	bestIdx := -1
@@ -523,7 +541,11 @@ func (s *SHS) fetchAttempt(appID string) (attempt string, found bool, lastUpdate
 	} else if a.LastUpdated != "" {
 		lastUpdatedNS = parseSHSTimestamp(a.LastUpdated)
 	}
-	return a.AttemptID, true, lastUpdatedNS, nil
+	completed = true
+	if a.Completed != nil {
+		completed = *a.Completed
+	}
+	return a.AttemptID, true, lastUpdatedNS, completed, nil
 }
 
 // fetchZip 下载 attempt 的 zip。

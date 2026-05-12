@@ -27,6 +27,7 @@ type shsAttempt struct {
 	AttemptID        string `json:"attemptId"`
 	LastUpdated      string `json:"lastUpdated"`
 	LastUpdatedEpoch int64  `json:"lastUpdatedEpoch"`
+	Completed        *bool  `json:"completed,omitempty"`
 }
 
 type shsApp struct {
@@ -135,6 +136,8 @@ func shsBase(srv *httptest.Server) string {
 	u, _ := url.Parse(srv.URL)
 	return "shs://" + u.Host
 }
+
+func boolPtr(v bool) *bool { return &v }
 
 // 历史上 TestMain 通过 SPARK_CLI_QUIET=1 静默 SHS 进度提示。NewSHS 现在通过
 // SHSOptions{Quiet: true} 直接控制 stderr,不再读环境变量;每个测试构造 SHS
@@ -349,6 +352,38 @@ func TestSHSV2Layout(t *testing.T) {
 	rc.Close()
 	if !bytes.Equal(got, []byte("part1")) {
 		t.Errorf("got %q want part1", got)
+	}
+}
+
+func TestSHSReportsIncompleteAttemptFromMetadata(t *testing.T) {
+	appID := "application_x"
+	v2dir := "eventlog_v2_" + appID
+	z := buildZip(t, map[string][]byte{
+		v2dir + "/appstatus_" + appID: []byte(""),
+		v2dir + "/events_1_" + appID:  []byte("part1"),
+	})
+	apps := map[string]*shsApp{
+		appID: {
+			ID:       appID,
+			Attempts: []shsAttempt{{LastUpdatedEpoch: 100, Completed: boolPtr(false)}},
+			zips:     map[string][]byte{"": z},
+		},
+	}
+	srv := newSHSTestServer(t, apps, nil, 0, false)
+	defer srv.Close()
+
+	s := NewSHS(shsBase(srv), 5*time.Second, SHSOptions{Quiet: true})
+	defer func() { _ = s.Close() }()
+
+	rootURIs, err := s.List(shsBase(srv), "eventlog_v2_"+appID)
+	if err != nil {
+		t.Fatalf("root List: %v", err)
+	}
+	if len(rootURIs) != 1 {
+		t.Fatalf("root List = %v", rootURIs)
+	}
+	if !s.IsIncomplete(rootURIs[0]) {
+		t.Fatalf("IsIncomplete(%q) = false, want true", rootURIs[0])
 	}
 }
 

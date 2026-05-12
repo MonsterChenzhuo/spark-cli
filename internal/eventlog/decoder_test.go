@@ -2,6 +2,7 @@ package eventlog
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/opay-bigdata/spark-cli/internal/model"
@@ -49,5 +50,46 @@ func TestDecodeTinyApp(t *testing.T) {
 	}
 	if st.TotalGCMs != 60 {
 		t.Errorf("gc = %d", st.TotalGCMs)
+	}
+}
+
+func TestDecodeAllowsTruncatedTailForIncompleteLogs(t *testing.T) {
+	body := strings.Join([]string{
+		`{"Event":"SparkListenerApplicationStart","App Name":"tail","App ID":"application_tail","Timestamp":1000,"User":"alice"}`,
+		`{"Event":"SparkListenerExecutorAdded","Timestamp":1100,"Executor ID":"1","Executor Info":{"Host":"worker","Total Cores":1}}`,
+		`{"Event":"SparkListenerTaskEnd"`,
+	}, "\n")
+
+	app := model.NewApplication()
+	agg := model.NewAggregator(app)
+	parsed, err := DecodeWithOptions(strings.NewReader(body), agg, DecodeOptions{AllowTruncatedTail: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed != 2 {
+		t.Fatalf("parsed = %d, want 2", parsed)
+	}
+	if app.ID != "application_tail" {
+		t.Fatalf("app id = %q", app.ID)
+	}
+	if len(app.Executors) != 1 {
+		t.Fatalf("executors = %d, want 1", len(app.Executors))
+	}
+}
+
+func TestDecodeStillRejectsTruncatedTailForCompleteLogs(t *testing.T) {
+	body := strings.Join([]string{
+		`{"Event":"SparkListenerApplicationStart","App Name":"tail","App ID":"application_tail","Timestamp":1000,"User":"alice"}`,
+		`{"Event":"SparkListenerTaskEnd"`,
+	}, "\n")
+
+	app := model.NewApplication()
+	agg := model.NewAggregator(app)
+	parsed, err := DecodeWithOptions(strings.NewReader(body), agg, DecodeOptions{})
+	if err == nil {
+		t.Fatal("expected parse error")
+	}
+	if parsed != 1 {
+		t.Fatalf("parsed = %d, want 1", parsed)
 	}
 }

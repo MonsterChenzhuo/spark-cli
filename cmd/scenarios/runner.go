@@ -151,7 +151,9 @@ func parseApp(fsys fs.FS, src eventlog.LogSource, appID string) (*model.Applicat
 	app := model.NewApplication()
 	app.ID = appID
 	agg := model.NewAggregator(app)
-	count, err := eventlog.Decode(r, agg)
+	count, err := eventlog.DecodeWithOptions(r, agg, eventlog.DecodeOptions{
+		AllowTruncatedTail: src.Incomplete,
+	})
 	if err != nil {
 		return nil, int64(count), err
 	}
