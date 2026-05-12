@@ -5,6 +5,8 @@
 ### Round 4-8 打磨(同一 2026-05-02 dogfooding 会话内继续迭代)
 
 输出 / UX:
+- **`diagnose` 新增 executor 供给不足诊断**:`executor_supply` 在静态 `spark.executor.instances` 明显大于 EventLog 实际 executor 时触发,并明确区分 EventLog 证据与 YARN RM 根因。
+- **`app-summary` 展示 executor 请求配置**(`dynamic_allocation_enabled`、`configured_executor_instances`、executor cores/memory/overhead),和实际 executor 计数放在一起,不用额外打开 environment 页面也能看到 under-allocation。
 - **`--format table` single-row 场景走纵向**(对齐 round-3 markdown 改动)。`app-summary` 不再输出 1200+ 字符的横向超宽行 + nested 字段塞 inline JSON。
 - **markdown / table header 显示应用 wall**(`· app: 70.5min` / `· app: 30.0s`),人类不必再看 `app_duration_ms` 自己换算。
 - **markdown 单元格转义 `|` 与换行**。SQL 文本含 pipe(`select a | b from t`)不再破坏表格列结构。
