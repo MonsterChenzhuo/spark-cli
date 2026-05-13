@@ -163,7 +163,7 @@ func TestSHSPreservesGatewayPathPrefix(t *testing.T) {
 	u, _ := url.Parse(srv.URL)
 	base := "shs://" + u.Host + "/gateway/prod/sparkhistory"
 	s := NewSHS(base, 5*time.Second, SHSOptions{Quiet: true})
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	uris, err := s.List(base, appID)
 	if err != nil {
 		t.Fatalf("List: %v", err)
