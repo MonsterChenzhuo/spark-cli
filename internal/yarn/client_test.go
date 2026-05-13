@@ -1,0 +1,98 @@
+package yarn
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestFetchApplicationLogsBuildsContainerLogURLsBehindGateway(t *testing.T) {
+	const appID = "application_1772605260987_20682"
+	mux := http.NewServeMux()
+	mux.HandleFunc("/gateway/hadoop-prod/yarn/ws/v1/cluster/apps/"+appID, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"app": map[string]any{
+			"id":          appID,
+			"user":        "airflow",
+			"state":       "FINISHED",
+			"finalStatus": "FAILED",
+			"diagnostics": "User class threw exception",
+		}})
+	})
+	mux.HandleFunc("/gateway/hadoop-prod/yarn/ws/v1/cluster/apps/"+appID+"/appattempts", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"appAttempts": map[string]any{"appAttempt": []map[string]any{{
+			"id": "appattempt_1772605260987_20682_000001",
+		}}}})
+	})
+	mux.HandleFunc("/gateway/hadoop-prod/yarn/ws/v1/cluster/apps/"+appID+"/appattempts/appattempt_1772605260987_20682_000001/containers", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"containers": map[string]any{"container": []map[string]any{{
+			"id":              "container_e07_1772605260987_20682_01_000001",
+			"nodeHttpAddress": "10.166.23.223:8142",
+			"logUrl":          "",
+		}}}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	got, err := NewClient([]string{srv.URL + "/gateway/hadoop-prod/yarn"}, 5*time.Second).FetchApplicationLogs(context.Background(), appID, Options{TopContainers: 5, MaxLogBytes: 128})
+	if err != nil {
+		t.Fatalf("FetchApplicationLogs: %v", err)
+	}
+	if got.App.User != "airflow" || got.App.FinalStatus != "FAILED" {
+		t.Fatalf("app summary = %+v", got.App)
+	}
+	if len(got.Containers) != 1 {
+		t.Fatalf("containers len=%d", len(got.Containers))
+	}
+	url := got.Containers[0].LogURL
+	if !strings.Contains(url, "/gateway/hadoop-prod/yarn/nodemanager/node/containerlogs/container_e07_1772605260987_20682_01_000001/airflow") {
+		t.Fatalf("log URL %q missing gateway containerlogs path", url)
+	}
+	for _, want := range []string{"scheme=http", "host=10.166.23.223", "port=8142"} {
+		if !strings.Contains(url, want) {
+			t.Fatalf("log URL %q missing %s", url, want)
+		}
+	}
+}
+
+func TestFetchApplicationLogsIncludesSmallLogSnippets(t *testing.T) {
+	const appID = "application_1_2"
+	mux := http.NewServeMux()
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+appID, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"app": map[string]any{"id": appID, "user": "alice"}})
+	})
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+appID+"/appattempts", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"appAttempts": map[string]any{"appAttempt": []map[string]any{{"id": "attempt_1"}}}})
+	})
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+appID+"/appattempts/attempt_1/containers", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"containers": map[string]any{"container": []map[string]any{{"id": "container_1", "nodeHttpAddress": "node:8042"}}}})
+	})
+	mux.HandleFunc("/yarn/nodemanager/node/containerlogs/container_1/alice/stderr", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("line one\nCaused by: boom\n"))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	got, err := NewClient([]string{srv.URL + "/yarn"}, 5*time.Second).FetchApplicationLogs(context.Background(), appID, Options{
+		TopContainers: 1,
+		LogTypes:      []string{"stderr"},
+		MaxLogBytes:   128,
+	})
+	if err != nil {
+		t.Fatalf("FetchApplicationLogs: %v", err)
+	}
+	if got.Containers[0].Logs["stderr"] == "" || !strings.Contains(got.Containers[0].Logs["stderr"], "Caused by: boom") {
+		t.Fatalf("stderr snippet missing: %+v", got.Containers[0].Logs)
+	}
+}
+
+func writeJSON(t *testing.T, w http.ResponseWriter, v any) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		t.Fatal(err)
+	}
+}

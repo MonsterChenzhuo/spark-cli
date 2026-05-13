@@ -66,10 +66,14 @@ hdfs:
   conf_dir: /etc/hadoop/conf           # optional; auto-discovered via HADOOP_CONF_DIR / HADOOP_HOME if empty
 shs:
   timeout: 5m  # default; production EventLog zips often need minutes — first-fetch progress is printed to stderr (silence with SPARK_CLI_QUIET=1)
+yarn:
+  base_urls:
+    - http://203.123.81.20:7765/gateway/hadoop-prod/yarn  # optional RM/gateway prefix
 timeout: 30s
 ```
 
-Override per-invocation via `--log-dirs`, env var `SPARK_CLI_LOG_DIRS`.
+Override per-invocation via `--log-dirs` / `--yarn-base-urls`, or env vars
+`SPARK_CLI_LOG_DIRS` / `SPARK_CLI_YARN_BASE_URLS`.
 
 ### HDFS configuration
 
@@ -102,6 +106,29 @@ spark-cli diagnose application_1771556836054_861265 \
 - Progress lines (`spark-cli: downloading EventLog zip from SHS ...` / `ready in <duration>`) follow `--no-progress` flag → `SPARK_CLI_QUIET` env (`1/true` 静默, `0/false` 强制显示) → stdout TTY 检测;**agent 重定向 stdout 时默认静默,交互终端默认显示**。
 - **Persistent on-disk zip cache** (since v0.x): the downloaded zip is written to `<cache_dir>/shs/<host>/<appID>_<lastUpdated>.zip` (atomic tmp+rename) and reused across CLI invocations. Subsequent commands on the same appID only fetch the cheap metadata JSON to compare `lastUpdated`; on a hit the zip is read from disk. Stale attempts (older `lastUpdated` for the same appID) are swept on each successful download. `--no-cache` falls back to a one-shot system tempfile.
 - Zip bodies up to 256 MiB without disk caching are decoded in memory; with disk caching enabled the response always lands on disk via tmp+rename.
+- `shs://` supports gateway path prefixes, for example
+  `shs://host:7765/gateway/prod/sparkhistory`; the CLI preserves the prefix
+  when calling `/api/v1/applications/...`.
+
+### YARN logs
+
+When `yarn.base_urls` is configured, `diagnose` appends a top-level `yarn`
+payload to the Spark EventLog diagnosis. It includes RM application state,
+diagnostics, and latest-attempt container log URLs. It does not embed log bodies
+by default, keeping `diagnose` small.
+
+To inspect NodeManager logs directly:
+
+```bash
+spark-cli yarn-logs application_1772605260987_20682 \
+  --yarn-base-urls http://203.123.81.20:7765/gateway/hadoop-prod/yarn \
+  --top 5 --yarn-log-bytes 65536
+```
+
+`yarn-logs` uses RM REST to find the application user, attempts, and containers,
+then builds gateway URLs like
+`/nodemanager/node/containerlogs/<container>/<user>?scheme=http&host=<nm>&port=<port>`
+and fetches the first N bytes of `stderr` / `stdout` / `syslog`.
 
 ### Cache
 
@@ -133,13 +160,14 @@ mismatch, write errors) degrade silently to "miss + reparse".
 | `spark-cli slow-stages <appId>` | Stages by wall time |
 | `spark-cli data-skew <appId>` | Skewed stages |
 | `spark-cli gc-pressure <appId>` | GC ratio per stage / executor |
+| `spark-cli yarn-logs <appId>` | Fetch YARN diagnostics and container log snippets |
 | `spark-cli config show [--format json]` | Print effective configuration (yaml / env / default sources) |
 | `spark-cli cache list` / `cache clear [--app <id>] [--dry-run]` | Inspect / prune the parsed-application + SHS zip caches |
 | `spark-cli version` (also `--version`) | Print spark-cli version |
 
 All accept `--top N`, `--format json|table|markdown`, `--dry-run`, `--log-dirs`,
 `--cache-dir`, `--no-cache`, `--shs-timeout`, `--no-progress`,
-`--sql-detail truncate|full|none` (default `truncate` — first 500 runes of the
+`--yarn-base-urls`, `--yarn-log-bytes`, `--sql-detail truncate|full|none` (default `truncate` — first 500 runes of the
 SQL description with a `...(truncated, total <N> chars)` marker; `full` keeps
 the original; `none` omits the entire `sql_executions` map).
 

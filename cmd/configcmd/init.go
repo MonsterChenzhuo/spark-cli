@@ -65,6 +65,8 @@ func newInitCmd() *cobra.Command {
 			b.WriteString("#   timeout: 5m       # SHS HTTP 拉 zip 的总超时(生产 zip 几个 GB 是常态)\n")
 			b.WriteString("# cache:\n")
 			b.WriteString("#   dir: \"\"           # 应用缓存路径,留空走 $XDG_CACHE_HOME/spark-cli 或 ~/.cache/spark-cli\n")
+			b.WriteString("# yarn:\n")
+			b.WriteString("#   base_urls: []      # YARN RM/gateway,如 http://host/gateway/prod/yarn\n")
 			b.WriteString("# sql:\n")
 			b.WriteString("#   detail: truncate  # sql_executions 字段呈现:truncate(默认 ~500 rune) | full | none\n")
 

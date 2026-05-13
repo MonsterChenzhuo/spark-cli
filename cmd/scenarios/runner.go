@@ -18,12 +18,15 @@ import (
 	"github.com/opay-bigdata/spark-cli/internal/model"
 	"github.com/opay-bigdata/spark-cli/internal/output"
 	"github.com/opay-bigdata/spark-cli/internal/scenario"
+	"github.com/opay-bigdata/spark-cli/internal/yarn"
 )
 
 type Options struct {
 	Scenario      string
 	AppID         string
 	LogDirs       []string
+	YARNBaseURLs  []string
+	YARNLogBytes  int64
 	HDFSUser      string
 	HadoopConfDir string
 	CacheDir      string
@@ -55,6 +58,9 @@ func Run(ctx context.Context, opts Options) int {
 	cfg, err := buildConfig(opts)
 	if err != nil {
 		return writeErr(opts.Stderr, err)
+	}
+	if opts.Scenario == "yarn-logs" {
+		return runYARNLogs(ctx, opts, cfg)
 	}
 
 	quiet := resolveQuiet(opts.NoProgress, stdoutIsTTY())
@@ -124,6 +130,9 @@ func Run(ctx context.Context, opts Options) int {
 		if err := buildScenarioBody(opts, cached, &env); err != nil {
 			return writeErr(opts.Stderr, err)
 		}
+		if opts.Scenario == "diagnose" {
+			attachYARN(ctx, opts, cfg, &env, 0)
+		}
 		return render(opts, env)
 	}
 	app, parsed, err := parseApp(fsys, src, resolvedAppID)
@@ -139,6 +148,23 @@ func Run(ctx context.Context, opts Options) int {
 	if err := buildScenarioBody(opts, app, &env); err != nil {
 		return writeErr(opts.Stderr, err)
 	}
+	if opts.Scenario == "diagnose" {
+		attachYARN(ctx, opts, cfg, &env, 0)
+	}
+	return render(opts, env)
+}
+
+func runYARNLogs(ctx context.Context, opts Options, cfg *config.Config) int {
+	env := scenario.Envelope{
+		Scenario: opts.Scenario,
+		AppID:    opts.AppID,
+		Columns:  []string{"base_url", "app", "containers", "warnings"},
+	}
+	report, err := fetchYARN(ctx, opts, cfg, opts.YARNLogBytes)
+	if err != nil {
+		return writeErr(opts.Stderr, err)
+	}
+	env.Data = []any{report}
 	return render(opts, env)
 }
 
@@ -206,6 +232,9 @@ func buildConfig(opts Options) (*config.Config, error) {
 	if len(opts.LogDirs) > 0 {
 		cfg.LogDirs = opts.LogDirs
 	}
+	if len(opts.YARNBaseURLs) > 0 {
+		cfg.YARN.BaseURLs = opts.YARNBaseURLs
+	}
 	if opts.HDFSUser != "" {
 		cfg.HDFS.User = opts.HDFSUser
 	}
@@ -224,10 +253,40 @@ func buildConfig(opts Options) (*config.Config, error) {
 	if opts.Timeout > 0 {
 		cfg.Timeout = opts.Timeout
 	}
+	if opts.Scenario == "yarn-logs" {
+		if len(cfg.YARN.BaseURLs) == 0 {
+			return nil, cerrors.New(cerrors.CodeFlagInvalid, "yarn.base_urls is empty; set --yarn-base-urls or config yarn.base_urls", "例如 --yarn-base-urls http://203.123.81.20:7765/gateway/hadoop-prod/yarn")
+		}
+		return cfg, nil
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, cerrors.New(cerrors.CodeFlagInvalid, err.Error(), validateHint(err))
 	}
 	return cfg, nil
+}
+
+func attachYARN(ctx context.Context, opts Options, cfg *config.Config, env *scenario.Envelope, maxLogBytes int64) {
+	if len(cfg.YARN.BaseURLs) == 0 {
+		return
+	}
+	opts.AppID = env.AppID
+	report, err := fetchYARN(ctx, opts, cfg, maxLogBytes)
+	if err != nil {
+		env.YARN = map[string]any{"warnings": []string{err.Error()}}
+		return
+	}
+	env.YARN = report
+}
+
+func fetchYARN(ctx context.Context, opts Options, cfg *config.Config, maxLogBytes int64) (*yarn.Report, error) {
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	return yarn.NewClient(cfg.YARN.BaseURLs, timeout).FetchApplicationLogs(ctx, opts.AppID, yarn.Options{
+		TopContainers: opts.Top,
+		MaxLogBytes:   maxLogBytes,
+	})
 }
 
 // validateHint 给 cfg.Validate() 错误一个可执行 hint。Validate 自身在 internal/config
@@ -274,7 +333,7 @@ func buildFS(cfg *config.Config, quiet bool, shsCacheDir string) (map[string]fs.
 			}
 		case "shs":
 			if _, ok := out["shs"]; !ok {
-				sh := fs.NewSHS("shs://"+u.Host, cfg.SHS.Timeout, fs.SHSOptions{
+				sh := fs.NewSHS(strings.TrimRight(dir, "/"), cfg.SHS.Timeout, fs.SHSOptions{
 					Quiet:     quiet,
 					CacheDir:  shsCacheDir,
 					UserAgent: "spark-cli/" + CLIVersion,

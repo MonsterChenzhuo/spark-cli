@@ -32,6 +32,12 @@ type SHSConfig struct {
 	Timeout time.Duration `yaml:"timeout"`
 }
 
+// YARNConfig 控制 ResourceManager / gateway REST 来源。BaseURLs 可以是原生
+// RM 地址(http://rm:8088)或网关前缀(http://host/gateway/prod/yarn)。
+type YARNConfig struct {
+	BaseURLs []string `yaml:"base_urls"`
+}
+
 // SQLConfig 控制 SQL description 在 envelope 顶层 sql_executions map 中的呈现。
 // Detail 合法值:"truncate"(默认) / "full" / "none"。空值 + 非法值由 normalize
 // 落到 truncate。
@@ -44,6 +50,7 @@ type Config struct {
 	HDFS    HDFSConfig    `yaml:"hdfs"`
 	Cache   CacheConfig   `yaml:"cache"`
 	SHS     SHSConfig     `yaml:"shs"`
+	YARN    YARNConfig    `yaml:"yarn"`
 	SQL     SQLConfig     `yaml:"sql"`
 	Timeout time.Duration `yaml:"timeout"`
 }
@@ -88,8 +95,9 @@ func Load() (*Config, error) {
 		SHS     struct {
 			Timeout string `yaml:"timeout"`
 		} `yaml:"shs"`
-		SQL     SQLConfig `yaml:"sql"`
-		Timeout string    `yaml:"timeout"`
+		YARN    YARNConfig `yaml:"yarn"`
+		SQL     SQLConfig  `yaml:"sql"`
+		Timeout string     `yaml:"timeout"`
 	}{}
 	if err := yaml.Unmarshal(b, &raw); err != nil {
 		return nil, err
@@ -97,6 +105,7 @@ func Load() (*Config, error) {
 	cfg.LogDirs = raw.LogDirs
 	cfg.HDFS = raw.HDFS
 	cfg.Cache = raw.Cache
+	cfg.YARN = raw.YARN
 	if raw.SQL.Detail != "" {
 		cfg.SQL.Detail = raw.SQL.Detail
 	}
@@ -120,6 +129,9 @@ func Load() (*Config, error) {
 func ApplyEnv(cfg *Config) {
 	if v := os.Getenv("SPARK_CLI_LOG_DIRS"); v != "" {
 		cfg.LogDirs = splitCSV(v)
+	}
+	if v := os.Getenv("SPARK_CLI_YARN_BASE_URLS"); v != "" {
+		cfg.YARN.BaseURLs = splitCSV(v)
 	}
 	if v := os.Getenv("SPARK_CLI_HDFS_USER"); v != "" {
 		cfg.HDFS.User = v
@@ -147,6 +159,7 @@ func ApplyEnv(cfg *Config) {
 
 type FlagOverrides struct {
 	LogDirs       string
+	YARNBaseURLs  string
 	HDFSUser      string
 	HadoopConfDir string
 	CacheDir      string
@@ -158,6 +171,9 @@ type FlagOverrides struct {
 func ApplyFlags(cfg *Config, f FlagOverrides) {
 	if f.LogDirs != "" {
 		cfg.LogDirs = splitCSV(f.LogDirs)
+	}
+	if f.YARNBaseURLs != "" {
+		cfg.YARN.BaseURLs = splitCSV(f.YARNBaseURLs)
 	}
 	if f.HDFSUser != "" {
 		cfg.HDFS.User = f.HDFSUser

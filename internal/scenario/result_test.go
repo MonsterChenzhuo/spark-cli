@@ -75,6 +75,14 @@ func TestEnvelopeOmitsSQLExecutionsWhenNil(t *testing.T) {
 	}
 }
 
+func TestEnvelopeIncludesYARNWhenPresent(t *testing.T) {
+	env := Envelope{Scenario: "diagnose", YARN: map[string]any{"app": map[string]any{"state": "FAILED"}}}
+	b, _ := json.Marshal(env)
+	if got := string(b); !contains(got, `"yarn":`) || !contains(got, `"FAILED"`) {
+		t.Errorf("expected yarn payload present, got %s", got)
+	}
+}
+
 func TestBuildSQLExecutionMapDeduplicatesAndApplesFallback(t *testing.T) {
 	app := model.NewApplication()
 	app.SQLExecutions[5] = &model.SQLExecution{

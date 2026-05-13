@@ -66,10 +66,14 @@ hdfs:
   conf_dir: /etc/hadoop/conf           # 可选; 留空则按 HADOOP_CONF_DIR / HADOOP_HOME 自动发现
 shs:
   timeout: 5m   # 默认值;生产 EventLog zip 几个 GB 是常态,首次下载会在 stderr 打进度提示(SPARK_CLI_QUIET=1 静默)
+yarn:
+  base_urls:
+    - http://203.123.81.20:7765/gateway/hadoop-prod/yarn  # 可选;RM/gateway 前缀
 timeout: 30s
 ```
 
-也可通过 `--log-dirs` 标志或 `SPARK_CLI_LOG_DIRS` 环境变量逐次覆盖。
+也可通过 `--log-dirs` / `--yarn-base-urls` 标志或 `SPARK_CLI_LOG_DIRS` /
+`SPARK_CLI_YARN_BASE_URLS` 环境变量逐次覆盖。
 
 ### HDFS 配置
 
@@ -103,6 +107,26 @@ spark-cli diagnose application_1771556836054_861265 \
 - 进度提示优先级:`--no-progress` flag → `SPARK_CLI_QUIET`(`1/true` 静默 / `0/false` 强制显示) → stdout TTY 检测;**agent 重定向 stdout 时默认静默,交互终端默认显示**。
 - **持久化磁盘 zip 缓存**(自 v0.x):下载的 zip 落到 `<cache_dir>/shs/<host>/<appID>_<lastUpdated>.zip`(原子 tmp+rename),后续 CLI 调用同一 appID 时只发 metadata JSON 比 lastUpdated,命中即直接读盘。同 appID 的旧 attempt zip 在每次成功下载后自动 sweep。`--no-cache` 退化为一次性 system temp。
 - 不开磁盘缓存时:`Content-Length` ≤ 256 MiB 整包读到内存,更大或长度未知时落 `os.CreateTemp` 进程退出清理;开磁盘缓存时一律走 tmp+rename 落盘。
+- `shs://` 支持 gateway path,例如 `shs://host:7765/gateway/prod/sparkhistory`;
+  CLI 会保留 path 前缀拼接 `/api/v1/applications/...`。
+
+### YARN 日志
+
+配置 `yarn.base_urls` 后,`diagnose` 会在原有 Spark EventLog 诊断 envelope 顶层
+追加 `yarn` 字段,包含 RM application 状态、diagnostics、最新 attempt 的 container
+日志入口 URL。默认不把日志正文塞进 `diagnose`,避免一次诊断输出过大。
+
+需要单独看 NodeManager 日志时:
+
+```bash
+spark-cli yarn-logs application_1772605260987_20682 \
+  --yarn-base-urls http://203.123.81.20:7765/gateway/hadoop-prod/yarn \
+  --top 5 --yarn-log-bytes 65536
+```
+
+`yarn-logs` 会通过 RM REST 找 application/user/attempt/container,再生成类似
+`/nodemanager/node/containerlogs/<container>/<user>?scheme=http&host=<nm>&port=<port>`
+的 gateway URL,并抓取 `stderr` / `stdout` / `syslog` 的前 N 字节摘要。
 
 ### 缓存
 
@@ -127,13 +151,14 @@ spark-cli diagnose application_1771556836054_861265 \
 | `spark-cli slow-stages <appId>` | 按耗时排序的 Stage |
 | `spark-cli data-skew <appId>` | 倾斜 Stage |
 | `spark-cli gc-pressure <appId>` | 每 Stage / Executor 的 GC 占比 |
+| `spark-cli yarn-logs <appId>` | 通过 YARN RM/NM 获取应用 diagnostics 与 container 日志摘要 |
 | `spark-cli config show [--format json]` | 打印当前生效配置(yaml / env / default 来源标注) |
 | `spark-cli cache list` / `cache clear [--app <id>] [--dry-run]` | 查看 / 清理本地的应用 + SHS zip 缓存 |
 | `spark-cli version` (与 `--version`) | 打印 spark-cli 版本 |
 
 均支持 `--top N`、`--format json|table|markdown`、`--dry-run`、`--log-dirs`、
 `--cache-dir`、`--no-cache`、`--shs-timeout`、`--no-progress`、
-`--sql-detail truncate|full|none`(默认 `truncate` 把 SQL description 截到前
+`--yarn-base-urls`、`--yarn-log-bytes`、`--sql-detail truncate|full|none`(默认 `truncate` 把 SQL description 截到前
 500 个 rune 加 `...(truncated, total <N> chars)`;`full` 还原原始 SQL,`none`
 让整段 `sql_executions` 缺失)。
 

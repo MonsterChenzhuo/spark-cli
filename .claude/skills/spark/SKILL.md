@@ -27,7 +27,7 @@ The user must provide a Spark `applicationId` (e.g. `application_1735000000_0001
    - `failed_tasks` triggered → if `evidence.blacklisted_hosts` is non-empty, those hosts have been excluded ≥2 times; report them by name and tell the user the failure looks node-level (hardware/network/disk), not random task flakiness. Otherwise ask for driver logs.
    - `tiny_tasks` triggered → 分区过细,evidence 现在带 `wall_share` / `wall_ms` + 多 stage 命中时含 `similar_stages`;suggestion 直接给"降到 ~N partition"的具体目标(基于"目标 task ~500ms"经验式),不必自己再算
    - `idle_stage` triggered → stage wall-clock 远大于 executor 实际工作时间(driver 端 broadcast/串行计算/调度等待),用 `spark-cli slow-stages <appId>` 看具体 stage,然后排查执行计划
-   - `executor_supply` triggered → 静态配置的 `spark.executor.instances` 大于 EventLog 实际注册/并发 executor。**只能说明 executor 供给不足,不能从 EventLog 直接断言 YARN 为什么没分配**;引用 evidence 里的 `configured_executor_instances` / `max_concurrent_executors` / `executors_added`,然后让用户查 YARN RM/AM 的 pending containers、user limit、队列容量、节点标签、reserved containers、container 资源碎片。
+   - `executor_supply` triggered → 静态配置的 `spark.executor.instances` 大于 EventLog 实际注册/并发 executor。**只能说明 executor 供给不足,不能从 EventLog 直接断言 YARN 为什么没分配**;引用 evidence 里的 `configured_executor_instances` / `max_concurrent_executors` / `executors_added`。如果 `diagnose` 顶层有 `yarn`,优先读 `yarn.app.diagnostics` 与 `yarn.containers[].diagnostics/log_url`;否则在配置了 `yarn.base_urls` / `--yarn-base-urls` 后运行 `spark-cli yarn-logs <appId> --top 5` 查 RM/AM 的 pending containers、user limit、队列容量、节点标签、reserved containers、container 资源碎片。
    - All `ok` but user reports slowness → `spark-cli slow-stages <appId> --top 5`
 
 3. **For overview**: `spark-cli app-summary <appId>`。app-summary 同时输出三个互补切面,**永远要三个一起看**才能不漏瓶颈:
@@ -72,6 +72,7 @@ Every command emits one JSON object on stdout:
 Exceptions:
 - `gc-pressure` returns `data: [{executor_id, host, tasks, run_ms, gc_ms, gc_ratio, verdict}, ...]` —— 跟其他场景一致是数组(每行一个 executor),不再像早期 spec 那样有 by_stage / by_executor 双段
 - `diagnose` adds `summary: {critical, warn, ok, top_findings_by_impact?, findings_wall_coverage?}`. `top_findings_by_impact` is an array of `{rule_id, severity, wall_share}` sorted desc by `wall_share` — `wall_share` 取**该 finding 命中所有 stage(primary + similar_stages)的 max** 而非 sum,直观对应"本规则击中的最严重 stage"。`findings_wall_coverage` is the deduped (max-per-stage) sum of those wall shares **capped at 1.0**(stage 在 wall 上并行,naive sum 可能 > 1.0,语义上不应超 100%);**< 0.05 means the bottleneck is structural — read `app-summary.top_busy_stages` / `top_io_bound_stages` instead of drilling findings**. Both fields missing (omitempty) when `app.DurationMs == 0` (no ApplicationEnd event).
+- When YARN is configured (`yarn.base_urls` / `--yarn-base-urls`), `diagnose` may add top-level `yarn: {app, containers, warnings}`. This is RM/NM context for the same appId: read `app.state`, `app.final_status`, `app.diagnostics`, and container `log_url` / `diagnostics` before asking the user for driver logs. `diagnose` only includes log URLs; use `spark-cli yarn-logs <appId> --yarn-log-bytes 65536` when you need stderr/stdout/syslog snippets.
 - `data_skew` finding evidence 在多 stage 命中时含 `similar_stages: [{stage_id, wall_share, skew_factor}]`(按 wall_share 倒序最多 4 条),`top_findings_by_impact` 与 `findings_wall_coverage` 都会聚合 primary + similar_stages 的覆盖度 —— **看到 similar_stages 时直接读它,不必再回头跑 data-skew 找补**。
 - `slow-stages` and `data-skew` add `sql_executions: {<int64 id>: <description>}` at the top level. **map 只包含当前 row 实际引用的 sql_id**(`--top 5` 截断后,没出现在 row 里的 SQL 不会泄露到 envelope —— 例如 `SHOW DATABASES` 这种 setup SQL)。Rows reference the id via `sql_execution_id`; **rows no longer carry `sql_description`** — look it up in the top-level map. **Description 默认 truncate 到前 500 个 rune**,过长追加 `...(truncated, total <N> chars)`;`--sql-detail=full` 还原完整 SQL,`--sql-detail=none` 整段 omit。Empty/absent (omitempty) when no stage links to a SQL execution **or every linked execution carries only callsite noise** (DataFrame jobs whose description and details are both `org.apache.spark.SparkContext.getCallSite(...)`-style placeholders).
 
@@ -96,6 +97,8 @@ Errors go to **stderr** as `{"error": {"code": "...", "message": "...", "hint": 
 - `--cache-dir <path>` — persistent cache dir (default `~/.cache/spark-cli`); cached runs report `parsed_events: 0`
 - `--no-cache` — bypass the parsed-application cache for this invocation (no read, no write)
 - `--shs-timeout <duration>` — HTTP timeout for `shs://` log-dirs (default `5m`;生产 zip 几个 GB 是常态,失败时 hint 直接告知此参数)
+- `--yarn-base-urls <url,url>` — YARN RM/gateway base URLs, e.g. `http://host/gateway/prod/yarn`; also available as `SPARK_CLI_YARN_BASE_URLS` / yaml `yarn.base_urls`.
+- `--yarn-log-bytes <N>` — for `yarn-logs`, fetch at most N bytes per log type (`stderr`, `stdout`, `syslog`). `diagnose` keeps logs out of the envelope and emits URLs only.
 - `--sql-detail truncate|full|none` — `sql_executions` 中 description 的呈现:**默认 truncate**(前 500 个 rune,过长加 `...(truncated, total <N> chars)` 标记),`full` 还原原始 SQL,`none` 整段 omit。也可用 `SPARK_CLI_SQL_DETAIL` 环境变量 / yaml `sql.detail` 覆盖。
 - `--no-progress` — 不打 SHS zip 下载进度提示(优先级高于 SPARK_CLI_QUIET 与 TTY 检测)。
 - SHS zip 持久化:同一 appID 的 zip 在 `<cache_dir>/shs/<host>/<appID>_<lastUpdated>.zip` 复用,attempt 更新时旧文件自动 sweep;`--no-cache` 旁路。
@@ -104,6 +107,7 @@ Errors go to **stderr** as `{"error": {"code": "...", "message": "...", "hint": 
 ## Utility commands
 
 - `spark-cli config show [--format json]` — print effective configuration with source labels (`file` / `env` / `default` / `flag`). JSON 形态适合 agent 一次拿到完整状态,而不必分别读 yaml + env 比对生效值。
+- `spark-cli yarn-logs <appId> --top 5` — fetch YARN application diagnostics, container log URLs, and bounded stderr/stdout/syslog snippets. Use when EventLog findings point to executor supply, failed tasks without enough evidence, AM/driver failure, or when `diagnose.yarn.warnings` says YARN was unreachable.
 - `spark-cli cache list [--format json]` — 列所有 cached parsed application + SHS zip(按 size 降序),应用 cache hit 慢于预期时先看这个。
 - `spark-cli cache clear [--app <id>] [--dry-run]` — 删全部 cache 或只删指定 app 的 entry;`--dry-run` 先看会删什么再确认。
 

@@ -77,6 +77,7 @@ type Envelope struct {
 	Data          any              `json:"data"`
 	Summary       any              `json:"summary,omitempty"`
 	SQLExecutions map[int64]string `json:"sql_executions,omitempty"`
+	YARN          any              `json:"yarn,omitempty"`
 }
 
 type DiagnoseSummary struct {

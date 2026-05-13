@@ -13,6 +13,7 @@ func Register(root *cobra.Command) {
 		newScenarioCmd("data-skew", "Stages with task long-tail / input skew"),
 		newScenarioCmd("gc-pressure", "Executors ranked by GC ratio"),
 		newScenarioCmd("diagnose", "Run all rules and emit findings"),
+		newScenarioCmd("yarn-logs", "Fetch YARN application diagnostics and container logs"),
 	)
 }
 
@@ -36,6 +37,8 @@ func buildOpts(scenario, appID string, cc *cobra.Command) Options {
 		Scenario:      scenario,
 		AppID:         appID,
 		LogDirs:       splitLogDirs(state.LogDirs),
+		YARNBaseURLs:  splitLogDirs(state.YARNBaseURLs),
+		YARNLogBytes:  state.YARNLogBytes,
 		HDFSUser:      state.HDFSUser,
 		HadoopConfDir: state.HadoopConfDir,
 		CacheDir:      state.CacheDir,
