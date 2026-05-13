@@ -66,10 +66,14 @@ hdfs:
   conf_dir: /etc/hadoop/conf           # 可选; 留空则按 HADOOP_CONF_DIR / HADOOP_HOME 自动发现
 shs:
   timeout: 5m   # 默认值;生产 EventLog zip 几个 GB 是常态,首次下载会在 stderr 打进度提示(SPARK_CLI_QUIET=1 静默)
+yarn:
+  base_urls:
+    - http://203.123.81.20:7765/gateway/hadoop-prod/yarn  # 可选;RM/gateway 前缀
 timeout: 30s
 ```
 
-也可通过 `--log-dirs` 标志或 `SPARK_CLI_LOG_DIRS` 环境变量逐次覆盖。
+也可通过 `--log-dirs` / `--yarn-base-urls` 标志或 `SPARK_CLI_LOG_DIRS` /
+`SPARK_CLI_YARN_BASE_URLS` 环境变量逐次覆盖。
 
 ### HDFS 配置
 
@@ -103,6 +107,26 @@ spark-cli diagnose application_1771556836054_861265 \
 - 进度提示优先级:`--no-progress` flag → `SPARK_CLI_QUIET`(`1/true` 静默 / `0/false` 强制显示) → stdout TTY 检测;**agent 重定向 stdout 时默认静默,交互终端默认显示**。
 - **持久化磁盘 zip 缓存**(自 v0.x):下载的 zip 落到 `<cache_dir>/shs/<host>/<appID>_<lastUpdated>.zip`(原子 tmp+rename),后续 CLI 调用同一 appID 时只发 metadata JSON 比 lastUpdated,命中即直接读盘。同 appID 的旧 attempt zip 在每次成功下载后自动 sweep。`--no-cache` 退化为一次性 system temp。
 - 不开磁盘缓存时:`Content-Length` ≤ 256 MiB 整包读到内存,更大或长度未知时落 `os.CreateTemp` 进程退出清理;开磁盘缓存时一律走 tmp+rename 落盘。
+- `shs://` 支持 gateway path,例如 `shs://host:7765/gateway/prod/sparkhistory`;
+  CLI 会保留 path 前缀拼接 `/api/v1/applications/...`。
+
+### YARN 日志
+
+配置 `yarn.base_urls` 后,`diagnose` 会在原有 Spark EventLog 诊断 envelope 顶层
+追加 `yarn` 字段,包含 RM application 状态、diagnostics、最新 attempt 的 container
+日志入口 URL。默认不把日志正文塞进 `diagnose`,避免一次诊断输出过大。
+
+需要单独看 NodeManager 日志时:
+
+```bash
+spark-cli yarn-logs application_1772605260987_20682 \
+  --yarn-base-urls http://203.123.81.20:7765/gateway/hadoop-prod/yarn \
+  --top 5 --yarn-log-bytes 65536
+```
+
+`yarn-logs` 会通过 RM REST 找 application/user/attempt/container,再生成类似
+`/nodemanager/node/containerlogs/<container>/<user>?scheme=http&host=<nm>&port=<port>`
+的 gateway URL,并抓取 `stderr` / `stdout` / `syslog` 的前 N 字节摘要。
 
 ### 缓存
 
@@ -127,13 +151,14 @@ spark-cli diagnose application_1771556836054_861265 \
 | `spark-cli slow-stages <appId>` | 按耗时排序的 Stage |
 | `spark-cli data-skew <appId>` | 倾斜 Stage |
 | `spark-cli gc-pressure <appId>` | 每 Stage / Executor 的 GC 占比 |
+| `spark-cli yarn-logs <appId>` | 通过 YARN RM/NM 获取应用 diagnostics 与 container 日志摘要 |
 | `spark-cli config show [--format json]` | 打印当前生效配置(yaml / env / default 来源标注) |
 | `spark-cli cache list` / `cache clear [--app <id>] [--dry-run]` | 查看 / 清理本地的应用 + SHS zip 缓存 |
 | `spark-cli version` (与 `--version`) | 打印 spark-cli 版本 |
 
 均支持 `--top N`、`--format json|table|markdown`、`--dry-run`、`--log-dirs`、
 `--cache-dir`、`--no-cache`、`--shs-timeout`、`--no-progress`、
-`--sql-detail truncate|full|none`(默认 `truncate` 把 SQL description 截到前
+`--yarn-base-urls`、`--yarn-log-bytes`、`--sql-detail truncate|full|none`(默认 `truncate` 把 SQL description 截到前
 500 个 rune 加 `...(truncated, total <N> chars)`;`full` 还原原始 SQL,`none`
 让整段 `sql_executions` 缺失)。
 
@@ -164,8 +189,9 @@ spark-cli diagnose application_1771556836054_861265 \
 各场景特例:
 - `gc-pressure` 的 `data` 是 executor 行的扁平数组(`[{executor_id, host, tasks, run_ms, gc_ms, gc_ratio, verdict}, ...]`);早期 spec 设想的 `{by_stage, by_executor}` 双段已收敛为单段。
 - `diagnose` 顶层带 `summary: {critical, warn, ok, top_findings_by_impact?, findings_wall_coverage?}`。`top_findings_by_impact` 按 `wall_share` 倒序(单条 finding 取 primary + similar_stages 的 max);`findings_wall_coverage` 是这些 wall_share 按 stage 去重后加和,**cap 到 1.0**(stage 在 wall 上并行时 naive sum 可能 > 1)。两者在 `app.DurationMs == 0` 时整段 omitempty。**coverage < 0.05 ⇒ 瓶颈在作业结构层,跳到 `app-summary.top_busy_stages` / `top_io_bound_stages` 看真热点,别继续下钻 finding**。**`severity` 是诊断置信度,不是 ROI** —— 永远以 `top_findings_by_impact` 排序为准。
+- `diagnose` 新增 `executor_supply` 规则。静态分配时会比较 `spark.executor.instances` 与 EventLog 观察到的 `executors_added` / `max_concurrent_executors`;命中只能证明 EventLog 里 executor 供给不足,**不能**证明 YARN ResourceManager 为什么没继续分配。根因仍需查 RM/AM 的 pending containers、user limit、队列容量、节点标签、reserved containers、资源碎片等诊断。
 - `data_skew` finding 在多 stage 命中时,evidence 含 `similar_stages: [{stage_id, wall_share, skew_factor}]`(按 wall_share 倒序最多 4 条);primary `stage_id` 选 wall_share 最大的(平局回退 skew_factor)。`top_findings_by_impact` 与 `findings_wall_coverage` 都跨 primary + similar_stages 聚合 —— agent 直接读 evidence 就能看到完整列表,不必再回头跑 `data-skew`。
-- `app-summary` 同时输出三个互补 stage 切面:`top_stages_by_duration`(按 wall 倒序,含 driver-side 等待)、`top_busy_stages`(`busy_ratio > 0.8` 真 CPU 热点)、**`top_io_bound_stages`**(`busy_ratio < 0.8` 但 `spill >= 0.5 GB` 或 `shuffle_read >= 1 GB`,IO 阻塞但 wall 大的 stage)。**只看 `top_busy_stages` 会错过 spill 主导的最大瓶颈**,三个切面合起来才不漏。
+- `app-summary` 在实际 executor 计数旁输出 executor 请求配置(`dynamic_allocation_enabled`、`configured_executor_instances`、`executor_cores`、`executor_memory`、`executor_memory_overhead`),并同时输出三个互补 stage 切面:`top_stages_by_duration`(按 wall 倒序,含 driver-side 等待)、`top_busy_stages`(`busy_ratio > 0.8` 真 CPU 热点)、**`top_io_bound_stages`**(`busy_ratio < 0.8` 但 `spill >= 0.5 GB` 或 `shuffle_read >= 1 GB`,IO 阻塞但 wall 大的 stage)。**只看 `top_busy_stages` 会错过 spill 主导的最大瓶颈**,三个切面合起来才不漏。
 - `slow-stages` 与 `data-skew` 顶层带 `sql_executions: {<id>: <description>}`,row 通过 `sql_execution_id` 引用。**description 默认 truncate 到前 500 个 rune**(过长追加 `...(truncated, total <N> chars)`),`--sql-detail=full` 还原原始 SQL,`--sql-detail=none` 整段 omit。DataFrame 作业那种 callsite 占位(`org.apache.spark.SparkContext.getCallSite(...)`)会被过滤,所有条目都是噪音时整段 map 走 `omitempty` 缺失。
 
 错误走 stderr,格式为 `{"error":{"code":..., "message":..., "hint":...}}`。退出码: `0` 成功 · `1` 内部错误 · `2` 用户错误 · `3` IO 不可达。

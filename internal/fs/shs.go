@@ -47,6 +47,7 @@ type SHSOptions struct {
 type SHS struct {
 	base       string // e.g. "shs://host:port"
 	httpURL    string // e.g. "http://host:port"
+	basePath   string // optional gateway prefix from base, e.g. /gateway/prod/sparkhistory
 	httpClient *http.Client
 	threshold  int64         // bytes; zips larger than this spill to tempfile
 	stderr     io.Writer     // 进度提示输出(Quiet=true 时为 io.Discard)
@@ -85,9 +86,14 @@ func NewSHS(base string, timeout time.Duration, opts SHSOptions) *SHS {
 		w = io.Discard
 	}
 	httpURL := strings.Replace(base, "shs://", "http://", 1)
+	basePath := ""
+	if u, err := url.Parse(base); err == nil {
+		basePath = strings.TrimRight(u.EscapedPath(), "/")
+	}
 	return &SHS{
 		base:       base,
 		httpURL:    httpURL,
+		basePath:   basePath,
 		httpClient: &http.Client{Timeout: timeout},
 		threshold:  256 << 20,
 		bundles:    map[string]*shsBundle{},
@@ -134,7 +140,7 @@ func (s *SHS) Close() error {
 
 // Open returns a reader over the zip entry identified by uri. Caller closes.
 func (s *SHS) Open(uri string) (io.ReadCloser, error) {
-	host, appID, inner, err := splitSHSURI(uri)
+	host, appID, inner, err := s.splitURI(uri)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +165,7 @@ func (s *SHS) Open(uri string) (io.ReadCloser, error) {
 // attempt is still running. SHS zip entries do not always carry `.inprogress`,
 // so the eventlog locator uses this side-channel for LogSource.Incomplete.
 func (s *SHS) IsIncomplete(uri string) bool {
-	host, appID, _, err := splitSHSURI(uri)
+	host, appID, _, err := s.splitURI(uri)
 	if err != nil || appID == "" {
 		return false
 	}
@@ -172,7 +178,7 @@ func (s *SHS) IsIncomplete(uri string) bool {
 
 // Stat reports a FileInfo for the zip entry or synthetic directory at uri.
 func (s *SHS) Stat(uri string) (FileInfo, error) {
-	host, appID, inner, err := splitSHSURI(uri)
+	host, appID, inner, err := s.splitURI(uri)
 	if err != nil {
 		return FileInfo{}, err
 	}
@@ -228,7 +234,7 @@ func (s *SHS) Stat(uri string) (FileInfo, error) {
 // HTTP 404 on the metadata endpoint surfaces as (nil, nil) so the locator can
 // fall through to APP_NOT_FOUND. Genuine I/O errors propagate.
 func (s *SHS) List(dirURI, prefix string) ([]string, error) {
-	host, appID, inner, err := splitSHSURI(dirURI)
+	host, appID, inner, err := s.splitURI(dirURI)
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +262,7 @@ func (s *SHS) List(dirURI, prefix string) ([]string, error) {
 			}
 			seen[seg] = true
 			if strings.HasPrefix(seg, prefix) {
-				out = append(out, fmt.Sprintf("%s/%s/%s", s.base, appID, seg))
+				out = append(out, fmt.Sprintf("%s/%s/%s", strings.TrimRight(s.base, "/"), appID, seg))
 			}
 		}
 		sort.Strings(out)
@@ -281,7 +287,7 @@ func (s *SHS) List(dirURI, prefix string) ([]string, error) {
 			continue // nested deeper, not a direct child
 		}
 		if strings.HasPrefix(base, prefix) {
-			out = append(out, fmt.Sprintf("%s/%s/%s/%s", s.base, appID, inner, base))
+			out = append(out, fmt.Sprintf("%s/%s/%s/%s", strings.TrimRight(s.base, "/"), appID, inner, base))
 		}
 	}
 	sort.Strings(out)
@@ -318,6 +324,26 @@ func splitSHSURI(uri string) (host, appID, inner string, err error) {
 		return host, p[:i], p[i+1:], nil
 	}
 	return host, p, "", nil
+}
+
+func (s *SHS) splitURI(uri string) (host, appID, inner string, err error) {
+	host, appID, inner, err = splitSHSURI(uri)
+	if err != nil || s.basePath == "" {
+		return host, appID, inner, err
+	}
+	u, err := url.Parse(uri)
+	if err != nil {
+		return "", "", "", fmt.Errorf("shs: bad URI %q: %w", uri, err)
+	}
+	p := strings.TrimPrefix(u.Path, s.basePath)
+	p = strings.TrimPrefix(p, "/")
+	if p == "" {
+		return host + s.basePath, "", "", nil
+	}
+	if i := strings.Index(p, "/"); i >= 0 {
+		return host + s.basePath, p[:i], p[i+1:], nil
+	}
+	return host + s.basePath, p, "", nil
 }
 
 // bundleFor lazily fetches and caches the zip for appID.

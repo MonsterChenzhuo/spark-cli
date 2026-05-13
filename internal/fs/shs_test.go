@@ -137,6 +137,45 @@ func shsBase(srv *httptest.Server) string {
 	return "shs://" + u.Host
 }
 
+func TestSHSPreservesGatewayPathPrefix(t *testing.T) {
+	appID := "application_gateway_1"
+	apps := map[string]*shsApp{
+		appID: {
+			Attempts: []shsAttempt{{AttemptID: "1", LastUpdatedEpoch: 100}},
+			zips: map[string][]byte{
+				"1": buildZip(t, map[string][]byte{appID: []byte("{}\n")}),
+			},
+		},
+	}
+	var paths []string
+	srv := newSHSTestServer(t, apps, nil, 0, false)
+	defer srv.Close()
+	orig := srv.Config.Handler
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if !strings.HasPrefix(r.URL.Path, "/gateway/prod/sparkhistory/") {
+			http.NotFound(w, r)
+			return
+		}
+		r.URL.Path = strings.TrimPrefix(r.URL.Path, "/gateway/prod/sparkhistory")
+		orig.ServeHTTP(w, r)
+	})
+	u, _ := url.Parse(srv.URL)
+	base := "shs://" + u.Host + "/gateway/prod/sparkhistory"
+	s := NewSHS(base, 5*time.Second, SHSOptions{Quiet: true})
+	defer s.Close()
+	uris, err := s.List(base, appID)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(uris) == 0 || !strings.HasPrefix(uris[0], base+"/"+appID+"/") {
+		t.Fatalf("uris=%v should preserve gateway base", uris)
+	}
+	if _, err := s.Open(uris[0]); err != nil {
+		t.Fatalf("Open gateway URI: %v\npaths=%v", err, paths)
+	}
+}
+
 func boolPtr(v bool) *bool { return &v }
 
 // 历史上 TestMain 通过 SPARK_CLI_QUIET=1 静默 SHS 进度提示。NewSHS 现在通过

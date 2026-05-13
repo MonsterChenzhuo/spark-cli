@@ -32,6 +32,9 @@ log_dirs:
 hdfs:
   user: alice
   conf_dir: /etc/hadoop/conf
+yarn:
+  base_urls:
+    - http://gateway.example.com/gateway/prod/yarn
 timeout: 45s
 `
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(body), 0644); err != nil {
@@ -53,11 +56,15 @@ timeout: 45s
 	if cfg.Timeout != 45*time.Second {
 		t.Errorf("timeout = %v", cfg.Timeout)
 	}
+	if len(cfg.YARN.BaseURLs) != 1 || cfg.YARN.BaseURLs[0] != "http://gateway.example.com/gateway/prod/yarn" {
+		t.Errorf("yarn.base_urls = %v", cfg.YARN.BaseURLs)
+	}
 }
 
 func TestApplyEnvOverrides(t *testing.T) {
 	cfg := &Config{Timeout: 30 * time.Second}
 	t.Setenv("SPARK_CLI_LOG_DIRS", "file:///a,file:///b")
+	t.Setenv("SPARK_CLI_YARN_BASE_URLS", "http://rm-a:8088,http://rm-b:8088")
 	t.Setenv("SPARK_CLI_HDFS_USER", "bob")
 	t.Setenv("SPARK_CLI_HADOOP_CONF_DIR", "/opt/hadoop/conf")
 	t.Setenv("SPARK_CLI_TIMEOUT", "10s")
@@ -70,6 +77,9 @@ func TestApplyEnvOverrides(t *testing.T) {
 	}
 	if cfg.HDFS.ConfDir != "/opt/hadoop/conf" {
 		t.Errorf("conf_dir = %q", cfg.HDFS.ConfDir)
+	}
+	if len(cfg.YARN.BaseURLs) != 2 || cfg.YARN.BaseURLs[1] != "http://rm-b:8088" {
+		t.Errorf("YARN.BaseURLs = %v", cfg.YARN.BaseURLs)
 	}
 	if cfg.Timeout != 10*time.Second {
 		t.Errorf("timeout = %v", cfg.Timeout)

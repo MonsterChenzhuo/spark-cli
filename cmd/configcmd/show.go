@@ -17,6 +17,7 @@ import (
 
 type sources struct {
 	LogDirs       string // "flag" | "env" | "file" | "default"
+	YARNBaseURLs  string
 	HDFSUser      string
 	HadoopConfDir string
 	CacheDir      string
@@ -54,7 +55,7 @@ func newShowCmd() *cobra.Command {
 }
 
 func detectSources(cfg *config.Config) sources {
-	src := sources{LogDirs: "default", HDFSUser: "default", HadoopConfDir: "default", CacheDir: "default", SHSTimeout: "default", SQLDetail: "default", Timeout: "default"}
+	src := sources{LogDirs: "default", YARNBaseURLs: "default", HDFSUser: "default", HadoopConfDir: "default", CacheDir: "default", SHSTimeout: "default", SQLDetail: "default", Timeout: "default"}
 	dir := os.Getenv("SPARK_CLI_CONFIG_DIR")
 	if dir == "" {
 		home, _ := os.UserHomeDir()
@@ -64,6 +65,9 @@ func detectSources(cfg *config.Config) sources {
 	if _, err := os.Stat(path); err == nil {
 		if len(cfg.LogDirs) > 0 {
 			src.LogDirs = "file"
+		}
+		if len(cfg.YARN.BaseURLs) > 0 {
+			src.YARNBaseURLs = "file"
 		}
 		if cfg.HDFS.User != "" {
 			src.HDFSUser = "file"
@@ -84,6 +88,9 @@ func detectSources(cfg *config.Config) sources {
 	}
 	if os.Getenv("SPARK_CLI_LOG_DIRS") != "" {
 		src.LogDirs = "env"
+	}
+	if os.Getenv("SPARK_CLI_YARN_BASE_URLS") != "" {
+		src.YARNBaseURLs = "env"
 	}
 	if os.Getenv("SPARK_CLI_HDFS_USER") != "" {
 		src.HDFSUser = "env"
@@ -126,6 +133,10 @@ func applyRootFlagOverrides(cmd *cobra.Command, cfg *config.Config, src *sources
 	if v, ok := get("log-dirs"); ok && v != "" {
 		cfg.LogDirs = splitCSV(v)
 		src.LogDirs = "flag"
+	}
+	if v, ok := get("yarn-base-urls"); ok && v != "" {
+		cfg.YARN.BaseURLs = splitCSV(v)
+		src.YARNBaseURLs = "flag"
 	}
 	if v, ok := get("cache-dir"); ok && v != "" {
 		cfg.Cache.Dir = v
@@ -184,13 +195,14 @@ func renderJSON(w io.Writer, cfg *config.Config, src sources) error {
 		Value  any    `json:"value"`
 	}
 	out := map[string]field{
-		"log_dirs":      {Source: src.LogDirs, Value: cfg.LogDirs},
-		"hdfs.user":     {Source: src.HDFSUser, Value: cfg.HDFS.User},
-		"hdfs.conf_dir": {Source: src.HadoopConfDir, Value: cfg.HDFS.ConfDir},
-		"cache.dir":     {Source: src.CacheDir, Value: cacheDir},
-		"shs.timeout":   {Source: src.SHSTimeout, Value: cfg.SHS.Timeout.String()},
-		"sql.detail":    {Source: src.SQLDetail, Value: sqlDetail},
-		"timeout":       {Source: src.Timeout, Value: cfg.Timeout.String()},
+		"log_dirs":       {Source: src.LogDirs, Value: cfg.LogDirs},
+		"yarn.base_urls": {Source: src.YARNBaseURLs, Value: cfg.YARN.BaseURLs},
+		"hdfs.user":      {Source: src.HDFSUser, Value: cfg.HDFS.User},
+		"hdfs.conf_dir":  {Source: src.HadoopConfDir, Value: cfg.HDFS.ConfDir},
+		"cache.dir":      {Source: src.CacheDir, Value: cacheDir},
+		"shs.timeout":    {Source: src.SHSTimeout, Value: cfg.SHS.Timeout.String()},
+		"sql.detail":     {Source: src.SQLDetail, Value: sqlDetail},
+		"timeout":        {Source: src.Timeout, Value: cfg.Timeout.String()},
 	}
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
@@ -203,6 +215,13 @@ func render(w io.Writer, cfg *config.Config, src sources) {
 		fmt.Fprintln(w, "  (none — run `spark-cli config init`)")
 	}
 	for _, d := range cfg.LogDirs {
+		fmt.Fprintf(w, "  - %s\n", d)
+	}
+	fmt.Fprintf(w, "yarn.base_urls (%s):\n", src.YARNBaseURLs)
+	if len(cfg.YARN.BaseURLs) == 0 {
+		fmt.Fprintln(w, "  (none)")
+	}
+	for _, d := range cfg.YARN.BaseURLs {
 		fmt.Fprintf(w, "  - %s\n", d)
 	}
 	fmt.Fprintf(w, "hdfs.user (%s): %s\n", src.HDFSUser, cfg.HDFS.User)
