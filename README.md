@@ -136,11 +136,17 @@ dumps through the YARN tracking/proxy URL:
 ```bash
 spark-cli driver-thread-dump application_1772605260987_20765 \
   --yarn-base-urls http://203.123.81.20:7765/gateway/hadoop-prod/yarn \
-  --executor-id driver
+  --executor-id driver \
+  --thread-summary-only
 ```
 
-The output includes `state_counts` plus the raw Spark UI thread stacks.
-`--executor-id` can also target a specific executor.
+The output starts with `diagnosis`, `main_thread`, and `interesting_threads`,
+highlighting whether the driver is waiting in `runJob/collect`, stuck in Spark SQL
+planning / `CollapseProject`, inside Paimon schema validation, or whether an executor
+task is spending time in projection/codegen/shuffle write. Raw Spark UI thread stacks are still
+emitted by default; add `--thread-summary-only` to return just the compact summary.
+`--executor-id` can also target a specific executor when the driver is already
+waiting for a submitted job.
 
 ### Cache
 

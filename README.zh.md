@@ -134,11 +134,15 @@ YARN tracking/proxy URL 拉 Spark UI thread dump:
 ```bash
 spark-cli driver-thread-dump application_1772605260987_20765 \
   --yarn-base-urls http://203.123.81.20:7765/gateway/hadoop-prod/yarn \
-  --executor-id driver
+  --executor-id driver \
+  --thread-summary-only
 ```
 
-输出包含 `state_counts` 和 Spark UI 原始线程栈;`--executor-id` 也可传具体
-executor id。
+输出会先给 `diagnosis`、`main_thread`、`interesting_threads` 摘要,自动标出
+driver 是否在等 `runJob/collect`、是否卡在 Spark SQL planning / `CollapseProject`、
+Paimon schema validation,或者 executor 是否在 projection/codegen/shuffle 写入。默认仍保留
+Spark UI 原始线程栈;加 `--thread-summary-only` 时只输出摘要,适合 agent 和聊天窗口。
+`--executor-id` 也可传具体 executor id,用于 driver 已经在等 job 时下钻 active task。
 
 ### 缓存
 

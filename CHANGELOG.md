@@ -5,6 +5,7 @@
 ### YARN / Spark UI diagnostics
 
 - **New `spark-cli driver-thread-dump <appId>`** fetches Spark UI thread dumps through the YARN RM `trackingUrl` or gateway `/proxy/<appId>` path, returning `state_counts` plus raw thread stacks. This covers driver-side stalls before any job/stage is submitted without hand-written curl calls to `/executors/driver/threads`.
+- **`driver-thread-dump` now emits an automatic summary and `--thread-summary-only`**. Before raw threads, output includes `diagnosis`, `main_thread`, and `interesting_threads`, classifying common shapes such as driver waiting in `runJob/collect`, Spark SQL planning / `CollapseProject`, Paimon schema validation, and executor projection/codegen/shuffle write. `--thread-summary-only` omits huge raw stacks for chat/agent workflows.
 - **YARN appAttempt ids now accept numeric JSON**. Some RM REST responses return `"id": 1` instead of a string; `yarn-logs` now handles string/number/null safely.
 - **YARN application payload now includes `tracking_url` / `am_container_logs`**, exposing the Spark UI and AM container log entry points in diagnostics output.
 

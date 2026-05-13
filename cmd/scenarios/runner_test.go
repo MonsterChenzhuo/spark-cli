@@ -110,6 +110,65 @@ func TestRunnerDriverThreadDumpDoesNotRequireSparkLogDirs(t *testing.T) {
 	}
 }
 
+func TestRunnerDriverThreadDumpSummaryOnlyOmitsRawThreads(t *testing.T) {
+	const appID = "application_1_4"
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+appID, func(w http.ResponseWriter, r *http.Request) {
+		writeRunnerJSON(t, w, map[string]any{"app": map[string]any{
+			"id":          appID,
+			"user":        "airflow",
+			"trackingUrl": srv.URL + "/yarn/proxy/" + appID + "/",
+		}})
+	})
+	mux.HandleFunc("/yarn/proxy/"+appID+"/api/v1/applications/"+appID+"/executors/driver/threads", func(w http.ResponseWriter, r *http.Request) {
+		writeRunnerJSON(t, w, []map[string]any{{
+			"threadId":    1,
+			"threadName":  "main",
+			"threadState": "WAITING",
+			"stackTrace": map[string]any{"elems": []string{
+				"org.apache.spark.scheduler.DAGScheduler.runJob(DAGScheduler.scala:967)",
+				"org.apache.spark.rdd.RDD.collect(RDD.scala:1021)",
+			}},
+		}})
+	})
+
+	var stdout, stderr bytes.Buffer
+	rc := Run(context.Background(), Options{
+		Scenario:          "driver-thread-dump",
+		AppID:             appID,
+		YARNBaseURLs:      []string{srv.URL + "/yarn"},
+		ExecutorID:        "driver",
+		ThreadSummaryOnly: true,
+		Format:            "json",
+		Stdout:            &stdout,
+		Stderr:            &stderr,
+	})
+	if rc != 0 {
+		t.Fatalf("rc=%d stderr=%s", rc, stderr.String())
+	}
+	var env map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("decode stdout: %v\n%s", err, stdout.String())
+	}
+	rows, ok := env["data"].([]any)
+	if !ok || len(rows) != 1 {
+		t.Fatalf("data = %#v", env["data"])
+	}
+	row, ok := rows[0].(map[string]any)
+	if !ok {
+		t.Fatalf("row = %#v", rows[0])
+	}
+	if _, ok := row["threads"]; ok {
+		t.Fatalf("threads should be omitted in summary-only mode: %#v", row["threads"])
+	}
+	if row["diagnosis"] == nil || row["main_thread"] == nil || row["interesting_threads"] == nil {
+		t.Fatalf("summary fields missing: %#v", row)
+	}
+}
+
 func writeRunnerJSON(t *testing.T, w http.ResponseWriter, v any) {
 	t.Helper()
 	w.Header().Set("Content-Type", "application/json")

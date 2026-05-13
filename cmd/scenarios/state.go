@@ -8,22 +8,23 @@ import (
 )
 
 type globalState struct {
-	LogDirs       string
-	YARNBaseURLs  string
-	YARNLogBytes  int64
-	ExecutorID    string
-	HDFSUser      string
-	HadoopConfDir string
-	CacheDir      string
-	NoCache       bool
-	SHSTimeout    string
-	SQLDetail     string
-	Timeout       string
-	Format        string
-	Top           int
-	DryRun        bool
-	NoProgress    bool
-	ExitCode      int
+	LogDirs           string
+	YARNBaseURLs      string
+	YARNLogBytes      int64
+	ExecutorID        string
+	ThreadSummaryOnly bool
+	HDFSUser          string
+	HadoopConfDir     string
+	CacheDir          string
+	NoCache           bool
+	SHSTimeout        string
+	SQLDetail         string
+	Timeout           string
+	Format            string
+	Top               int
+	DryRun            bool
+	NoProgress        bool
+	ExitCode          int
 }
 
 // CLIVersion 由 cmd 包在 init 时注入(走 -X github.com/.../cmd.version 链)。
@@ -52,6 +53,7 @@ func RegisterFlags(root *cobra.Command) {
 	root.PersistentFlags().StringVar(&state.YARNBaseURLs, "yarn-base-urls", state.YARNBaseURLs, "Comma-separated YARN RM/gateway base URLs, e.g. http://rm:8088 or http://host/gateway/prod/yarn")
 	root.PersistentFlags().Int64Var(&state.YARNLogBytes, "yarn-log-bytes", state.YARNLogBytes, "Max bytes per YARN container log type for yarn-logs; diagnose only emits log URLs")
 	root.PersistentFlags().StringVar(&state.ExecutorID, "executor-id", state.ExecutorID, "Spark executor id for driver-thread-dump (default driver)")
+	root.PersistentFlags().BoolVar(&state.ThreadSummaryOnly, "thread-summary-only", state.ThreadSummaryOnly, "Only emit driver-thread-dump diagnosis/main_thread/interesting_threads; omit raw threads")
 	root.PersistentFlags().StringVar(&state.HDFSUser, "hdfs-user", state.HDFSUser, "HDFS simple-auth user (defaults to $USER)")
 	root.PersistentFlags().StringVar(&state.HadoopConfDir, "hadoop-conf-dir", state.HadoopConfDir, "Path to Hadoop XML config dir; falls back to HADOOP_CONF_DIR / HADOOP_HOME")
 	root.PersistentFlags().StringVar(&state.Timeout, "timeout", state.Timeout, "Overall parse timeout, e.g. 30s")

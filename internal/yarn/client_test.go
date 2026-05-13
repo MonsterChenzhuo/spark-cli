@@ -150,6 +150,98 @@ func TestFetchThreadDumpUsesYARNTrackingURL(t *testing.T) {
 	if got.Threads[0].ThreadName != "main" || got.Threads[0].StackTrace == nil {
 		t.Fatalf("thread details = %+v", got.Threads)
 	}
+	if got.MainThread == nil || got.MainThread.ThreadName != "main" {
+		t.Fatalf("main thread summary = %+v", got.MainThread)
+	}
+	if got.Diagnosis == nil || got.Diagnosis.Category != "spark_sql_planning" {
+		t.Fatalf("diagnosis = %+v", got.Diagnosis)
+	}
+}
+
+func TestFetchThreadDumpSummarizesExecutorCodegen(t *testing.T) {
+	const appID = "application_1_4"
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+appID, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"app": map[string]any{
+			"id":          appID,
+			"user":        "alice",
+			"trackingUrl": srv.URL + "/yarn/proxy/" + appID + "/",
+		}})
+	})
+	mux.HandleFunc("/yarn/proxy/"+appID+"/api/v1/applications/"+appID+"/executors/40/threads", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, []map[string]any{{
+			"threadId":    99,
+			"threadName":  "Executor task launch worker for task 555.0 in stage 3.0",
+			"threadState": "RUNNABLE",
+			"stackTrace": map[string]any{"elems": []string{
+				"org.apache.spark.sql.catalyst.expressions.codegen.GenerateUnsafeProjection$.create(GenerateUnsafeProjection.scala:338)",
+				"org.apache.spark.sql.execution.ProjectExec.$anonfun$doExecute$1(basicPhysicalOperators.scala:95)",
+				"org.apache.spark.shuffle.ShuffleWriteProcessor.write(ShuffleWriteProcessor.scala:59)",
+			}},
+		}})
+	})
+
+	got, err := NewClient([]string{srv.URL + "/yarn"}, 5*time.Second).FetchThreadDump(context.Background(), appID, "40")
+	if err != nil {
+		t.Fatalf("FetchThreadDump: %v", err)
+	}
+	if got.Diagnosis == nil || got.Diagnosis.Category != "executor_projection_codegen" {
+		t.Fatalf("diagnosis = %+v", got.Diagnosis)
+	}
+	if len(got.InterestingThreads) != 1 {
+		t.Fatalf("interesting threads = %+v", got.InterestingThreads)
+	}
+	if !hasTestString(got.InterestingThreads[0].Tags, "spark_codegen") || !hasTestString(got.InterestingThreads[0].Tags, "shuffle_write") {
+		t.Fatalf("tags = %+v", got.InterestingThreads[0].Tags)
+	}
+}
+
+func TestFetchThreadDumpClassifiesCollapseProject(t *testing.T) {
+	const appID = "application_1_6"
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+appID, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"app": map[string]any{
+			"id":          appID,
+			"user":        "alice",
+			"trackingUrl": srv.URL + "/yarn/proxy/" + appID + "/",
+		}})
+	})
+	mux.HandleFunc("/yarn/proxy/"+appID+"/api/v1/applications/"+appID+"/executors/driver/threads", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, []map[string]any{{
+			"threadId":    1,
+			"threadName":  "main",
+			"threadState": "RUNNABLE",
+			"stackTrace": map[string]any{"elems": []string{
+				"org.apache.spark.sql.catalyst.optimizer.CollapseProject$.canCollapseExpressions(Optimizer.scala:1047)",
+				"org.apache.spark.sql.catalyst.expressions.AttributeSet.contains(AttributeSet.scala:83)",
+			}},
+		}})
+	})
+
+	got, err := NewClient([]string{srv.URL + "/yarn"}, 5*time.Second).FetchThreadDump(context.Background(), appID, "driver")
+	if err != nil {
+		t.Fatalf("FetchThreadDump: %v", err)
+	}
+	if got.Diagnosis == nil || got.Diagnosis.Category != "spark_collapse_project" {
+		t.Fatalf("diagnosis = %+v", got.Diagnosis)
+	}
+	if got.MainThread == nil || !hasTestString(got.MainThread.Tags, "spark_collapse_project") {
+		t.Fatalf("main thread tags = %+v", got.MainThread)
+	}
+}
+
+func TestSparkUIBaseURLFallsBackWhenTrackingURLIsYARNAppPage(t *testing.T) {
+	got := sparkUIBaseURL("http://gateway/yarn", "application_1_5", "http://gateway/yarn/cluster/app/application_1_5")
+	want := "http://gateway/yarn/proxy/application_1_5"
+	if got != want {
+		t.Fatalf("sparkUIBaseURL = %q want %q", got, want)
+	}
 }
 
 func writeJSON(t *testing.T, w http.ResponseWriter, v any) {
@@ -158,4 +250,13 @@ func writeJSON(t *testing.T, w http.ResponseWriter, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func hasTestString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

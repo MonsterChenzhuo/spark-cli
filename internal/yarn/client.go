@@ -51,13 +51,31 @@ type ContainerLogs struct {
 }
 
 type ThreadDumpReport struct {
-	BaseURL     string         `json:"base_url"`
-	App         Application    `json:"app"`
-	UIURL       string         `json:"ui_url"`
-	ExecutorID  string         `json:"executor_id"`
-	ThreadCount int            `json:"thread_count"`
-	StateCounts map[string]int `json:"state_counts,omitempty"`
-	Threads     []ThreadInfo   `json:"threads"`
+	BaseURL            string               `json:"base_url"`
+	App                Application          `json:"app"`
+	UIURL              string               `json:"ui_url"`
+	ExecutorID         string               `json:"executor_id"`
+	ThreadCount        int                  `json:"thread_count"`
+	StateCounts        map[string]int       `json:"state_counts,omitempty"`
+	Diagnosis          *ThreadDumpDiagnosis `json:"diagnosis,omitempty"`
+	MainThread         *ThreadStackSummary  `json:"main_thread,omitempty"`
+	InterestingThreads []ThreadStackSummary `json:"interesting_threads,omitempty"`
+	Threads            []ThreadInfo         `json:"threads,omitempty"`
+}
+
+type ThreadDumpDiagnosis struct {
+	Category   string   `json:"category,omitempty"`
+	Evidence   []string `json:"evidence,omitempty"`
+	Suggestion string   `json:"suggestion,omitempty"`
+}
+
+type ThreadStackSummary struct {
+	ThreadID    int64    `json:"thread_id,omitempty"`
+	ThreadName  string   `json:"thread_name,omitempty"`
+	ThreadState string   `json:"thread_state,omitempty"`
+	TopFrame    string   `json:"top_frame,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	StackTrace  []string `json:"stack_trace,omitempty"`
 }
 
 type ThreadInfo struct {
@@ -178,14 +196,18 @@ func (c *Client) fetchThreadDumpFromBase(ctx context.Context, base, appID, execu
 			counts[th.ThreadState]++
 		}
 	}
+	diagnosis, mainThread, interesting := summarizeThreadDump(executorID, threads)
 	return &ThreadDumpReport{
-		BaseURL:     base,
-		App:         app,
-		UIURL:       uiURL,
-		ExecutorID:  executorID,
-		ThreadCount: len(threads),
-		StateCounts: counts,
-		Threads:     threads,
+		BaseURL:            base,
+		App:                app,
+		UIURL:              uiURL,
+		ExecutorID:         executorID,
+		ThreadCount:        len(threads),
+		StateCounts:        counts,
+		Diagnosis:          diagnosis,
+		MainThread:         mainThread,
+		InterestingThreads: interesting,
+		Threads:            threads,
 	}, nil
 }
 
@@ -298,7 +320,7 @@ func (c *Client) getJSON(ctx context.Context, u string, out any) error {
 }
 
 func sparkUIBaseURL(yarnBase, appID, trackingURL string) string {
-	if trackingURL != "" && trackingURL != "UNASSIGNED" {
+	if trackingURL != "" && trackingURL != "UNASSIGNED" && !isYARNAppPageURL(trackingURL, appID) {
 		return strings.TrimRight(trackingURL, "/")
 	}
 	u, err := url.Parse(yarnBase)
@@ -309,6 +331,14 @@ func sparkUIBaseURL(yarnBase, appID, trackingURL string) string {
 	u.RawQuery = ""
 	u.Fragment = ""
 	return strings.TrimRight(u.String(), "/")
+}
+
+func isYARNAppPageURL(trackingURL, appID string) bool {
+	u, err := url.Parse(trackingURL)
+	if err != nil {
+		return strings.Contains(trackingURL, "/cluster/app/"+appID)
+	}
+	return strings.Contains(u.Path, "/cluster/app/"+appID)
 }
 
 type flexibleString string

@@ -22,21 +22,22 @@ import (
 )
 
 type Options struct {
-	Scenario      string
-	AppID         string
-	LogDirs       []string
-	YARNBaseURLs  []string
-	YARNLogBytes  int64
-	ExecutorID    string
-	HDFSUser      string
-	HadoopConfDir string
-	CacheDir      string
-	NoCache       bool
-	SHSTimeout    time.Duration
-	Timeout       time.Duration
-	Format        string
-	Top           int
-	DryRun        bool
+	Scenario          string
+	AppID             string
+	LogDirs           []string
+	YARNBaseURLs      []string
+	YARNLogBytes      int64
+	ExecutorID        string
+	ThreadSummaryOnly bool
+	HDFSUser          string
+	HadoopConfDir     string
+	CacheDir          string
+	NoCache           bool
+	SHSTimeout        time.Duration
+	Timeout           time.Duration
+	Format            string
+	Top               int
+	DryRun            bool
 	// NoProgress 来自 --no-progress flag,与 SPARK_CLI_QUIET 环境变量、stdout
 	// TTY 检测一并由 resolveQuiet 合成最终的 SHS 静默决定。
 	NoProgress bool
@@ -173,14 +174,28 @@ func runYARNLogs(ctx context.Context, opts Options, cfg *config.Config) int {
 }
 
 func runDriverThreadDump(ctx context.Context, opts Options, cfg *config.Config) int {
+	columns := []string{
+		"base_url", "app", "ui_url", "executor_id", "thread_count",
+		"state_counts", "diagnosis", "main_thread", "interesting_threads",
+	}
+	if !opts.ThreadSummaryOnly {
+		columns = append(columns, "threads")
+	}
 	env := scenario.Envelope{
 		Scenario: opts.Scenario,
 		AppID:    opts.AppID,
-		Columns:  []string{"base_url", "app", "ui_url", "executor_id", "thread_count", "state_counts", "threads"},
+		Columns:  columns,
 	}
 	report, err := fetchThreadDump(ctx, opts, cfg)
 	if err != nil {
-		return writeErr(opts.Stderr, err)
+		return writeErr(opts.Stderr, cerrors.New(
+			cerrors.CodeLogUnreadable,
+			err.Error(),
+			"检查 --yarn-base-urls 是否指向可访问的 YARN gateway;若指定 --executor-id,确认该 executor 仍 active;可先跑 yarn-logs 看 tracking_url",
+		))
+	}
+	if opts.ThreadSummaryOnly {
+		report.Threads = nil
 	}
 	env.Data = []any{report}
 	return render(opts, env)
