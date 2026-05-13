@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### YARN / Spark UI 诊断增强
+
+- **新增 `spark-cli driver-thread-dump <appId>`**:通过 YARN RM 的 `trackingUrl` 或 gateway `/proxy/<appId>` 访问 Spark UI REST API,直接拉取 driver 或指定 executor 的 thread dump,输出 `state_counts` 和原始线程栈。用于定位 job/stage 生成前的 driver 端卡顿,不再需要手工 curl `/executors/driver/threads`。
+- **YARN appAttempt id 兼容数字型 JSON**:部分 RM REST 返回 `"id": 1` 而不是字符串,此前 `yarn-logs` 会解码失败;现在 string/number/null 都能安全处理。
+- **YARN application payload 暴露 `tracking_url` / `am_container_logs`**:诊断输出里能直接看到 Spark UI 和 AM container log 入口。
+
 ### Round 4-8 打磨(同一 2026-05-02 dogfooding 会话内继续迭代)
 
 输出 / UX:

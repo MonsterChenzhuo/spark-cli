@@ -128,6 +128,18 @@ spark-cli yarn-logs application_1772605260987_20682 \
 `/nodemanager/node/containerlogs/<container>/<user>?scheme=http&host=<nm>&port=<port>`
 的 gateway URL,并抓取 `stderr` / `stdout` / `syslog` 的前 N 字节摘要。
 
+需要看 driver 是否卡在 SQL 优化、driver 端 IO、RPC 等逻辑时,可以直接通过
+YARN tracking/proxy URL 拉 Spark UI thread dump:
+
+```bash
+spark-cli driver-thread-dump application_1772605260987_20765 \
+  --yarn-base-urls http://203.123.81.20:7765/gateway/hadoop-prod/yarn \
+  --executor-id driver
+```
+
+输出包含 `state_counts` 和 Spark UI 原始线程栈;`--executor-id` 也可传具体
+executor id。
+
 ### 缓存
 
 第一次解析某个 EventLog 后,`*model.Application` 会以 `gob+zstd` 形式写到 `<cache_dir>/<appId>.gob.zst`。同一 appId 的后续命令直接读缓存,无论日志多大都能 <300 ms 返回(信封 `parsed_events=0` 标识命中)。
@@ -152,13 +164,14 @@ spark-cli yarn-logs application_1772605260987_20682 \
 | `spark-cli data-skew <appId>` | 倾斜 Stage |
 | `spark-cli gc-pressure <appId>` | 每 Stage / Executor 的 GC 占比 |
 | `spark-cli yarn-logs <appId>` | 通过 YARN RM/NM 获取应用 diagnostics 与 container 日志摘要 |
+| `spark-cli driver-thread-dump <appId>` | 通过 YARN tracking/proxy URL 获取 Spark UI driver/executor thread dump |
 | `spark-cli config show [--format json]` | 打印当前生效配置(yaml / env / default 来源标注) |
 | `spark-cli cache list` / `cache clear [--app <id>] [--dry-run]` | 查看 / 清理本地的应用 + SHS zip 缓存 |
 | `spark-cli version` (与 `--version`) | 打印 spark-cli 版本 |
 
 均支持 `--top N`、`--format json|table|markdown`、`--dry-run`、`--log-dirs`、
 `--cache-dir`、`--no-cache`、`--shs-timeout`、`--no-progress`、
-`--yarn-base-urls`、`--yarn-log-bytes`、`--sql-detail truncate|full|none`(默认 `truncate` 把 SQL description 截到前
+`--yarn-base-urls`、`--yarn-log-bytes`、`--executor-id`、`--sql-detail truncate|full|none`(默认 `truncate` 把 SQL description 截到前
 500 个 rune 加 `...(truncated, total <N> chars)`;`full` 还原原始 SQL,`none`
 让整段 `sql_executions` 缺失)。
 

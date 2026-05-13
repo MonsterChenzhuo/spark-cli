@@ -27,6 +27,7 @@ type Options struct {
 	LogDirs       []string
 	YARNBaseURLs  []string
 	YARNLogBytes  int64
+	ExecutorID    string
 	HDFSUser      string
 	HadoopConfDir string
 	CacheDir      string
@@ -61,6 +62,9 @@ func Run(ctx context.Context, opts Options) int {
 	}
 	if opts.Scenario == "yarn-logs" {
 		return runYARNLogs(ctx, opts, cfg)
+	}
+	if opts.Scenario == "driver-thread-dump" {
+		return runDriverThreadDump(ctx, opts, cfg)
 	}
 
 	quiet := resolveQuiet(opts.NoProgress, stdoutIsTTY())
@@ -168,6 +172,20 @@ func runYARNLogs(ctx context.Context, opts Options, cfg *config.Config) int {
 	return render(opts, env)
 }
 
+func runDriverThreadDump(ctx context.Context, opts Options, cfg *config.Config) int {
+	env := scenario.Envelope{
+		Scenario: opts.Scenario,
+		AppID:    opts.AppID,
+		Columns:  []string{"base_url", "app", "ui_url", "executor_id", "thread_count", "state_counts", "threads"},
+	}
+	report, err := fetchThreadDump(ctx, opts, cfg)
+	if err != nil {
+		return writeErr(opts.Stderr, err)
+	}
+	env.Data = []any{report}
+	return render(opts, env)
+}
+
 func parseApp(fsys fs.FS, src eventlog.LogSource, appID string) (*model.Application, int64, error) {
 	r, err := eventlog.Open(src, fsys)
 	if err != nil {
@@ -253,7 +271,7 @@ func buildConfig(opts Options) (*config.Config, error) {
 	if opts.Timeout > 0 {
 		cfg.Timeout = opts.Timeout
 	}
-	if opts.Scenario == "yarn-logs" {
+	if opts.Scenario == "yarn-logs" || opts.Scenario == "driver-thread-dump" {
 		if len(cfg.YARN.BaseURLs) == 0 {
 			return nil, cerrors.New(cerrors.CodeFlagInvalid, "yarn.base_urls is empty; set --yarn-base-urls or config yarn.base_urls", "例如 --yarn-base-urls http://203.123.81.20:7765/gateway/hadoop-prod/yarn")
 		}
@@ -287,6 +305,14 @@ func fetchYARN(ctx context.Context, opts Options, cfg *config.Config, maxLogByte
 		TopContainers: opts.Top,
 		MaxLogBytes:   maxLogBytes,
 	})
+}
+
+func fetchThreadDump(ctx context.Context, opts Options, cfg *config.Config) (*yarn.ThreadDumpReport, error) {
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	return yarn.NewClient(cfg.YARN.BaseURLs, timeout).FetchThreadDump(ctx, opts.AppID, opts.ExecutorID)
 }
 
 // validateHint 给 cfg.Validate() 错误一个可执行 hint。Validate 自身在 internal/config

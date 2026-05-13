@@ -70,6 +70,46 @@ func TestRunnerYARNLogsDoesNotRequireSparkLogDirs(t *testing.T) {
 	}
 }
 
+func TestRunnerDriverThreadDumpDoesNotRequireSparkLogDirs(t *testing.T) {
+	const appID = "application_1_3"
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+appID, func(w http.ResponseWriter, r *http.Request) {
+		writeRunnerJSON(t, w, map[string]any{"app": map[string]any{
+			"id":          appID,
+			"user":        "airflow",
+			"trackingUrl": srv.URL + "/yarn/proxy/" + appID + "/",
+		}})
+	})
+	mux.HandleFunc("/yarn/proxy/"+appID+"/api/v1/applications/"+appID+"/executors/driver/threads", func(w http.ResponseWriter, r *http.Request) {
+		writeRunnerJSON(t, w, []map[string]any{{
+			"threadId":    1,
+			"threadName":  "main",
+			"threadState": "RUNNABLE",
+		}})
+	})
+
+	var stdout, stderr bytes.Buffer
+	rc := Run(context.Background(), Options{
+		Scenario:     "driver-thread-dump",
+		AppID:        appID,
+		YARNBaseURLs: []string{srv.URL + "/yarn"},
+		ExecutorID:   "driver",
+		Format:       "json",
+		Stdout:       &stdout,
+		Stderr:       &stderr,
+	})
+	if rc != 0 {
+		t.Fatalf("rc=%d stderr=%s", rc, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, `"scenario":"driver-thread-dump"`) || !strings.Contains(out, `"thread_count":1`) || !strings.Contains(out, `"threadName":"main"`) {
+		t.Fatalf("unexpected stdout:\n%s", out)
+	}
+}
+
 func writeRunnerJSON(t *testing.T, w http.ResponseWriter, v any) {
 	t.Helper()
 	w.Header().Set("Content-Type", "application/json")

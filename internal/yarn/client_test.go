@@ -89,6 +89,69 @@ func TestFetchApplicationLogsIncludesSmallLogSnippets(t *testing.T) {
 	}
 }
 
+func TestFetchApplicationLogsAcceptsNumericAttemptID(t *testing.T) {
+	const appID = "application_1772605260987_20765"
+	mux := http.NewServeMux()
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+appID, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"app": map[string]any{"id": appID, "user": "airflow"}})
+	})
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+appID+"/appattempts", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"appAttempts": map[string]any{"appAttempt": []map[string]any{{"id": 1}}}})
+	})
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+appID+"/appattempts/1/containers", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"containers": map[string]any{"container": []map[string]any{{"id": "container_1", "nodeHttpAddress": "node:8042"}}}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	got, err := NewClient([]string{srv.URL + "/yarn"}, 5*time.Second).FetchApplicationLogs(context.Background(), appID, Options{TopContainers: 1})
+	if err != nil {
+		t.Fatalf("FetchApplicationLogs: %v", err)
+	}
+	if len(got.Containers) != 1 || got.Containers[0].ID != "container_1" {
+		t.Fatalf("containers = %+v", got.Containers)
+	}
+}
+
+func TestFetchThreadDumpUsesYARNTrackingURL(t *testing.T) {
+	const appID = "application_1_3"
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+appID, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"app": map[string]any{
+			"id":          appID,
+			"user":        "alice",
+			"trackingUrl": srv.URL + "/yarn/proxy/" + appID + "/",
+		}})
+	})
+	mux.HandleFunc("/yarn/proxy/"+appID+"/api/v1/applications/"+appID+"/executors/driver/threads", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, []map[string]any{{
+			"threadId":    1,
+			"threadName":  "main",
+			"threadState": "RUNNABLE",
+			"stackTrace": []map[string]any{{
+				"className":  "org.apache.spark.sql.execution.QueryExecution",
+				"methodName": "optimizedPlan",
+				"fileName":   "QueryExecution.scala",
+				"lineNumber": 183,
+			}},
+		}})
+	})
+
+	got, err := NewClient([]string{srv.URL + "/yarn"}, 5*time.Second).FetchThreadDump(context.Background(), appID, "driver")
+	if err != nil {
+		t.Fatalf("FetchThreadDump: %v", err)
+	}
+	if got.ThreadCount != 1 || got.StateCounts["RUNNABLE"] != 1 {
+		t.Fatalf("thread summary = %+v", got)
+	}
+	if got.Threads[0].ThreadName != "main" || got.Threads[0].StackTrace == nil {
+		t.Fatalf("thread details = %+v", got.Threads)
+	}
+}
+
 func writeJSON(t *testing.T, w http.ResponseWriter, v any) {
 	t.Helper()
 	w.Header().Set("Content-Type", "application/json")

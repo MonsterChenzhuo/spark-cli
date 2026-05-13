@@ -130,6 +130,18 @@ then builds gateway URLs like
 `/nodemanager/node/containerlogs/<container>/<user>?scheme=http&host=<nm>&port=<port>`
 and fetches the first N bytes of `stderr` / `stdout` / `syslog`.
 
+To inspect driver-side stalls before jobs are submitted, fetch Spark UI thread
+dumps through the YARN tracking/proxy URL:
+
+```bash
+spark-cli driver-thread-dump application_1772605260987_20765 \
+  --yarn-base-urls http://203.123.81.20:7765/gateway/hadoop-prod/yarn \
+  --executor-id driver
+```
+
+The output includes `state_counts` plus the raw Spark UI thread stacks.
+`--executor-id` can also target a specific executor.
+
 ### Cache
 
 The first invocation on a new EventLog persists the parsed `*model.Application`
@@ -161,13 +173,14 @@ mismatch, write errors) degrade silently to "miss + reparse".
 | `spark-cli data-skew <appId>` | Skewed stages |
 | `spark-cli gc-pressure <appId>` | GC ratio per stage / executor |
 | `spark-cli yarn-logs <appId>` | Fetch YARN diagnostics and container log snippets |
+| `spark-cli driver-thread-dump <appId>` | Fetch Spark UI driver/executor thread dump through YARN tracking/proxy URL |
 | `spark-cli config show [--format json]` | Print effective configuration (yaml / env / default sources) |
 | `spark-cli cache list` / `cache clear [--app <id>] [--dry-run]` | Inspect / prune the parsed-application + SHS zip caches |
 | `spark-cli version` (also `--version`) | Print spark-cli version |
 
 All accept `--top N`, `--format json|table|markdown`, `--dry-run`, `--log-dirs`,
 `--cache-dir`, `--no-cache`, `--shs-timeout`, `--no-progress`,
-`--yarn-base-urls`, `--yarn-log-bytes`, `--sql-detail truncate|full|none` (default `truncate` — first 500 runes of the
+`--yarn-base-urls`, `--yarn-log-bytes`, `--executor-id`, `--sql-detail truncate|full|none` (default `truncate` — first 500 runes of the
 SQL description with a `...(truncated, total <N> chars)` marker; `full` keeps
 the original; `none` omits the entire `sql_executions` map).
 

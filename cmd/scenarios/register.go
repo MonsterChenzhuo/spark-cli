@@ -14,6 +14,7 @@ func Register(root *cobra.Command) {
 		newScenarioCmd("gc-pressure", "Executors ranked by GC ratio"),
 		newScenarioCmd("diagnose", "Run all rules and emit findings"),
 		newScenarioCmd("yarn-logs", "Fetch YARN application diagnostics and container logs"),
+		newScenarioCmd("driver-thread-dump", "Fetch Spark UI thread dump through YARN proxy/tracking URL"),
 	)
 }
 
@@ -39,6 +40,7 @@ func buildOpts(scenario, appID string, cc *cobra.Command) Options {
 		LogDirs:       splitLogDirs(state.LogDirs),
 		YARNBaseURLs:  splitLogDirs(state.YARNBaseURLs),
 		YARNLogBytes:  state.YARNLogBytes,
+		ExecutorID:    state.ExecutorID,
 		HDFSUser:      state.HDFSUser,
 		HadoopConfDir: state.HadoopConfDir,
 		CacheDir:      state.CacheDir,
