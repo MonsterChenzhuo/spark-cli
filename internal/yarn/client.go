@@ -54,9 +54,11 @@ type ThreadDumpReport struct {
 	BaseURL            string               `json:"base_url"`
 	App                Application          `json:"app"`
 	UIURL              string               `json:"ui_url"`
+	ThreadDumpURL      string               `json:"thread_dump_url,omitempty"`
 	ExecutorID         string               `json:"executor_id"`
 	ThreadCount        int                  `json:"thread_count"`
 	StateCounts        map[string]int       `json:"state_counts,omitempty"`
+	Warnings           []string             `json:"warnings,omitempty"`
 	Diagnosis          *ThreadDumpDiagnosis `json:"diagnosis,omitempty"`
 	MainThread         *ThreadStackSummary  `json:"main_thread,omitempty"`
 	InterestingThreads []ThreadStackSummary `json:"interesting_threads,omitempty"`
@@ -188,7 +190,7 @@ func (c *Client) fetchThreadDumpFromBase(ctx context.Context, base, appID, execu
 	endpoint := strings.TrimRight(uiURL, "/") + "/api/v1/applications/" + url.PathEscape(appID) + "/executors/" + url.PathEscape(executorID) + "/threads"
 	var threads []ThreadInfo
 	if err := c.getJSON(ctx, endpoint, &threads); err != nil {
-		return nil, err
+		return unavailableThreadDumpReport(base, app, uiURL, endpoint, executorID, err), nil
 	}
 	counts := make(map[string]int)
 	for _, th := range threads {
@@ -201,6 +203,7 @@ func (c *Client) fetchThreadDumpFromBase(ctx context.Context, base, appID, execu
 		BaseURL:            base,
 		App:                app,
 		UIURL:              uiURL,
+		ThreadDumpURL:      endpoint,
 		ExecutorID:         executorID,
 		ThreadCount:        len(threads),
 		StateCounts:        counts,

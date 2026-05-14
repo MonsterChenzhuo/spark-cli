@@ -175,8 +175,9 @@ func runYARNLogs(ctx context.Context, opts Options, cfg *config.Config) int {
 
 func runDriverThreadDump(ctx context.Context, opts Options, cfg *config.Config) int {
 	columns := []string{
-		"base_url", "app", "ui_url", "executor_id", "thread_count",
-		"state_counts", "diagnosis", "main_thread", "interesting_threads",
+		"base_url", "app", "ui_url", "thread_dump_url", "executor_id",
+		"thread_count", "state_counts", "warnings", "diagnosis",
+		"main_thread", "interesting_threads",
 	}
 	if !opts.ThreadSummaryOnly {
 		columns = append(columns, "threads")

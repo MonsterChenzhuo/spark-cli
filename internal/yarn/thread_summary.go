@@ -42,6 +42,36 @@ func summarizeThreadDump(executorID string, threads []ThreadInfo) (*ThreadDumpDi
 	return diagnosis, mainThread, interesting
 }
 
+func unavailableThreadDumpReport(base string, app Application, uiURL, endpoint, executorID string, err error) *ThreadDumpReport {
+	return &ThreadDumpReport{
+		BaseURL:       base,
+		App:           app,
+		UIURL:         uiURL,
+		ThreadDumpURL: endpoint,
+		ExecutorID:    executorID,
+		ThreadCount:   0,
+		Warnings:      []string{friendlyThreadDumpError(err)},
+		Diagnosis: &ThreadDumpDiagnosis{
+			Category: "spark_ui_thread_dump_unavailable",
+			Evidence: []string{
+				"YARN application metadata was fetched, but Spark UI thread dump endpoint did not return a JSON thread dump",
+			},
+			Suggestion: "Check app.state/final_status and tracking_url. If the app is running, verify the YARN proxy URL and executor id; if the app has finished, use EventLog scenarios instead of live thread dump.",
+		},
+	}
+}
+
+func friendlyThreadDumpError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "invalid character '<'") {
+		return "thread dump endpoint returned HTML instead of JSON; Spark UI proxy may have redirected to an app page or expired page"
+	}
+	return msg
+}
+
 func buildThreadSummary(th ThreadInfo, frames, tags []string) ThreadStackSummary {
 	if len(frames) > maxSummaryFrames {
 		frames = frames[:maxSummaryFrames]
@@ -79,6 +109,15 @@ func diagnoseThreads(executorID string, mainThread *ThreadStackSummary, interest
 					"main thread is inside Paimon schema validation or RowType construction",
 				},
 				Suggestion: "This is a driver-side planning hotspot; check for very wide schemas, duplicateFields/logicalRowType validation, or stale Paimon jars.",
+			}
+		case hasTag(*mainThread, "spark_file_pruning") && hasTag(*mainThread, "spark_collapse_project"):
+			return &ThreadDumpDiagnosis{
+				Category: "spark_file_pruning_collapse_project",
+				Evidence: []string{
+					"main thread is in PruneFileSourcePartitions, which calls CollapseProject.canCollapseExpressions as a helper",
+					"excluding CollapseProject alone does not disable this helper path",
+				},
+				Suggestion: "For very wide SQL stuck before job submission, test excluding org.apache.spark.sql.execution.datasources.PruneFileSourcePartitions or reduce chained Project layers.",
 			}
 		case hasTag(*mainThread, "spark_collapse_project"):
 			return &ThreadDumpDiagnosis{
@@ -156,8 +195,10 @@ func classifyThread(name string, frames []string) []string {
 	if containsAny(joined, "DAGScheduler.runJob", "SparkContext.runJob") {
 		add("driver_waiting_for_spark_job")
 	}
-	if containsAny(joined, "PaimonSparkWriter.write", "WriteIntoPaimonTable.run") {
+	if containsAnyInFirst(frames, 12, "PaimonSparkWriter.write", "WriteIntoPaimonTable.run") {
 		add("paimon_write")
+	} else if containsAny(joined, "PaimonSparkWriter.write", "WriteIntoPaimonTable.run") {
+		add("paimon_write_callsite")
 	}
 	if containsAny(joined, "SchemaValidation", "Schema.duplicateFields", "TableSchema.logicalRowType", "RowType.validateFields") {
 		add("paimon_schema_validation")
@@ -170,6 +211,9 @@ func classifyThread(name string, frames []string) []string {
 	}
 	if containsAny(joined, "CollapseProject") {
 		add("spark_collapse_project")
+	}
+	if containsAny(joined, "PruneFileSourcePartitions") {
+		add("spark_file_pruning")
 	}
 	if containsAny(joined, "V2ScanRelationPushDown") {
 		add("spark_v2_pushdown")
@@ -225,6 +269,13 @@ func containsAny(s string, needles ...string) bool {
 		}
 	}
 	return false
+}
+
+func containsAnyInFirst(frames []string, n int, needles ...string) bool {
+	if n > len(frames) {
+		n = len(frames)
+	}
+	return containsAny(strings.Join(frames[:n], "\n"), needles...)
 }
 
 func stackTraceLines(v any) []string {

@@ -236,6 +236,78 @@ func TestFetchThreadDumpClassifiesCollapseProject(t *testing.T) {
 	}
 }
 
+func TestFetchThreadDumpClassifiesFilePruningCollapseProject(t *testing.T) {
+	const appID = "application_1_7"
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+appID, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"app": map[string]any{
+			"id":          appID,
+			"user":        "alice",
+			"trackingUrl": srv.URL + "/yarn/proxy/" + appID + "/",
+		}})
+	})
+	mux.HandleFunc("/yarn/proxy/"+appID+"/api/v1/applications/"+appID+"/executors/driver/threads", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, []map[string]any{{
+			"threadId":    1,
+			"threadName":  "main",
+			"threadState": "RUNNABLE",
+			"stackTrace": map[string]any{"elems": []string{
+				"org.apache.spark.sql.catalyst.optimizer.CollapseProject$.canCollapseExpressions(Optimizer.scala:1047)",
+				"org.apache.spark.sql.catalyst.planning.PhysicalOperation$.unapply(patterns.scala:114)",
+				"org.apache.spark.sql.execution.datasources.PruneFileSourcePartitions$$anonfun$apply$1.applyOrElse(PruneFileSourcePartitions.scala:51)",
+			}},
+		}})
+	})
+
+	got, err := NewClient([]string{srv.URL + "/yarn"}, 5*time.Second).FetchThreadDump(context.Background(), appID, "driver")
+	if err != nil {
+		t.Fatalf("FetchThreadDump: %v", err)
+	}
+	if got.Diagnosis == nil || got.Diagnosis.Category != "spark_file_pruning_collapse_project" {
+		t.Fatalf("diagnosis = %+v", got.Diagnosis)
+	}
+	if got.MainThread == nil || !hasTestString(got.MainThread.Tags, "spark_file_pruning") {
+		t.Fatalf("main thread tags = %+v", got.MainThread)
+	}
+}
+
+func TestFetchThreadDumpReturnsStructuredReportWhenEndpointIsHTML(t *testing.T) {
+	const appID = "application_1_8"
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+appID, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"app": map[string]any{
+			"id":          appID,
+			"user":        "alice",
+			"state":       "RUNNING",
+			"trackingUrl": srv.URL + "/yarn/proxy/" + appID + "/",
+		}})
+	})
+	mux.HandleFunc("/yarn/proxy/"+appID+"/api/v1/applications/"+appID+"/executors/driver/threads", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html>not spark rest json</html>"))
+	})
+
+	got, err := NewClient([]string{srv.URL + "/yarn"}, 5*time.Second).FetchThreadDump(context.Background(), appID, "driver")
+	if err != nil {
+		t.Fatalf("FetchThreadDump should return structured partial report, got error: %v", err)
+	}
+	if got.ThreadCount != 0 || len(got.Warnings) != 1 {
+		t.Fatalf("thread dump summary = %+v", got)
+	}
+	if got.ThreadDumpURL == "" {
+		t.Fatalf("thread_dump_url missing: %+v", got)
+	}
+	if got.Diagnosis == nil || got.Diagnosis.Category != "spark_ui_thread_dump_unavailable" {
+		t.Fatalf("diagnosis = %+v", got.Diagnosis)
+	}
+}
+
 func TestSparkUIBaseURLFallsBackWhenTrackingURLIsYARNAppPage(t *testing.T) {
 	got := sparkUIBaseURL("http://gateway/yarn", "application_1_5", "http://gateway/yarn/cluster/app/application_1_5")
 	want := "http://gateway/yarn/proxy/application_1_5"
