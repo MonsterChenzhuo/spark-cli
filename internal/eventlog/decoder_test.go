@@ -93,3 +93,65 @@ func TestDecodeStillRejectsTruncatedTailForCompleteLogs(t *testing.T) {
 		t.Fatalf("parsed = %d, want 1", parsed)
 	}
 }
+
+func TestDecodeSkipsOversizedSQLExecutionStart(t *testing.T) {
+	hugeDescription := strings.Repeat("x", maxScanLine)
+	body := strings.Join([]string{
+		`{"Event":"SparkListenerApplicationStart","App Name":"wide","App ID":"application_wide","Timestamp":1000,"User":"alice"}`,
+		`{"Event":"org.apache.spark.sql.execution.ui.SparkListenerSQLExecutionStart","executionId":7,"description":"` + hugeDescription + `","details":"","time":1100}`,
+		`{"Event":"SparkListenerApplicationEnd","Timestamp":2000}`,
+	}, "\n")
+
+	app := model.NewApplication()
+	agg := model.NewAggregator(app)
+	parsed, err := Decode(strings.NewReader(body), agg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed != 2 {
+		t.Fatalf("parsed = %d, want 2", parsed)
+	}
+	if app.DurationMs != 1000 {
+		t.Fatalf("duration = %d, want 1000", app.DurationMs)
+	}
+	if len(app.SQLExecutions) != 0 {
+		t.Fatalf("SQLExecutions = %d, want skipped oversized SQL description", len(app.SQLExecutions))
+	}
+}
+
+func TestDecodeSkipsOversizedSQLAdaptiveExecutionUpdate(t *testing.T) {
+	hugePlan := strings.Repeat("x", maxScanLine)
+	body := strings.Join([]string{
+		`{"Event":"SparkListenerApplicationStart","App Name":"wide","App ID":"application_wide","Timestamp":1000,"User":"alice"}`,
+		`{"Event":"org.apache.spark.sql.execution.ui.SparkListenerSQLAdaptiveExecutionUpdate","executionId":7,"physicalPlanDescription":"` + hugePlan + `"}`,
+		`{"Event":"SparkListenerApplicationEnd","Timestamp":2000}`,
+	}, "\n")
+
+	app := model.NewApplication()
+	agg := model.NewAggregator(app)
+	parsed, err := Decode(strings.NewReader(body), agg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed != 2 {
+		t.Fatalf("parsed = %d, want 2", parsed)
+	}
+	if app.DurationMs != 1000 {
+		t.Fatalf("duration = %d, want 1000", app.DurationMs)
+	}
+}
+
+func TestDecodeRejectsOversizedNonSQLEvent(t *testing.T) {
+	hugeName := strings.Repeat("x", maxScanLine)
+	body := `{"Event":"SparkListenerApplicationStart","App Name":"` + hugeName + `","App ID":"application_wide","Timestamp":1000,"User":"alice"}`
+
+	app := model.NewApplication()
+	agg := model.NewAggregator(app)
+	parsed, err := Decode(strings.NewReader(body), agg)
+	if err == nil {
+		t.Fatal("expected oversized non-SQL event to fail")
+	}
+	if parsed != 0 {
+		t.Fatalf("parsed = %d, want 0", parsed)
+	}
+}

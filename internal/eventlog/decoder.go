@@ -13,7 +13,12 @@ import (
 	cerrors "github.com/opay-bigdata/spark-cli/internal/errors"
 )
 
-const maxScanLine = 16 << 20 // 16MB per JSONL line
+const (
+	maxScanLine = 16 << 20 // 16MB per JSONL line
+
+	sqlExecutionStartEvent        = "org.apache.spark.sql.execution.ui.SparkListenerSQLExecutionStart"
+	sqlAdaptiveExecutionUpdateEvt = "org.apache.spark.sql.execution.ui.SparkListenerSQLAdaptiveExecutionUpdate"
+)
 
 type DecodeOptions struct {
 	AllowTruncatedTail bool
@@ -29,8 +34,17 @@ func DecodeWithOptions(r io.Reader, agg *model.Aggregator, opts DecodeOptions) (
 	for {
 		line, readErr := br.ReadBytes('\n')
 		if len(line) > maxScanLine {
+			if readErr != nil && readErr != io.EOF {
+				return parsed, cerrors.New(cerrors.CodeLogUnreadable, readErr.Error(), "")
+			}
+			if isOversizedSkippableSQLEvent(line) {
+				if readErr == io.EOF {
+					break
+				}
+				continue
+			}
 			return parsed, cerrors.New(cerrors.CodeLogParseFailed,
-				"event JSONL line exceeds 16MB", "file may be corrupted")
+				"event JSONL line exceeds 16MB", "file may be corrupted; if this is a very large Spark SQL description, rerun with SQL description/detail disabled or upgrade spark-cli")
 		}
 		if len(line) == 0 && readErr == io.EOF {
 			break
@@ -62,6 +76,15 @@ func DecodeWithOptions(r io.Reader, agg *model.Aggregator, opts DecodeOptions) (
 		}
 	}
 	return parsed, nil
+}
+
+func isOversizedSkippableSQLEvent(line []byte) bool {
+	return hasEvent(line, sqlExecutionStartEvent) || hasEvent(line, sqlAdaptiveExecutionUpdateEvt)
+}
+
+func hasEvent(line []byte, event string) bool {
+	return bytes.Contains(line, []byte(`"Event":"`+event+`"`)) ||
+		bytes.Contains(line, []byte(`"Event": "`+event+`"`))
 }
 
 func isUnexpectedJSONTail(err error) bool {
