@@ -28,6 +28,7 @@ type Options struct {
 	LogDirs           []string
 	YARNBaseURLs      []string
 	YARNLogBytes      int64
+	YARNLogTypes      []string
 	ExecutorID        string
 	ThreadSummaryOnly bool
 	HDFSUser          string
@@ -325,7 +326,9 @@ func fetchYARN(ctx context.Context, opts Options, cfg *config.Config, maxLogByte
 	}
 	return yarn.NewClient(cfg.YARN.BaseURLs, timeout).FetchApplicationLogs(ctx, opts.AppID, yarn.Options{
 		TopContainers: opts.Top,
+		LogTypes:      opts.YARNLogTypes,
 		MaxLogBytes:   maxLogBytes,
+		ExecutorID:    opts.ExecutorID,
 	})
 }
 

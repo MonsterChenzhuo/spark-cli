@@ -153,9 +153,26 @@ spark-cli yarn-logs application_1772605260987_20682 \
   --top 5 --yarn-log-bytes 65536
 ```
 
-`yarn-logs` 会通过 RM REST 找 application/user/attempt/container,再生成类似
+`yarn-logs` 会通过 RM REST 找 application/user/attempt/container。遇到 gateway 对
+`/appattempts/<id>/containers` 返回 400 或空 payload 时,会回退到 appAttempt
+metadata 和 YARN HTML 里的日志链接,再生成类似
 `/nodemanager/node/containerlogs/<container>/<user>?scheme=http&host=<nm>&port=<port>`
 的 gateway URL,并抓取 `stderr` / `stdout` / `syslog` 的前 N 字节摘要。
+
+需要按 Spark executor id 拉 stderr 和 GC 日志时:
+
+```bash
+spark-cli yarn-logs application_1772605260987_20682 \
+  --yarn-base-urls http://203.123.81.20:7765/gateway/hadoop-prod/yarn \
+  --executor-id 7 \
+  --yarn-log-types stderr,gc \
+  --yarn-log-bytes 131072
+```
+
+对 `yarn-logs` 来说,`--executor-id` 会优先用 Spark UI executors REST
+定位 executor 的日志 URL,输出里带 `spark_executor_id` 与 container log URL。
+`--yarn-log-types` 里的 `gc` 会展开成 `gc.log.0.current` 等常见 GC 日志名;
+如果日志片段里检测到 Full GC,会在该 container 的 `log_findings` 中标出来。
 
 需要看 driver 是否卡在 SQL 优化、driver 端 IO、RPC 等逻辑时,可以直接通过
 YARN tracking/proxy URL 拉 Spark UI thread dump:
@@ -205,7 +222,7 @@ Spark UI 原始线程栈;加 `--thread-summary-only` 时只输出摘要,适合 a
 
 均支持 `--top N`、`--format json|table|markdown`、`--dry-run`、`--log-dirs`、
 `--cluster`、`--cache-dir`、`--no-cache`、`--shs-timeout`、`--no-progress`、
-`--yarn-base-urls`、`--yarn-log-bytes`、`--executor-id`、`--sql-detail truncate|full|none`(默认 `truncate` 把 SQL description 截到前
+`--yarn-base-urls`、`--yarn-log-bytes`、`--yarn-log-types`、`--executor-id`、`--sql-detail truncate|full|none`(默认 `truncate` 把 SQL description 截到前
 500 个 rune 加 `...(truncated, total <N> chars)`;`full` 还原原始 SQL,`none`
 让整段 `sql_executions` 缺失)。
 

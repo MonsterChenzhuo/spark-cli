@@ -12,6 +12,7 @@ type globalState struct {
 	LogDirs           string
 	YARNBaseURLs      string
 	YARNLogBytes      int64
+	YARNLogTypes      string
 	ExecutorID        string
 	ThreadSummaryOnly bool
 	HDFSUser          string
@@ -36,7 +37,7 @@ var CLIVersion = "dev"
 var state = defaultState()
 
 func defaultState() globalState {
-	return globalState{Format: "json", Top: 10, SQLDetail: "truncate", YARNLogBytes: 65536, ExecutorID: "driver"}
+	return globalState{Format: "json", Top: 10, SQLDetail: "truncate", YARNLogBytes: 65536}
 }
 
 // ExitCode reports the most recent scenario exit code.
@@ -54,7 +55,8 @@ func RegisterFlags(root *cobra.Command) {
 	root.PersistentFlags().StringVar(&state.LogDirs, "log-dirs", state.LogDirs, "Comma-separated EventLog sources: file:///path | hdfs://nn:port/path | shs://host:port (Spark History Server REST endpoint)")
 	root.PersistentFlags().StringVar(&state.YARNBaseURLs, "yarn-base-urls", state.YARNBaseURLs, "Comma-separated YARN RM/gateway base URLs, e.g. http://rm:8088 or http://host/gateway/prod/yarn")
 	root.PersistentFlags().Int64Var(&state.YARNLogBytes, "yarn-log-bytes", state.YARNLogBytes, "Max bytes per YARN container log type for yarn-logs; diagnose only emits log URLs")
-	root.PersistentFlags().StringVar(&state.ExecutorID, "executor-id", state.ExecutorID, "Spark executor id for driver-thread-dump (default driver)")
+	root.PersistentFlags().StringVar(&state.YARNLogTypes, "yarn-log-types", state.YARNLogTypes, "Comma-separated YARN log files for yarn-logs, e.g. stderr,stdout,syslog,gc.log.0.current; gc expands common GC log names")
+	root.PersistentFlags().StringVar(&state.ExecutorID, "executor-id", state.ExecutorID, "Spark executor id for driver-thread-dump or yarn-logs; driver-thread-dump defaults to driver")
 	root.PersistentFlags().BoolVar(&state.ThreadSummaryOnly, "thread-summary-only", state.ThreadSummaryOnly, "Only emit driver-thread-dump diagnosis/main_thread/interesting_threads; omit raw threads")
 	root.PersistentFlags().StringVar(&state.HDFSUser, "hdfs-user", state.HDFSUser, "HDFS simple-auth user (defaults to $USER)")
 	root.PersistentFlags().StringVar(&state.HadoopConfDir, "hadoop-conf-dir", state.HadoopConfDir, "Path to Hadoop XML config dir; falls back to HADOOP_CONF_DIR / HADOOP_HOME")

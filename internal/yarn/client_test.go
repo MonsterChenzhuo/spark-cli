@@ -99,6 +99,9 @@ func TestFetchApplicationLogsAcceptsNumericAttemptID(t *testing.T) {
 		writeJSON(t, w, map[string]any{"appAttempts": map[string]any{"appAttempt": []map[string]any{{"id": 1}}}})
 	})
 	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+appID+"/appattempts/1/containers", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "numeric attempt id is invalid here", http.StatusBadRequest)
+	})
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+appID+"/appattempts/appattempt_1772605260987_20765_000001/containers", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(t, w, map[string]any{"containers": map[string]any{"container": []map[string]any{{"id": "container_1", "nodeHttpAddress": "node:8042"}}}})
 	})
 	srv := httptest.NewServer(mux)
@@ -110,6 +113,104 @@ func TestFetchApplicationLogsAcceptsNumericAttemptID(t *testing.T) {
 	}
 	if len(got.Containers) != 1 || got.Containers[0].ID != "container_1" {
 		t.Fatalf("containers = %+v", got.Containers)
+	}
+}
+
+func TestFetchApplicationLogsFallsBackToHTMLContainerLinks(t *testing.T) {
+	const appID = "application_1772605260987_35693"
+	mux := http.NewServeMux()
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+appID, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"app": map[string]any{"id": appID, "user": "airflow"}})
+	})
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+appID+"/appattempts", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"appAttempts": map[string]any{"appAttempt": []map[string]any{{"id": "appattempt_1772605260987_35693_000002"}}}})
+	})
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+appID+"/appattempts/appattempt_1772605260987_35693_000002/containers", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "gateway rejects containers API", http.StatusBadRequest)
+	})
+	mux.HandleFunc("/yarn/cluster/app/"+appID, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body>
+			<a href="/yarn/nodemanager/node/containerlogs/container_e01_1772605260987_35693_02_000123/airflow?scheme=http&host=nm1&port=8042">logs</a>
+		</body></html>`))
+	})
+	mux.HandleFunc("/yarn/nodemanager/node/containerlogs/container_e01_1772605260987_35693_02_000123/airflow/stderr", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("executor lost heartbeat\n"))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	got, err := NewClient([]string{srv.URL + "/yarn"}, 5*time.Second).FetchApplicationLogs(context.Background(), appID, Options{
+		TopContainers: 1,
+		LogTypes:      []string{"stderr"},
+		MaxLogBytes:   128,
+	})
+	if err != nil {
+		t.Fatalf("FetchApplicationLogs: %v", err)
+	}
+	if len(got.Containers) != 1 {
+		t.Fatalf("containers = %+v warnings=%v", got.Containers, got.Warnings)
+	}
+	if got.Containers[0].ID != "container_e01_1772605260987_35693_02_000123" {
+		t.Fatalf("container = %+v", got.Containers[0])
+	}
+	if !strings.Contains(got.Containers[0].Logs["stderr"], "heartbeat") {
+		t.Fatalf("stderr snippet missing: %+v", got.Containers[0].Logs)
+	}
+	if len(got.Warnings) == 0 {
+		t.Fatalf("expected warning about REST containers fallback")
+	}
+}
+
+func TestFetchApplicationLogsFiltersExecutorAndFetchesGCLog(t *testing.T) {
+	const appID = "application_1_9"
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+appID, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"app": map[string]any{
+			"id":          appID,
+			"user":        "alice",
+			"trackingUrl": srv.URL + "/yarn/proxy/" + appID + "/",
+		}})
+	})
+	mux.HandleFunc("/yarn/proxy/"+appID+"/api/v1/applications/"+appID+"/executors", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, []map[string]any{{
+			"id": "7",
+			"executorLogs": map[string]string{
+				"stderr": srv.URL + "/yarn/nodemanager/node/containerlogs/container_executor_7/alice/stderr",
+			},
+		}})
+	})
+	mux.HandleFunc("/yarn/nodemanager/node/containerlogs/container_executor_7/alice/stderr", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("Container killed by YARN for exceeding memory\n"))
+	})
+	mux.HandleFunc("/yarn/nodemanager/node/containerlogs/container_executor_7/alice/gc.log.0.current", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("2026-05-26T10:00:00.000+0800: 123.456: [Full GC (Ergonomics) 120000K->119000K(122000K), 65.432 secs]\n"))
+	})
+
+	got, err := NewClient([]string{srv.URL + "/yarn"}, 5*time.Second).FetchApplicationLogs(context.Background(), appID, Options{
+		ExecutorID:    "7",
+		TopContainers: 5,
+		LogTypes:      []string{"stderr", "gc.log.0.current"},
+		MaxLogBytes:   512,
+	})
+	if err != nil {
+		t.Fatalf("FetchApplicationLogs: %v", err)
+	}
+	if len(got.Containers) != 1 {
+		t.Fatalf("containers = %+v warnings=%v", got.Containers, got.Warnings)
+	}
+	c := got.Containers[0]
+	if c.SparkExecutorID != "7" {
+		t.Fatalf("SparkExecutorID=%q", c.SparkExecutorID)
+	}
+	if !strings.Contains(c.Logs["gc.log.0.current"], "Full GC") {
+		t.Fatalf("gc log missing: %+v", c.Logs)
+	}
+	if len(c.LogFindings) != 1 || c.LogFindings[0].Type != "full_gc" {
+		t.Fatalf("log findings = %+v", c.LogFindings)
 	}
 }
 

@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -19,6 +21,7 @@ type Options struct {
 	TopContainers int
 	LogTypes      []string
 	MaxLogBytes   int64
+	ExecutorID    string
 }
 
 type Report struct {
@@ -41,13 +44,25 @@ type Application struct {
 }
 
 type ContainerLogs struct {
-	ID              string            `json:"id"`
-	NodeHTTPAddress string            `json:"node_http_address,omitempty"`
-	State           string            `json:"state,omitempty"`
-	ExitStatus      int               `json:"exit_status,omitempty"`
-	Diagnostics     string            `json:"diagnostics,omitempty"`
-	LogURL          string            `json:"log_url,omitempty"`
-	Logs            map[string]string `json:"logs,omitempty"`
+	ID              string       `json:"id"`
+	SparkExecutorID string       `json:"spark_executor_id,omitempty"`
+	NodeHTTPAddress string       `json:"node_http_address,omitempty"`
+	State           string       `json:"state,omitempty"`
+	ExitStatus      int          `json:"exit_status,omitempty"`
+	Diagnostics     string       `json:"diagnostics,omitempty"`
+	LogURL          string       `json:"log_url,omitempty"`
+	Logs            LogSnippets  `json:"logs,omitempty"`
+	LogFindings     []LogFinding `json:"log_findings,omitempty"`
+}
+
+type LogSnippets map[string]string
+
+type LogFinding struct {
+	Type       string `json:"type"`
+	Severity   string `json:"severity"`
+	LogType    string `json:"log_type,omitempty"`
+	Evidence   string `json:"evidence,omitempty"`
+	Suggestion string `json:"suggestion,omitempty"`
 }
 
 type ThreadDumpReport struct {
@@ -156,26 +171,55 @@ func (c *Client) fetchFromBase(ctx context.Context, base, appID string, opts Opt
 	if err != nil {
 		return nil, err
 	}
+	opts.LogTypes = normalizeLogTypes(opts.LogTypes)
+	rep := &Report{BaseURL: base, App: app}
+	if strings.TrimSpace(opts.ExecutorID) != "" {
+		containers, warnings := c.fetchExecutorLogs(ctx, base, app, appID, opts)
+		rep.Warnings = append(rep.Warnings, warnings...)
+		if len(containers) > 0 {
+			rep.Containers = containers
+			return rep, nil
+		}
+	}
 	attempts, err := c.fetchAttempts(ctx, base, appID)
 	if err != nil {
 		return nil, err
 	}
-	rep := &Report{BaseURL: base, App: app}
 	for i := len(attempts) - 1; i >= 0 && len(rep.Containers) < opts.TopContainers; i-- {
 		cs, err := c.fetchContainers(ctx, base, appID, attempts[i])
 		if err != nil {
 			rep.Warnings = append(rep.Warnings, err.Error())
-			continue
+		}
+		if len(cs) == 0 {
+			if am, ok := attempts[i].container(app.User); ok {
+				cs = append(cs, am)
+			}
 		}
 		for _, container := range cs {
 			if len(rep.Containers) >= opts.TopContainers {
 				break
 			}
-			container.LogURL = normalizeLogURL(base, app.User, container.ID, container.NodeHTTPAddress, container.LogURL)
+			container.LogURL = normalizeContainerLogURL(base, app.User, container.ID, container.NodeHTTPAddress, container.LogURL)
 			if opts.MaxLogBytes > 0 && container.LogURL != "" {
 				container.Logs = c.fetchLogSnippets(ctx, container.LogURL, opts.LogTypes, opts.MaxLogBytes)
+				container.LogFindings = analyzeLogFindings(container.Logs)
 			}
-			rep.Containers = append(rep.Containers, container)
+			appendContainer(&rep.Containers, container, opts.TopContainers)
+		}
+	}
+	if len(rep.Containers) < opts.TopContainers {
+		htmlContainers, err := c.fetchHTMLContainers(ctx, base, appID, app.User, attempts, opts.TopContainers-len(rep.Containers))
+		if err != nil {
+			if len(rep.Containers) == 0 {
+				rep.Warnings = append(rep.Warnings, err.Error())
+			}
+		}
+		for _, container := range htmlContainers {
+			if opts.MaxLogBytes > 0 && container.LogURL != "" {
+				container.Logs = c.fetchLogSnippets(ctx, container.LogURL, opts.LogTypes, opts.MaxLogBytes)
+				container.LogFindings = analyzeLogFindings(container.Logs)
+			}
+			appendContainer(&rep.Containers, container, opts.TopContainers)
 		}
 	}
 	return rep, nil
@@ -244,27 +288,76 @@ func (c *Client) fetchApp(ctx context.Context, base, appID string) (Application,
 	}, nil
 }
 
-func (c *Client) fetchAttempts(ctx context.Context, base, appID string) ([]string, error) {
+type appAttempt struct {
+	ID              string
+	ContainerID     string
+	NodeHTTPAddress string
+	LogURL          string
+	State           string
+	Diagnostics     string
+}
+
+func (a appAttempt) container(user string) (ContainerLogs, bool) {
+	if a.ContainerID == "" && a.LogURL == "" {
+		return ContainerLogs{}, false
+	}
+	id := a.ContainerID
+	if id == "" {
+		id = containerIDFromLogURL(a.LogURL)
+	}
+	return ContainerLogs{
+		ID:              id,
+		NodeHTTPAddress: a.NodeHTTPAddress,
+		State:           a.State,
+		Diagnostics:     strings.TrimSpace(a.Diagnostics),
+		LogURL:          a.LogURL,
+	}, id != "" || user != ""
+}
+
+func (c *Client) fetchAttempts(ctx context.Context, base, appID string) ([]appAttempt, error) {
 	var raw struct {
 		AppAttempts struct {
 			AppAttempt []struct {
-				ID flexibleString `json:"id"`
+				ID              flexibleString `json:"id"`
+				AppAttemptID    flexibleString `json:"appAttemptId"`
+				ContainerID     string         `json:"containerId"`
+				NodeHTTPAddress string         `json:"nodeHttpAddress"`
+				LogURL          string         `json:"logUrl"`
+				LogsLink        string         `json:"logsLink"`
+				State           string         `json:"appAttemptState"`
+				Diagnostics     string         `json:"diagnostics"`
 			} `json:"appAttempt"`
 		} `json:"appAttempts"`
 	}
 	if err := c.getJSON(ctx, base+"/ws/v1/cluster/apps/"+url.PathEscape(appID)+"/appattempts", &raw); err != nil {
 		return nil, err
 	}
-	out := make([]string, 0, len(raw.AppAttempts.AppAttempt))
+	out := make([]appAttempt, 0, len(raw.AppAttempts.AppAttempt))
 	for _, a := range raw.AppAttempts.AppAttempt {
-		if string(a.ID) != "" {
-			out = append(out, string(a.ID))
+		id := string(a.AppAttemptID)
+		if id == "" {
+			id = normalizeAttemptID(appID, string(a.ID))
 		}
+		if id == "" {
+			continue
+		}
+		logURL := a.LogURL
+		if logURL == "" {
+			logURL = a.LogsLink
+		}
+		out = append(out, appAttempt{
+			ID:              id,
+			ContainerID:     a.ContainerID,
+			NodeHTTPAddress: a.NodeHTTPAddress,
+			LogURL:          logURL,
+			State:           a.State,
+			Diagnostics:     a.Diagnostics,
+		})
 	}
 	return out, nil
 }
 
-func (c *Client) fetchContainers(ctx context.Context, base, appID, attemptID string) ([]ContainerLogs, error) {
+func (c *Client) fetchContainers(ctx context.Context, base, appID string, attempt appAttempt) ([]ContainerLogs, error) {
 	var raw struct {
 		Containers struct {
 			Container []struct {
@@ -278,7 +371,7 @@ func (c *Client) fetchContainers(ctx context.Context, base, appID, attemptID str
 			} `json:"container"`
 		} `json:"containers"`
 	}
-	u := base + "/ws/v1/cluster/apps/" + url.PathEscape(appID) + "/appattempts/" + url.PathEscape(attemptID) + "/containers"
+	u := base + "/ws/v1/cluster/apps/" + url.PathEscape(appID) + "/appattempts/" + url.PathEscape(attempt.ID) + "/containers"
 	if err := c.getJSON(ctx, u, &raw); err != nil {
 		return nil, err
 	}
@@ -298,6 +391,27 @@ func (c *Client) fetchContainers(ctx context.Context, base, appID, attemptID str
 		})
 	}
 	return out, nil
+}
+
+func normalizeAttemptID(appID, attemptID string) string {
+	attemptID = strings.TrimSpace(attemptID)
+	if attemptID == "" || strings.HasPrefix(attemptID, "appattempt_") {
+		return attemptID
+	}
+	n, err := strconv.Atoi(attemptID)
+	if err != nil {
+		return attemptID
+	}
+	const prefix = "application_"
+	if !strings.HasPrefix(appID, prefix) {
+		return attemptID
+	}
+	rest := strings.TrimPrefix(appID, prefix)
+	parts := strings.SplitN(rest, "_", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return attemptID
+	}
+	return fmt.Sprintf("appattempt_%s_%s_%06d", parts[0], parts[1], n)
 }
 
 func (c *Client) getJSON(ctx context.Context, u string, out any) error {
@@ -365,9 +479,16 @@ func (s *flexibleString) UnmarshalJSON(b []byte) error {
 }
 
 func (c *Client) fetchLogSnippets(ctx context.Context, logURL string, types []string, maxBytes int64) map[string]string {
-	out := map[string]string{}
+	return c.fetchLogSnippetsFromURLs(ctx, logURL, nil, types, maxBytes)
+}
+
+func (c *Client) fetchLogSnippetsFromURLs(ctx context.Context, logURL string, direct map[string]string, types []string, maxBytes int64) LogSnippets {
+	out := LogSnippets{}
 	for _, typ := range types {
-		u := appendLogType(logURL, typ)
+		u := direct[typ]
+		if u == "" {
+			u = appendLogType(logURL, typ)
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
 			continue
@@ -381,12 +502,12 @@ func (c *Client) fetchLogSnippets(ctx context.Context, logURL string, types []st
 			if resp.StatusCode != http.StatusOK {
 				return
 			}
-			b, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+			b, err := io.ReadAll(io.LimitReader(resp.Body, logReadLimit(maxBytes)))
 			if err != nil {
 				return
 			}
-			s := string(b)
-			if int64(len(b)) > maxBytes {
+			s := extractYARNLogText(string(b))
+			if int64(len(s)) > maxBytes {
 				s = s[:maxBytes] + "\n...(truncated)"
 			}
 			out[typ] = s
@@ -394,6 +515,68 @@ func (c *Client) fetchLogSnippets(ctx context.Context, logURL string, types []st
 	}
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+func logReadLimit(maxBytes int64) int64 {
+	const htmlHeadroom = 64 << 10
+	const maxRead = 1 << 20
+	limit := maxBytes + htmlHeadroom + 1
+	if limit > maxRead {
+		return maxRead
+	}
+	if limit < maxBytes+1 {
+		return maxBytes + 1
+	}
+	return limit
+}
+
+var preBlockRE = regexp.MustCompile(`(?is)<pre[^>]*>(.*?)</pre>`)
+
+func extractYARNLogText(body string) string {
+	matches := preBlockRE.FindAllStringSubmatch(body, -1)
+	if len(matches) == 0 {
+		return body
+	}
+	parts := make([]string, 0, len(matches))
+	for _, match := range matches {
+		parts = append(parts, strings.TrimSpace(htmlUnescape(match[1])))
+	}
+	return strings.Join(parts, "\n")
+}
+
+func normalizeLogTypes(types []string) []string {
+	if len(types) == 0 {
+		return []string{"stderr", "stdout", "syslog"}
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(types))
+	var add func(string)
+	add = func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if value == "gc" {
+			for _, gc := range []string{"gc.log.0.current", "gc.log.1.current", "gc.log"} {
+				add(gc)
+			}
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	for _, typ := range types {
+		for _, part := range strings.Split(typ, ",") {
+			add(part)
+		}
+	}
+	if len(out) == 0 {
+		return []string{"stderr", "stdout", "syslog"}
 	}
 	return out
 }
@@ -407,9 +590,9 @@ func appendLogType(logURL, typ string) string {
 	return u.String()
 }
 
-func normalizeLogURL(base, user, containerID, nodeHTTPAddress, existing string) string {
+func normalizeContainerLogURL(base, user, containerID, nodeHTTPAddress, existing string) string {
 	if existing != "" {
-		return existing
+		return logDirectoryURL(existing)
 	}
 	if base == "" || user == "" || containerID == "" || nodeHTTPAddress == "" {
 		return ""
@@ -433,4 +616,344 @@ func normalizeLogURL(base, user, containerID, nodeHTTPAddress, existing string) 
 	}
 	u.RawQuery = q.Encode()
 	return u.String()
+}
+
+func (c *Client) fetchExecutorLogs(ctx context.Context, base string, app Application, appID string, opts Options) ([]ContainerLogs, []string) {
+	executorID := strings.TrimSpace(opts.ExecutorID)
+	if executorID == "" {
+		return nil, nil
+	}
+	uiURL := sparkUIBaseURL(base, appID, app.TrackingURL)
+	endpoint := strings.TrimRight(uiURL, "/") + "/api/v1/applications/" + url.PathEscape(appID) + "/executors"
+	var raw []struct {
+		ID           flexibleString    `json:"id"`
+		HostPort     string            `json:"hostPort"`
+		ExecutorLogs map[string]string `json:"executorLogs"`
+	}
+	if err := c.getJSON(ctx, endpoint, &raw); err != nil {
+		return nil, []string{fmt.Sprintf("spark executor logs unavailable for executor %s: %v", executorID, err)}
+	}
+	for _, ex := range raw {
+		if string(ex.ID) != executorID {
+			continue
+		}
+		direct := make(map[string]string, len(ex.ExecutorLogs))
+		for typ, logURL := range ex.ExecutorLogs {
+			if normalized := normalizeLogFileURL(base, logURL); normalized != "" {
+				direct[typ] = normalized
+			}
+		}
+		logDir := firstLogDirectory(direct)
+		if logDir == "" {
+			return nil, []string{fmt.Sprintf("spark executor %s has no executorLogs URLs", executorID)}
+		}
+		logs := LogSnippets(nil)
+		if opts.MaxLogBytes > 0 {
+			logs = c.fetchLogSnippetsFromURLs(ctx, logDir, direct, opts.LogTypes, opts.MaxLogBytes)
+		}
+		return []ContainerLogs{{
+			ID:              containerIDFromLogURL(logDir),
+			SparkExecutorID: executorID,
+			NodeHTTPAddress: ex.HostPort,
+			LogURL:          logDir,
+			Logs:            logs,
+			LogFindings:     analyzeLogFindings(logs),
+		}}, nil
+	}
+	return nil, []string{fmt.Sprintf("spark executor %s not found in Spark UI executors API", executorID)}
+}
+
+func firstLogDirectory(logs map[string]string) string {
+	names := []string{"stderr", "stdout", "syslog"}
+	for _, name := range names {
+		if u := logs[name]; u != "" {
+			return logDirectoryURL(u)
+		}
+	}
+	for _, u := range logs {
+		if u != "" {
+			return logDirectoryURL(u)
+		}
+	}
+	return ""
+}
+
+func normalizeLogFileURL(base, raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "/containerlogs/") {
+		return raw
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	containerID, user, logType := containerLogParts(parsed.Path)
+	if containerID == "" || user == "" {
+		return raw
+	}
+	nodeHTTPAddress := parsed.Host
+	dir := normalizeContainerLogURL(base, user, containerID, nodeHTTPAddress, "")
+	if dir == "" {
+		return raw
+	}
+	if logType == "" {
+		return dir
+	}
+	return appendLogType(dir, logType)
+}
+
+func logDirectoryURL(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return strings.TrimRight(raw, "/")
+	}
+	containerID, user, _ := logURLParts(parsed.Path)
+	if containerID == "" || user == "" {
+		return strings.TrimRight(raw, "/")
+	}
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	for i := range segments {
+		if segments[i] == user {
+			parsed.Path = "/" + path.Join(segments[:i+1]...)
+			parsed.RawQuery = ""
+			parsed.Fragment = ""
+			return strings.TrimRight(parsed.String(), "/")
+		}
+	}
+	return strings.TrimRight(raw, "/")
+}
+
+func containerIDFromLogURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	id, _, _ := logURLParts(u.Path)
+	return id
+}
+
+func logURLParts(p string) (containerID, user, logType string) {
+	if id, usr, typ := containerLogParts(p); id != "" {
+		return id, usr, typ
+	}
+	return jobHistoryLogParts(p)
+}
+
+func containerLogParts(p string) (containerID, user, logType string) {
+	parts := strings.Split(strings.Trim(p, "/"), "/")
+	for i := 0; i < len(parts); i++ {
+		if parts[i] != "containerlogs" || i+2 >= len(parts) {
+			continue
+		}
+		containerID = parts[i+1]
+		user = parts[i+2]
+		if i+3 < len(parts) {
+			logType = parts[i+3]
+		}
+		return containerID, user, logType
+	}
+	return "", "", ""
+}
+
+func jobHistoryLogParts(p string) (containerID, user, logType string) {
+	parts := strings.Split(strings.Trim(p, "/"), "/")
+	for i := 0; i < len(parts); i++ {
+		if parts[i] != "logs" {
+			continue
+		}
+		for j := i + 1; j < len(parts); j++ {
+			if strings.HasPrefix(parts[j], "container_") {
+				containerID = parts[j]
+				next := j + 1
+				if next < len(parts) && parts[next] == containerID {
+					next++
+				}
+				if next < len(parts) {
+					user = parts[next]
+				}
+				if next+1 < len(parts) {
+					logType = parts[next+1]
+				}
+				return containerID, user, logType
+			}
+		}
+	}
+	return "", "", ""
+}
+
+var hrefLogRE = regexp.MustCompile(`(?i)href=['"]([^'"]*(?:containerlogs|/logs/)[^'"]*)['"]`)
+
+func (c *Client) fetchHTMLContainers(ctx context.Context, base, appID, user string, attempts []appAttempt, limit int) ([]ContainerLogs, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	pages := []string{strings.TrimRight(base, "/") + "/cluster/app/" + url.PathEscape(appID)}
+	for _, attempt := range attempts {
+		if attempt.ID != "" {
+			pages = append(pages, strings.TrimRight(base, "/")+"/cluster/appattempt/"+url.PathEscape(attempt.ID))
+		}
+	}
+	var out []ContainerLogs
+	var lastErr error
+	for _, pageURL := range pages {
+		containers, err := c.fetchHTMLContainersFromPage(ctx, base, pageURL, user)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		for _, container := range containers {
+			appendContainer(&out, container, limit)
+			if len(out) >= limit {
+				return out, nil
+			}
+		}
+	}
+	if len(out) > 0 {
+		return out, nil
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("yarn: no container log links found in YARN HTML pages for %s", appID)
+}
+
+func (c *Client) fetchHTMLContainersFromPage(ctx context.Context, base, pageURL, defaultUser string) ([]ContainerLogs, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("yarn: GET %s: status %d", pageURL, resp.StatusCode)
+	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return nil, err
+	}
+	page, _ := url.Parse(pageURL)
+	matches := hrefLogRE.FindAllStringSubmatch(string(b), -1)
+	out := make([]ContainerLogs, 0, len(matches))
+	for _, match := range matches {
+		rawHref := strings.ReplaceAll(match[1], `\/`, `/`)
+		href := htmlUnescape(rawHref)
+		resolved := resolveURL(page, href)
+		id, parsedUser, _ := logURLPartsFromString(resolved)
+		if id == "" {
+			continue
+		}
+		if parsedUser == "" {
+			parsedUser = defaultUser
+		}
+		out = append(out, ContainerLogs{
+			ID:              id,
+			NodeHTTPAddress: nodeAddressFromLogURL(resolved),
+			LogURL:          logDirectoryURL(resolved),
+		})
+		if parsedUser != "" && !strings.Contains(out[len(out)-1].LogURL, "/"+parsedUser) {
+			out[len(out)-1].LogURL = normalizeContainerLogURL(base, parsedUser, id, out[len(out)-1].NodeHTTPAddress, out[len(out)-1].LogURL)
+		}
+	}
+	return out, nil
+}
+
+func htmlUnescape(s string) string {
+	replacer := strings.NewReplacer("&amp;", "&", "&lt;", "<", "&gt;", ">", "&quot;", `"`, "&#39;", "'")
+	return replacer.Replace(s)
+}
+
+func resolveURL(base *url.URL, href string) string {
+	u, err := url.Parse(href)
+	if err != nil {
+		return href
+	}
+	if base != nil {
+		return base.ResolveReference(u).String()
+	}
+	return u.String()
+}
+
+func logURLPartsFromString(raw string) (containerID, user, logType string) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", "", ""
+	}
+	return logURLParts(u.Path)
+}
+
+func nodeAddressFromLogURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	q := u.Query()
+	if host := q.Get("host"); host != "" {
+		if port := q.Get("port"); port != "" {
+			return net.JoinHostPort(host, port)
+		}
+		return host
+	}
+	if strings.Contains(u.Path, "/jobhistory/logs/") {
+		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+		for i := 0; i+1 < len(parts); i++ {
+			if parts[i] == "logs" {
+				return parts[i+1]
+			}
+		}
+	}
+	return ""
+}
+
+func appendContainer(containers *[]ContainerLogs, container ContainerLogs, limit int) {
+	if limit <= 0 || len(*containers) >= limit {
+		return
+	}
+	for _, existing := range *containers {
+		if existing.ID != "" && existing.ID == container.ID {
+			return
+		}
+		if existing.LogURL != "" && existing.LogURL == container.LogURL {
+			return
+		}
+	}
+	*containers = append(*containers, container)
+}
+
+func analyzeLogFindings(logs LogSnippets) []LogFinding {
+	if len(logs) == 0 {
+		return nil
+	}
+	for typ, body := range logs {
+		if evidence := firstMatchingLine(body, []string{"Full GC", "Pause Full", "Pause Young (Concurrent Start)"}); evidence != "" {
+			return []LogFinding{{
+				Type:       "full_gc",
+				Severity:   "critical",
+				LogType:    typ,
+				Evidence:   evidence,
+				Suggestion: "Executor log contains Full GC evidence. Treat heartbeat timeout / executor lost symptoms as likely JVM GC stall first; inspect executor memory, memoryOverhead, GC options, and object pressure.",
+			}}
+		}
+	}
+	return nil
+}
+
+func firstMatchingLine(body string, needles []string) string {
+	for _, line := range strings.Split(body, "\n") {
+		for _, needle := range needles {
+			if strings.Contains(line, needle) {
+				line = strings.TrimSpace(line)
+				if len(line) > 300 {
+					line = line[:300] + "..."
+				}
+				return line
+			}
+		}
+	}
+	return ""
 }

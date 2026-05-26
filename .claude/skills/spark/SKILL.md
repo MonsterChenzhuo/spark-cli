@@ -99,7 +99,9 @@ Errors go to **stderr** as `{"error": {"code": "...", "message": "...", "hint": 
 - `--no-cache` — bypass the parsed-application cache for this invocation (no read, no write)
 - `--shs-timeout <duration>` — HTTP timeout for `shs://` log-dirs (default `5m`;生产 zip 几个 GB 是常态,失败时 hint 直接告知此参数)
 - `--yarn-base-urls <url,url>` — YARN RM/gateway base URLs, e.g. `http://host/gateway/prod/yarn`; also available as `SPARK_CLI_YARN_BASE_URLS` / yaml `yarn.base_urls`.
-- `--yarn-log-bytes <N>` — for `yarn-logs`, fetch at most N bytes per log type (`stderr`, `stdout`, `syslog`). `diagnose` keeps logs out of the envelope and emits URLs only.
+- `--yarn-log-bytes <N>` — for `yarn-logs`, fetch at most N bytes per log type (`stderr`, `stdout`, `syslog` by default). `diagnose` keeps logs out of the envelope and emits URLs only.
+- `--yarn-log-types <type,type>` — for `yarn-logs`, select log files such as `stderr,gc.log.0.current`; `gc` expands common GC log names. Use with `--executor-id <id>` when heartbeat timeout may actually be executor Full GC.
+- `--executor-id <id>` — for `driver-thread-dump`, targets Spark executor threads (empty defaults to driver); for `yarn-logs`, filters through Spark UI executors API and fetches that executor's container logs when available.
 - `--sql-detail truncate|full|none` — `sql_executions` 中 description 的呈现:**默认 truncate**(前 500 个 rune,过长加 `...(truncated, total <N> chars)` 标记),`full` 还原原始 SQL,`none` 整段 omit。也可用 `SPARK_CLI_SQL_DETAIL` 环境变量 / yaml `sql.detail` 覆盖。
 - `--no-progress` — 不打 SHS zip 下载进度提示(优先级高于 SPARK_CLI_QUIET 与 TTY 检测)。
 - SHS zip 持久化:同一 appID 的 zip 在 `<cache_dir>/shs/<host>/<appID>_<lastUpdated>.zip` 复用,attempt 更新时旧文件自动 sweep;`--no-cache` 旁路。
@@ -110,7 +112,8 @@ Errors go to **stderr** as `{"error": {"code": "...", "message": "...", "hint": 
 - `spark-cli config show [--format json]` — print effective configuration with source labels (`file` / `env` / `default` / `flag`). JSON 形态适合 agent 一次拿到完整状态,而不必分别读 yaml + env 比对生效值。
 - `spark-cli config cluster add <name> --log-dirs shs://... --yarn-base-urls http://... [--shs-timeout 5m] [--activate]` — 把 Spark History Server 与 YARN gateway 作为同一个集群 profile 写入本地配置;排查多集群问题时优先使用,避免 SHS / YARN URL 串集群。
 - `spark-cli config cluster list [--format json]` — 查看本地已沉淀的集群和当前 `active_cluster`。
-- `spark-cli yarn-logs <appId> --top 5` — fetch YARN application diagnostics, container log URLs, and bounded stderr/stdout/syslog snippets. Use when EventLog findings point to executor supply, failed tasks without enough evidence, AM/driver failure, or when `diagnose.yarn.warnings` says YARN was unreachable.
+- `spark-cli yarn-logs <appId> --top 5` — fetch YARN application diagnostics, attempt/container log URLs, and bounded stderr/stdout/syslog snippets. It normalizes numeric appAttempt ids before calling the containers API and falls back to appAttempt metadata / YARN HTML log links when that API returns 400 or `{}`.
+- `spark-cli yarn-logs <appId> --executor-id <id> --yarn-log-types stderr,gc --yarn-log-bytes 131072` — fetch a specific executor's stderr and common GC logs. Read `containers[].log_findings`; `type=full_gc` is strong evidence that heartbeat timeout / executor lost symptoms were caused by JVM Full GC stalls.
 - `spark-cli cache list [--format json]` — 列所有 cached parsed application + SHS zip(按 size 降序),应用 cache hit 慢于预期时先看这个。
 - `spark-cli cache clear [--app <id>] [--dry-run]` — 删全部 cache 或只删指定 app 的 entry;`--dry-run` 先看会删什么再确认。
 

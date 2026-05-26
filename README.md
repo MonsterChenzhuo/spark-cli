@@ -154,10 +154,27 @@ spark-cli yarn-logs application_1772605260987_20682 \
   --top 5 --yarn-log-bytes 65536
 ```
 
-`yarn-logs` uses RM REST to find the application user, attempts, and containers,
-then builds gateway URLs like
+`yarn-logs` uses RM REST to find the application user, attempts, and containers.
+When a gateway rejects `/appattempts/<id>/containers` with 400 or returns an
+empty container payload, it falls back to appAttempt metadata and YARN HTML log
+links. It then builds gateway URLs like
 `/nodemanager/node/containerlogs/<container>/<user>?scheme=http&host=<nm>&port=<port>`
 and fetches the first N bytes of `stderr` / `stdout` / `syslog`.
+
+To pull a specific Spark executor and GC log files:
+
+```bash
+spark-cli yarn-logs application_1772605260987_20682 \
+  --yarn-base-urls http://203.123.81.20:7765/gateway/hadoop-prod/yarn \
+  --executor-id 7 \
+  --yarn-log-types stderr,gc \
+  --yarn-log-bytes 131072
+```
+
+For `yarn-logs`, `--executor-id` uses Spark UI's executors REST endpoint when
+available and returns `spark_executor_id` plus the container log URL. `gc` in
+`--yarn-log-types` expands to common GC log names such as `gc.log.0.current`;
+detected Full GC evidence is surfaced as `log_findings`.
 
 To inspect driver-side stalls before jobs are submitted, fetch Spark UI thread
 dumps through the YARN tracking/proxy URL:
@@ -216,7 +233,7 @@ mismatch, write errors) degrade silently to "miss + reparse".
 
 All accept `--top N`, `--format json|table|markdown`, `--dry-run`, `--log-dirs`,
 `--cluster`, `--cache-dir`, `--no-cache`, `--shs-timeout`, `--no-progress`,
-`--yarn-base-urls`, `--yarn-log-bytes`, `--executor-id`, `--sql-detail truncate|full|none` (default `truncate` — first 500 runes of the
+`--yarn-base-urls`, `--yarn-log-bytes`, `--yarn-log-types`, `--executor-id`, `--sql-detail truncate|full|none` (default `truncate` — first 500 runes of the
 SQL description with a `...(truncated, total <N> chars)` marker; `full` keeps
 the original; `none` omits the entire `sql_executions` map).
 

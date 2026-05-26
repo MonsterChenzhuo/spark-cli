@@ -170,6 +170,16 @@ HDFS 用户名优先级 (高 → 低): `--hdfs-user` flag → `SPARK_CLI_HDFS_US
 - **磁盘 zip 缓存绝不让 CLI 失败**:`openCachedZip` 损坏 → `os.Remove` + fallback 下载;落盘失败 → 结构化 `wrapTimeout`-style 报错;sweep 失败一律忽略。`Close()` 不删 cache 路径(由 sweep 管),只删 tmp 路径。改造时新增的 cache 操作都要遵守这条容错纪律。
 - `NewSHS` 签名是 `(base, timeout, opts SHSOptions)`,**不再读环境变量**。新增 SHS 调用点要从 `cmd/scenarios.runner` 计算后通过 opts 注入,免得行为分散。SHS 单测显式传 `SHSOptions{Quiet: true}`,不依赖全局 env state。
 
+## YARN 日志与 executor GC
+
+`internal/yarn.Client` 同时服务 `diagnose` 顶层 `yarn` payload、`yarn-logs` 和 `driver-thread-dump`。YARN REST / HTML 在不同 gateway 后形态不稳定,这里的容错规则是用户可见契约:
+
+- `appattempts` JSON 可能同时返回数字 `id: 2` 和完整 `appAttemptId: appattempt_..._000002`。请求 containers API 时必须优先用完整 `appAttemptId`;只有缺失时才由 `application_<ts>_<seq>` + 数字 id 拼成 `appattempt_<ts>_<seq>_<attempt:06d>`。直接拼 `/appattempts/2/containers` 会被 Hadoop 以 `Invalid AppAttemptId prefix` 返回 400。
+- 某些 gateway 对 `/ws/v1/cluster/apps/<app>/appattempts/<attempt>/containers` 返回 400 或 `{}`。`yarn-logs` 必须回退到 appAttempt metadata(`containerId` / `logsLink`)和 YARN HTML (`/cluster/app/<app>`、`/cluster/appattempt/<attempt>`)里的 `containerlogs` / `jobhistory/logs` 链接。不要因为 containers API 失败就让整个命令失败;把 REST 失败写入 `warnings`,但尽量返回能拿到的 AM/container log URL。
+- `--yarn-log-types` 控制 `yarn-logs` 抓取的文件,默认 `stderr,stdout,syslog`;`gc` 是别名,展开成 `gc.log.0.current,gc.log.1.current,gc.log`。YARN / JobHistory 日志页常返回 HTML 包 `<pre>`,抓日志时要抽出 `<pre>` 内容后再按 `--yarn-log-bytes` 截断,不要把 HTML 头当日志正文返回给 agent。
+- `--executor-id` 对 `driver-thread-dump` 仍默认 driver;对 `yarn-logs` 表示按 Spark executor id 过滤。实现优先走 Spark UI `/api/v1/applications/<app>/executors` 的 `executorLogs` 映射,并把输出写到 `containers[].spark_executor_id`。如果这个 API 不可用,保留 warning 并退回普通 attempt/container 列表。
+- `containers[].log_findings` 是从日志片段里提取的轻量诊断信号。目前 `full_gc` 来自 `Full GC` / `Pause Full` 等 GC 日志证据,用于补 EventLog 覆盖不到的场景:第一次 attempt 没 EventLog、driver 只看到 heartbeat timeout,但 executor `gc.log.*` 显示 Full GC 卡死。新增日志规则时保持 evidence 短小,不要把整段日志复制进 JSON。
+
 ## Application 缓存
 
 `internal/cache` 把首次解析得到的 `*model.Application` 用 `gob+zstd` 序列化到磁盘,让同一 appId 的后续命令绕过 `Open + Decode + Aggregate`,目标是把多 GB EventLog 的二次访问从秒级降到 <300 ms。

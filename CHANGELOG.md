@@ -13,7 +13,9 @@
 
 - **New `spark-cli driver-thread-dump <appId>`** fetches Spark UI thread dumps through the YARN RM `trackingUrl` or gateway `/proxy/<appId>` path, returning `state_counts` plus raw thread stacks. This covers driver-side stalls before any job/stage is submitted without hand-written curl calls to `/executors/driver/threads`.
 - **`driver-thread-dump` now emits an automatic summary and `--thread-summary-only`**. Before raw threads, output includes `diagnosis`, `main_thread`, and `interesting_threads`, classifying common shapes such as driver waiting in `runJob/collect`, Spark SQL planning / `CollapseProject`, Paimon schema validation, and executor projection/codegen/shuffle write. `--thread-summary-only` omits huge raw stacks for chat/agent workflows.
-- **YARN appAttempt ids now accept numeric JSON**. Some RM REST responses return `"id": 1` instead of a string; `yarn-logs` now handles string/number/null safely.
+- **YARN appAttempt ids now normalize numeric JSON before calling containers APIs**. Some RM REST responses return `"id": 1` plus `"appAttemptId": "appattempt_..."`; `yarn-logs` now calls `/appattempts/appattempt_.../containers` instead of the invalid `/appattempts/1/containers` path that gateways reject with 400.
+- **`yarn-logs` falls back to appAttempt metadata and YARN HTML log links** when `/appattempts/<attempt>/containers` returns 400 or an empty payload, so AM/container log URLs are still listed behind gateways that do not expose container REST payloads.
+- **`yarn-logs` can fetch specific executor logs and GC files** via `--executor-id` and new `--yarn-log-types` (including `gc` alias for common GC log names). The output adds `spark_executor_id` and `log_findings`, surfacing Full GC evidence from `gc.log.*` snippets for heartbeat-timeout investigations.
 - **YARN application payload now includes `tracking_url` / `am_container_logs`**, exposing the Spark UI and AM container log entry points in diagnostics output.
 
 ### Rounds 4-8 polish (same 2026-05-02 dogfooding session)

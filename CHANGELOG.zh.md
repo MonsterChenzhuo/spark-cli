@@ -13,7 +13,9 @@
 
 - **新增 `spark-cli driver-thread-dump <appId>`**:通过 YARN RM 的 `trackingUrl` 或 gateway `/proxy/<appId>` 访问 Spark UI REST API,直接拉取 driver 或指定 executor 的 thread dump,输出 `state_counts` 和原始线程栈。用于定位 job/stage 生成前的 driver 端卡顿,不再需要手工 curl `/executors/driver/threads`。
 - **`driver-thread-dump` 新增自动摘要与 `--thread-summary-only`**:输出 raw threads 前先给 `diagnosis`、`main_thread`、`interesting_threads`,自动识别 driver 等 `runJob/collect`、Spark SQL planning / `CollapseProject`、Paimon schema validation、executor projection/codegen/shuffle 写入等常见形态;`--thread-summary-only` 可省掉巨大原始栈,避免聊天窗口被 thread dump 淹没。
-- **YARN appAttempt id 兼容数字型 JSON**:部分 RM REST 返回 `"id": 1` 而不是字符串,此前 `yarn-logs` 会解码失败;现在 string/number/null 都能安全处理。
+- **YARN appAttempt id 会在请求 containers API 前归一化**:部分 RM REST 返回 `"id": 1` 同时带 `"appAttemptId": "appattempt_..."`;`yarn-logs` 现在会请求 `/appattempts/appattempt_.../containers`,不再拼出会被 gateway 以 400 拒绝的 `/appattempts/1/containers`。
+- **`yarn-logs` 在 containers API 400 或空 payload 时回退到 appAttempt metadata 与 YARN HTML 日志链接**:即使 gateway 不暴露 container REST payload,仍能列出 AM/container log URL。
+- **`yarn-logs` 支持按 executor 拉日志和 GC 文件**:新增 `--yarn-log-types`,可配合 `--executor-id` 拉指定 Spark executor 的 `stderr` / `gc.log.*`;`gc` 会展开成常见 GC 日志名。输出新增 `spark_executor_id` 与 `log_findings`,能把 `gc.log.*` 片段里的 Full GC 证据直接标出来,用于 heartbeat timeout 排查。
 - **YARN application payload 暴露 `tracking_url` / `am_container_logs`**:诊断输出里能直接看到 Spark UI 和 AM container log 入口。
 
 ### Round 4-8 打磨(同一 2026-05-02 dogfooding 会话内继续迭代)

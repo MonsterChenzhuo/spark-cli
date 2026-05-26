@@ -41,6 +41,7 @@ func buildOpts(scenario, appID string, cc *cobra.Command) Options {
 		LogDirs:           splitLogDirs(state.LogDirs),
 		YARNBaseURLs:      splitLogDirs(state.YARNBaseURLs),
 		YARNLogBytes:      state.YARNLogBytes,
+		YARNLogTypes:      splitLogDirs(state.YARNLogTypes),
 		ExecutorID:        state.ExecutorID,
 		ThreadSummaryOnly: state.ThreadSummaryOnly,
 		HDFSUser:          state.HDFSUser,
