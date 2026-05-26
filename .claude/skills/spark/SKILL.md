@@ -114,6 +114,7 @@ Errors go to **stderr** as `{"error": {"code": "...", "message": "...", "hint": 
 - `spark-cli config cluster list [--format json]` — 查看本地已沉淀的集群和当前 `active_cluster`。
 - `spark-cli yarn-logs <appId> --top 5` — fetch YARN application diagnostics, attempt/container log URLs, and bounded stderr/stdout/syslog snippets. It normalizes numeric appAttempt ids before calling the containers API and falls back to appAttempt metadata / YARN HTML log links when that API returns 400 or `{}`.
 - `spark-cli yarn-logs <appId> --executor-id <id> --yarn-log-types stderr,gc --yarn-log-bytes 131072` — fetch a specific executor's stderr and common GC logs. Read `containers[].log_findings`; `type=full_gc` is strong evidence that heartbeat timeout / executor lost symptoms were caused by JVM Full GC stalls.
+- `spark-cli self-update` — update the installed binary from the latest GitHub release after checksum verification. Use `--dry-run` to inspect the target asset first or `--version vX.Y.Z` to pin a release.
 - `spark-cli cache list [--format json]` — 列所有 cached parsed application + SHS zip(按 size 降序),应用 cache hit 慢于预期时先看这个。
 - `spark-cli cache clear [--app <id>] [--dry-run]` — 删全部 cache 或只删指定 app 的 entry;`--dry-run` 先看会删什么再确认。
 

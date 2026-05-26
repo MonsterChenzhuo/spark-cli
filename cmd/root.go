@@ -44,6 +44,7 @@ func buildRoot() *cobra.Command {
 	root := newRootCmd()
 	scenarios.Register(root)
 	root.AddCommand(newVersionCmd())
+	root.AddCommand(newSelfUpdateCmd())
 	root.AddCommand(configcmd.New())
 	root.AddCommand(cachecmd.New())
 	return root

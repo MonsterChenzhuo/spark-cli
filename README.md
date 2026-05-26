@@ -38,6 +38,17 @@ curl -fsSL https://raw.githubusercontent.com/MonsterChenzhuo/spark-cli/main/scri
 
 Supported envs: `VERSION`, `PREFIX`, `SKILL_DIR`, `NO_SUDO`, `NO_SKILL`, `REPO`. See `scripts/install.sh` header for details.
 
+After `spark-cli` is installed, update the local binary in place with:
+
+```bash
+spark-cli self-update
+```
+
+Use `spark-cli self-update --dry-run` to see the release asset first, or
+`spark-cli self-update --version vX.Y.Z` to pin a release. If the installed
+binary lives in a protected directory such as `/usr/local/bin`, run the command
+with permission to write there or pass `--install-dir "$HOME/.local/bin"`.
+
 ### From source
 
 ```bash
@@ -229,6 +240,7 @@ mismatch, write errors) degrade silently to "miss + reparse".
 | `spark-cli config show [--format json]` | Print effective configuration (yaml / env / default sources) |
 | `spark-cli config cluster add <name>` / `config cluster list` | Persist and inspect named cluster profiles |
 | `spark-cli cache list` / `cache clear [--app <id>] [--dry-run]` | Inspect / prune the parsed-application + SHS zip caches |
+| `spark-cli self-update` (aliases `update`, `upgrade`) | Download the latest release binary, verify checksum, and replace the local executable |
 | `spark-cli version` (also `--version`) | Print spark-cli version |
 
 All accept `--top N`, `--format json|table|markdown`, `--dry-run`, `--log-dirs`,

@@ -8,6 +8,7 @@
 - **New `--cluster <name>` root flag** selects a configured cluster for one invocation. `active_cluster` is applied by default; explicit `--log-dirs`, `--yarn-base-urls`, and `--shs-timeout` flags still override after cluster selection.
 - **New `spark-cli config cluster add|list` commands** write and inspect local cluster profiles. `config cluster add prod --log-dirs shs://... --yarn-base-urls http://... --activate` creates or updates a profile and can make it the default.
 - **`spark-cli config show` now reports `active_cluster`, `selected_cluster`, and `clusters`** in both text and JSON formats, so agent workflows can see which profile produced the effective `log_dirs` / `yarn.base_urls`.
+- **New `spark-cli self-update` command** downloads the latest GitHub release archive for the current OS/arch, verifies `checksums.txt`, and replaces the local binary. It also supports `update` / `upgrade` aliases, `--dry-run`, `--version`, and `--install-dir`.
 
 ### YARN / Spark UI diagnostics
 

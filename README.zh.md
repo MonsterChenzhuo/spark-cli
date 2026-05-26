@@ -38,6 +38,17 @@ curl -fsSL https://raw.githubusercontent.com/MonsterChenzhuo/spark-cli/main/scri
 
 支持的环境变量：`VERSION`、`PREFIX`、`SKILL_DIR`、`NO_SUDO`、`NO_SKILL`、`REPO`，详见 `scripts/install.sh` 头部注释。
 
+已安装后,可以直接用 CLI 更新本机二进制:
+
+```bash
+spark-cli self-update
+```
+
+`spark-cli self-update --dry-run` 可先查看会下载哪个 release 包;
+`spark-cli self-update --version vX.Y.Z` 可固定版本。如果当前二进制在
+`/usr/local/bin` 这类受保护目录,需要用有写权限的方式运行,或传
+`--install-dir "$HOME/.local/bin"` 安装到可写目录。
+
 ### 源码安装
 
 ```bash
@@ -218,6 +229,7 @@ Spark UI 原始线程栈;加 `--thread-summary-only` 时只输出摘要,适合 a
 | `spark-cli config show [--format json]` | 打印当前生效配置(yaml / env / default 来源标注) |
 | `spark-cli config cluster add <name>` / `config cluster list` | 录入 / 查看本地命名集群配置 |
 | `spark-cli cache list` / `cache clear [--app <id>] [--dry-run]` | 查看 / 清理本地的应用 + SHS zip 缓存 |
+| `spark-cli self-update` (别名 `update`、`upgrade`) | 下载最新 release 二进制、校验 checksum 并替换本机可执行文件 |
 | `spark-cli version` (与 `--version`) | 打印 spark-cli 版本 |
 
 均支持 `--top N`、`--format json|table|markdown`、`--dry-run`、`--log-dirs`、

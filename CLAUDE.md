@@ -131,6 +131,8 @@ go run . app-summary application_1_1 --log-dirs file:///tmp/spark-cli-smoke --fo
 
 `scripts/install.sh` 通过 GitHub `releases/latest` redirect 解析最新 tag（API 限流时回落到 `/repos/.../releases/latest`），下载归档后用 `checksums.txt` 做 sha256 校验，再把 binary 装到 `PREFIX` (默认 `/usr/local/bin`，必要时 `sudo`)、把 skill 树镜像到 `SKILL_DIR` (默认 `~/.claude/skills/spark`)。环境变量：`VERSION` / `PREFIX` / `SKILL_DIR` / `NO_SUDO` / `NO_SKILL` / `REPO`，详见脚本头部注释。
 
+`spark-cli self-update` 是已安装用户的二进制自更新入口(alias:`update` / `upgrade`)。实现位于 `internal/selfupdate`,逻辑是解析 latest release → 下载 `spark-cli_<ver>_<os>_<arch>.tar.gz` + `checksums.txt` → SHA256 校验 → 解压 `spark-cli` → 用同目录临时文件 + `os.Rename` 替换当前 executable。它**只更新 binary**,不镜像 `.claude/skills/spark`;需要同步 skill 时仍用 `scripts/install.sh`。受保护目录(`/usr/local/bin`)无写权限时返回带 `sudo` / `--install-dir` 指引的错误。改这里时保留 `--dry-run` 和 `--version` 单测,避免真实网络依赖进入单测。
+
 ## HDFS 连接
 
 `internal/fs/hdfs.go` + `hdfs_conf.go` 走纯 Go 客户端 (`github.com/colinmarc/hdfs/v2`),**支持** Hadoop XML 配置和 HA NameService,**不支持** Kerberos / SASL / TLS。
