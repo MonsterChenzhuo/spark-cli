@@ -52,6 +52,17 @@ func newInitCmd() *cobra.Command {
 			}
 			b.WriteString("# 多个 log_dirs 按顺序探测,支持的 scheme:file:// / hdfs://nn:port/path / shs://host:port\n")
 			b.WriteString("\n")
+			b.WriteString("# 推荐用命名集群把 Spark History Server 和 YARN gateway 绑定在一起:\n")
+			b.WriteString("# active_cluster: prod\n")
+			b.WriteString("# clusters:\n")
+			b.WriteString("#   prod:\n")
+			b.WriteString("#     log_dirs:\n")
+			b.WriteString("#       - shs://history-server:18081\n")
+			b.WriteString("#     yarn:\n")
+			b.WriteString("#       base_urls:\n")
+			b.WriteString("#         - http://gateway/prod/yarn\n")
+			b.WriteString("# 也可以用 `spark-cli config cluster add prod --log-dirs shs://history-server:18081 --yarn-base-urls http://gateway/prod/yarn --activate` 录入。\n")
+			b.WriteString("\n")
 			b.WriteString("hdfs:\n")
 			fmt.Fprintf(&b, "  user: %s\n", huser)
 			if hconf != "" {

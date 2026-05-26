@@ -38,6 +38,15 @@ type YARNConfig struct {
 	BaseURLs []string `yaml:"base_urls"`
 }
 
+// ClusterConfig groups Spark EventLog and YARN endpoints that belong to the
+// same physical cluster. This prevents users from selecting SHS from one
+// cluster and YARN from another by accident.
+type ClusterConfig struct {
+	LogDirs []string   `yaml:"log_dirs"`
+	YARN    YARNConfig `yaml:"yarn"`
+	SHS     SHSConfig  `yaml:"shs"`
+}
+
 // SQLConfig 控制 SQL description 在 envelope 顶层 sql_executions map 中的呈现。
 // Detail 合法值:"truncate"(默认) / "full" / "none"。空值 + 非法值由 normalize
 // 落到 truncate。
@@ -46,13 +55,16 @@ type SQLConfig struct {
 }
 
 type Config struct {
-	LogDirs []string      `yaml:"log_dirs"`
-	HDFS    HDFSConfig    `yaml:"hdfs"`
-	Cache   CacheConfig   `yaml:"cache"`
-	SHS     SHSConfig     `yaml:"shs"`
-	YARN    YARNConfig    `yaml:"yarn"`
-	SQL     SQLConfig     `yaml:"sql"`
-	Timeout time.Duration `yaml:"timeout"`
+	LogDirs         []string                 `yaml:"log_dirs"`
+	ActiveCluster   string                   `yaml:"active_cluster"`
+	SelectedCluster string                   `yaml:"-"`
+	Clusters        map[string]ClusterConfig `yaml:"clusters"`
+	HDFS            HDFSConfig               `yaml:"hdfs"`
+	Cache           CacheConfig              `yaml:"cache"`
+	SHS             SHSConfig                `yaml:"shs"`
+	YARN            YARNConfig               `yaml:"yarn"`
+	SQL             SQLConfig                `yaml:"sql"`
+	Timeout         time.Duration            `yaml:"timeout"`
 }
 
 const (
@@ -89,10 +101,18 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	raw := struct {
-		LogDirs []string    `yaml:"log_dirs"`
-		HDFS    HDFSConfig  `yaml:"hdfs"`
-		Cache   CacheConfig `yaml:"cache"`
-		SHS     struct {
+		LogDirs       []string `yaml:"log_dirs"`
+		ActiveCluster string   `yaml:"active_cluster"`
+		Clusters      map[string]struct {
+			LogDirs []string   `yaml:"log_dirs"`
+			YARN    YARNConfig `yaml:"yarn"`
+			SHS     struct {
+				Timeout string `yaml:"timeout"`
+			} `yaml:"shs"`
+		} `yaml:"clusters"`
+		HDFS  HDFSConfig  `yaml:"hdfs"`
+		Cache CacheConfig `yaml:"cache"`
+		SHS   struct {
 			Timeout string `yaml:"timeout"`
 		} `yaml:"shs"`
 		YARN    YARNConfig `yaml:"yarn"`
@@ -103,9 +123,27 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	cfg.LogDirs = raw.LogDirs
+	cfg.ActiveCluster = strings.TrimSpace(raw.ActiveCluster)
 	cfg.HDFS = raw.HDFS
 	cfg.Cache = raw.Cache
 	cfg.YARN = raw.YARN
+	if len(raw.Clusters) > 0 {
+		cfg.Clusters = make(map[string]ClusterConfig, len(raw.Clusters))
+		for name, cluster := range raw.Clusters {
+			c := ClusterConfig{
+				LogDirs: cluster.LogDirs,
+				YARN:    cluster.YARN,
+			}
+			if cluster.SHS.Timeout != "" {
+				d, err := time.ParseDuration(cluster.SHS.Timeout)
+				if err != nil {
+					return nil, err
+				}
+				c.SHS.Timeout = d
+			}
+			cfg.Clusters[name] = c
+		}
+	}
 	if raw.SQL.Detail != "" {
 		cfg.SQL.Detail = raw.SQL.Detail
 	}
@@ -122,6 +160,11 @@ func Load() (*Config, error) {
 			return nil, err
 		}
 		cfg.SHS.Timeout = d
+	}
+	if cfg.ActiveCluster != "" {
+		if err := ApplyCluster(cfg, cfg.ActiveCluster); err != nil {
+			return nil, err
+		}
 	}
 	return cfg, nil
 }
@@ -193,6 +236,31 @@ func ApplyFlags(cfg *Config, f FlagOverrides) {
 	if f.Timeout > 0 {
 		cfg.Timeout = f.Timeout
 	}
+}
+
+// ApplyCluster overlays the named cluster profile on top of the current
+// effective config. Empty fields in the profile are ignored so global defaults
+// still apply.
+func ApplyCluster(cfg *Config, name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	cluster, ok := cfg.Clusters[name]
+	if !ok {
+		return errors.New("cluster " + name + " not found in config.clusters")
+	}
+	if len(cluster.LogDirs) > 0 {
+		cfg.LogDirs = append([]string(nil), cluster.LogDirs...)
+	}
+	if len(cluster.YARN.BaseURLs) > 0 {
+		cfg.YARN.BaseURLs = append([]string(nil), cluster.YARN.BaseURLs...)
+	}
+	if cluster.SHS.Timeout > 0 {
+		cfg.SHS.Timeout = cluster.SHS.Timeout
+	}
+	cfg.SelectedCluster = name
+	return nil
 }
 
 func (c *Config) Validate() error {

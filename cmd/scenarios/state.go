@@ -8,6 +8,7 @@ import (
 )
 
 type globalState struct {
+	Cluster           string
 	LogDirs           string
 	YARNBaseURLs      string
 	YARNLogBytes      int64
@@ -49,6 +50,7 @@ func ResetForTest() { state = defaultState() }
 
 // RegisterFlags binds the persistent flags spark-cli scenarios need on root.
 func RegisterFlags(root *cobra.Command) {
+	root.PersistentFlags().StringVar(&state.Cluster, "cluster", state.Cluster, "Named cluster profile from config.clusters to use")
 	root.PersistentFlags().StringVar(&state.LogDirs, "log-dirs", state.LogDirs, "Comma-separated EventLog sources: file:///path | hdfs://nn:port/path | shs://host:port (Spark History Server REST endpoint)")
 	root.PersistentFlags().StringVar(&state.YARNBaseURLs, "yarn-base-urls", state.YARNBaseURLs, "Comma-separated YARN RM/gateway base URLs, e.g. http://rm:8088 or http://host/gateway/prod/yarn")
 	root.PersistentFlags().Int64Var(&state.YARNLogBytes, "yarn-log-bytes", state.YARNLogBytes, "Max bytes per YARN container log type for yarn-logs; diagnose only emits log URLs")

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### 配置 / 命名集群
+
+- **新增命名集群配置**:可在 `config.yaml` 用 `active_cluster` 与 `clusters` 把 Spark History Server EventLog 来源和 YARN RM/gateway URL 沉淀为同一个本地集群单元,避免 SHS 与 YARN 手动分别传参时串到不同集群。
+- **新增 root flag `--cluster <name>`**:单次命令选择一个已配置集群。默认应用 `active_cluster`;显式 `--log-dirs`、`--yarn-base-urls`、`--shs-timeout` 仍会在集群选择后覆盖,适合临时调试。
+- **新增 `spark-cli config cluster add|list`**:用于写入和查看本地命名集群。示例:`config cluster add prod --log-dirs shs://... --yarn-base-urls http://... --activate` 会新增或更新 profile,并可设为默认集群。
+- **`spark-cli config show` 展示 `active_cluster`、`selected_cluster`、`clusters`**:text 与 JSON 两种格式都能看到当前有效配置来自哪个集群,便于 agent 流程确认 `log_dirs` / `yarn.base_urls` 的来源。
+
 ### YARN / Spark UI 诊断增强
 
 - **新增 `spark-cli driver-thread-dump <appId>`**:通过 YARN RM 的 `trackingUrl` 或 gateway `/proxy/<appId>` 访问 Spark UI REST API,直接拉取 driver 或指定 executor 的 thread dump,输出 `state_counts` 和原始线程栈。用于定位 job/stage 生成前的 driver 端卡顿,不再需要手工 curl `/executors/driver/threads`。

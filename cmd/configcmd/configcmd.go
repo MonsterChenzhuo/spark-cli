@@ -8,6 +8,7 @@ func New() *cobra.Command {
 		Use:   "config",
 		Short: "Manage spark-cli configuration",
 	}
+	cmd.AddCommand(newClusterCmd())
 	cmd.AddCommand(newInitCmd())
 	cmd.AddCommand(newShowCmd())
 	return cmd

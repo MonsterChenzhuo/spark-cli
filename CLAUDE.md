@@ -50,12 +50,32 @@ Envelope → output.Write{JSON|Table|Markdown}
 
 `runner.Run` 是唯一入口 (`cmd/scenarios/runner.go`);所有 cobra 命令通过 `register.go` 收敛到它。
 
+## 配置与命名集群
+
+生产环境里 Spark History Server 与 YARN gateway 必须按同一个物理集群成组配置,不要让用户分别手填 `--log-dirs shs://...` 和 `--yarn-base-urls http://...` 后意外串到不同集群。推荐配置形态:
+
+```yaml
+active_cluster: prod
+clusters:
+  prod:
+    log_dirs:
+      - shs://history.example.com:18081
+    yarn:
+      base_urls:
+        - http://203.123.81.20:7765/gateway/hadoop-prod/yarn
+    shs:
+      timeout: 5m
+```
+
+`config.Load()` 会先应用 `active_cluster`;运行时 `--cluster <name>` 在 env 之后、显式 `--log-dirs` / `--yarn-base-urls` 等 flag 之前应用。也就是说:默认用 `active_cluster`,临时切集群用 `--cluster prod`,而逐次调试仍可用具体 flag 最终覆盖。`spark-cli config cluster add <name> --log-dirs ... --yarn-base-urls ... [--shs-timeout 5m] [--activate]` 负责把 profile 写入本地 `config.yaml`;`spark-cli config cluster list [--format json]` 用于查看已沉淀的集群。
+
 ## 开发约定
 
 - **Go 1.22 锁定**: `go.mod` 显式 `go 1.22`,不要被工具链自动 bump (有依赖如 tdigest 想要更高版本,但本仓库限定 1.22)。
 - **TDD**: 新场景/规则先写失败测试再写实现,见每个 `*_test.go`。
 - **回应中文**: 仓库内交互、commit 信息可中英混合,但解释/讨论默认中文。
 - **Commit 信息格式**: `type(scope): subject` —— `feat(scenario):`、`feat(output):`、`fix(model):`、`test(e2e):`、`docs(skill):`、`ci:`、`style:` 等。每个 commit 末尾带 `Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>`(更早的 commit 可能是 Sonnet 4.6,新 commit 用当前模型即可)。
+- **main 分支直改规则**: 默认仍按任务需要保持工作区清晰;但用户明确要求"直接在 main 上改 / 改完 push 到 main"时,可以在 `main` 分支完成修改、验证、提交并 push 到 `origin/main`,不要强制创建 feature branch。
 - **Envelope 改动需同步**: 改 `scenario.Envelope` JSON tag 或字段时,务必跑 `tests/e2e` + 更新 `.claude/skills/spark/SKILL.md` 的 envelope 文档 + `README.md` / `CHANGELOG.md`。
 - **CLAUDE.md 同步规则**: 每次新增/修改用户可见功能(CLI flag、环境变量、配置项、命令行为、输出契约、依赖发现路径)或调整开发流程时,**必须**同步更新本文件相关章节(常见入口:开发约定、HDFS 连接、添加新场景/规则、已知踩坑),并在同一 commit 中带上 README/CHANGELOG 的对应变更。原因:本仓库的 AI agent 工作流强依赖 CLAUDE.md 作为唯一权威上下文,文档漂移会让后续会话直接做错事。
 

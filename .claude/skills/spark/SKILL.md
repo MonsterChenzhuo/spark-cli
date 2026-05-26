@@ -1,6 +1,6 @@
 ---
 name: spark-performance-diagnostics
-description: Use when investigating Spark application performance, slow stages, GC pressure, data skew, or task failures. Run via the spark-cli binary on local or HDFS EventLog directories.
+description: Use when investigating Spark application performance, slow stages, GC pressure, data skew, or task failures. Run via the spark-cli binary on local, HDFS, or Spark History Server EventLog sources.
 ---
 
 # Spark Performance Diagnostics
@@ -91,6 +91,7 @@ Errors go to **stderr** as `{"error": {"code": "...", "message": "...", "hint": 
 ## Useful flags
 
 - `--log-dirs <uri,uri>` — comma-separated `file://`, `hdfs://`, and/or `shs://host:port` URIs (Spark History Server REST endpoint) to search
+- `--cluster <name>` — select a local named cluster profile from `config.yaml` (`active_cluster` is used by default). Profiles bind `log_dirs` and `yarn.base_urls` for the same physical cluster; explicit `--log-dirs` / `--yarn-base-urls` still override after selection.
 - `--format json|table|markdown` — default `json`; use `markdown` when embedding in chat
 - `--top N` — for `slow-stages` / `data-skew` / `gc-pressure`
 - `--dry-run` — locate the log without parsing (fast sanity check)
@@ -107,6 +108,8 @@ Errors go to **stderr** as `{"error": {"code": "...", "message": "...", "hint": 
 ## Utility commands
 
 - `spark-cli config show [--format json]` — print effective configuration with source labels (`file` / `env` / `default` / `flag`). JSON 形态适合 agent 一次拿到完整状态,而不必分别读 yaml + env 比对生效值。
+- `spark-cli config cluster add <name> --log-dirs shs://... --yarn-base-urls http://... [--shs-timeout 5m] [--activate]` — 把 Spark History Server 与 YARN gateway 作为同一个集群 profile 写入本地配置;排查多集群问题时优先使用,避免 SHS / YARN URL 串集群。
+- `spark-cli config cluster list [--format json]` — 查看本地已沉淀的集群和当前 `active_cluster`。
 - `spark-cli yarn-logs <appId> --top 5` — fetch YARN application diagnostics, container log URLs, and bounded stderr/stdout/syslog snippets. Use when EventLog findings point to executor supply, failed tasks without enough evidence, AM/driver failure, or when `diagnose.yarn.warnings` says YARN was unreachable.
 - `spark-cli cache list [--format json]` — 列所有 cached parsed application + SHS zip(按 size 降序),应用 cache hit 慢于预期时先看这个。
 - `spark-cli cache clear [--app <id>] [--dry-run]` — 删全部 cache 或只删指定 app 的 entry;`--dry-run` 先看会删什么再确认。
@@ -121,7 +124,7 @@ curl -fsSL https://raw.githubusercontent.com/opay-bigdata/spark-cli/main/scripts
 
 Or build from source: `go install github.com/opay-bigdata/spark-cli@latest`.
 
-If config is missing, run `spark-cli config init` to write `~/.config/spark-cli/config.yaml` with default `log-dirs` placeholders.
+If config is missing, run `spark-cli config init` to write `~/.config/spark-cli/config.yaml` with default `log-dirs` placeholders. For production clusters, prefer `spark-cli config cluster add prod --log-dirs shs://history:18081 --yarn-base-urls http://gateway/prod/yarn --activate`.
 
 ## Don't
 

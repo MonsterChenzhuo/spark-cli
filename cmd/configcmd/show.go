@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -16,7 +17,8 @@ import (
 )
 
 type sources struct {
-	LogDirs       string // "flag" | "env" | "file" | "default"
+	Cluster       string // "flag" | "env" | "file" | "default"
+	LogDirs       string
 	YARNBaseURLs  string
 	HDFSUser      string
 	HadoopConfDir string
@@ -55,7 +57,7 @@ func newShowCmd() *cobra.Command {
 }
 
 func detectSources(cfg *config.Config) sources {
-	src := sources{LogDirs: "default", YARNBaseURLs: "default", HDFSUser: "default", HadoopConfDir: "default", CacheDir: "default", SHSTimeout: "default", SQLDetail: "default", Timeout: "default"}
+	src := sources{Cluster: "default", LogDirs: "default", YARNBaseURLs: "default", HDFSUser: "default", HadoopConfDir: "default", CacheDir: "default", SHSTimeout: "default", SQLDetail: "default", Timeout: "default"}
 	dir := os.Getenv("SPARK_CLI_CONFIG_DIR")
 	if dir == "" {
 		home, _ := os.UserHomeDir()
@@ -65,6 +67,9 @@ func detectSources(cfg *config.Config) sources {
 	if _, err := os.Stat(path); err == nil {
 		if len(cfg.LogDirs) > 0 {
 			src.LogDirs = "file"
+		}
+		if cfg.ActiveCluster != "" || len(cfg.Clusters) > 0 {
+			src.Cluster = "file"
 		}
 		if len(cfg.YARN.BaseURLs) > 0 {
 			src.YARNBaseURLs = "file"
@@ -114,53 +119,80 @@ func detectSources(cfg *config.Config) sources {
 }
 
 // applyRootFlagOverrides 让 root persistent flag(--log-dirs / --cache-dir /
-// --hdfs-user / --hadoop-conf-dir / --shs-timeout / --sql-detail / --timeout)
-// 覆盖到 cfg 与 src 上。这样 `config show --cache-dir /tmp/x` 显示的
+// --hdfs-user / --hadoop-conf-dir / --shs-timeout / --sql-detail / --timeout /
+// --cluster)覆盖到 cfg 与 src 上。这样 `config show --cache-dir /tmp/x` 显示的
 // cache.dir 才能反映用户当下传的 flag,而不是仍报 yaml/default 的旧值,
 // 让 source 标签从 "default"/"file"/"env" 升级到 "flag"。
 func applyRootFlagOverrides(cmd *cobra.Command, cfg *config.Config, src *sources) {
 	if cmd == nil {
 		return
 	}
+	applyClusterFlagOverride(cmd, cfg, src)
+	applySourceFlagOverrides(cmd, cfg, src)
+	applyPathFlagOverrides(cmd, cfg, src)
+	applyTuningFlagOverrides(cmd, cfg, src)
+}
+
+func changedPersistentFlag(cmd *cobra.Command, name string) (string, bool) {
 	flags := cmd.Root().PersistentFlags()
-	get := func(name string) (string, bool) {
-		f := flags.Lookup(name)
-		if f == nil || !f.Changed {
-			return "", false
-		}
-		return f.Value.String(), true
+	f := flags.Lookup(name)
+	if f == nil || !f.Changed {
+		return "", false
 	}
-	if v, ok := get("log-dirs"); ok && v != "" {
+	return f.Value.String(), true
+}
+
+func applyClusterFlagOverride(cmd *cobra.Command, cfg *config.Config, src *sources) {
+	if v, ok := changedPersistentFlag(cmd, "cluster"); ok && v != "" {
+		if err := config.ApplyCluster(cfg, v); err == nil {
+			src.Cluster = "flag"
+			src.LogDirs = "flag"
+			src.YARNBaseURLs = "flag"
+			if cfg.SHS.Timeout > 0 {
+				src.SHSTimeout = "flag"
+			}
+		}
+	}
+}
+
+func applySourceFlagOverrides(cmd *cobra.Command, cfg *config.Config, src *sources) {
+	if v, ok := changedPersistentFlag(cmd, "log-dirs"); ok && v != "" {
 		cfg.LogDirs = splitCSV(v)
 		src.LogDirs = "flag"
 	}
-	if v, ok := get("yarn-base-urls"); ok && v != "" {
+	if v, ok := changedPersistentFlag(cmd, "yarn-base-urls"); ok && v != "" {
 		cfg.YARN.BaseURLs = splitCSV(v)
 		src.YARNBaseURLs = "flag"
 	}
-	if v, ok := get("cache-dir"); ok && v != "" {
+}
+
+func applyPathFlagOverrides(cmd *cobra.Command, cfg *config.Config, src *sources) {
+	if v, ok := changedPersistentFlag(cmd, "cache-dir"); ok && v != "" {
 		cfg.Cache.Dir = v
 		src.CacheDir = "flag"
 	}
-	if v, ok := get("hdfs-user"); ok && v != "" {
+	if v, ok := changedPersistentFlag(cmd, "hdfs-user"); ok && v != "" {
 		cfg.HDFS.User = v
 		src.HDFSUser = "flag"
 	}
-	if v, ok := get("hadoop-conf-dir"); ok && v != "" {
+	if v, ok := changedPersistentFlag(cmd, "hadoop-conf-dir"); ok && v != "" {
 		cfg.HDFS.ConfDir = v
 		src.HadoopConfDir = "flag"
 	}
-	if v, ok := get("shs-timeout"); ok && v != "" {
+}
+
+func applyTuningFlagOverrides(cmd *cobra.Command, cfg *config.Config, src *sources) {
+	if v, ok := changedPersistentFlag(cmd, "shs-timeout"); ok && v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.SHS.Timeout = d
 			src.SHSTimeout = "flag"
 		}
 	}
-	if v, ok := get("sql-detail"); ok && v != "" {
+	if v, ok := changedPersistentFlag(cmd, "sql-detail"); ok && v != "" {
 		cfg.SQL.Detail = v
 		src.SQLDetail = "flag"
 	}
-	if v, ok := get("timeout"); ok && v != "" {
+	if v, ok := changedPersistentFlag(cmd, "timeout"); ok && v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.Timeout = d
 			src.Timeout = "flag"
@@ -195,21 +227,77 @@ func renderJSON(w io.Writer, cfg *config.Config, src sources) error {
 		Value  any    `json:"value"`
 	}
 	out := map[string]field{
-		"log_dirs":       {Source: src.LogDirs, Value: cfg.LogDirs},
-		"yarn.base_urls": {Source: src.YARNBaseURLs, Value: cfg.YARN.BaseURLs},
-		"hdfs.user":      {Source: src.HDFSUser, Value: cfg.HDFS.User},
-		"hdfs.conf_dir":  {Source: src.HadoopConfDir, Value: cfg.HDFS.ConfDir},
-		"cache.dir":      {Source: src.CacheDir, Value: cacheDir},
-		"shs.timeout":    {Source: src.SHSTimeout, Value: cfg.SHS.Timeout.String()},
-		"sql.detail":     {Source: src.SQLDetail, Value: sqlDetail},
-		"timeout":        {Source: src.Timeout, Value: cfg.Timeout.String()},
+		"active_cluster":   {Source: src.Cluster, Value: cfg.ActiveCluster},
+		"selected_cluster": {Source: src.Cluster, Value: cfg.SelectedCluster},
+		"clusters":         {Source: src.Cluster, Value: clustersForShow(cfg.Clusters)},
+		"log_dirs":         {Source: src.LogDirs, Value: cfg.LogDirs},
+		"yarn.base_urls":   {Source: src.YARNBaseURLs, Value: cfg.YARN.BaseURLs},
+		"hdfs.user":        {Source: src.HDFSUser, Value: cfg.HDFS.User},
+		"hdfs.conf_dir":    {Source: src.HadoopConfDir, Value: cfg.HDFS.ConfDir},
+		"cache.dir":        {Source: src.CacheDir, Value: cacheDir},
+		"shs.timeout":      {Source: src.SHSTimeout, Value: cfg.SHS.Timeout.String()},
+		"sql.detail":       {Source: src.SQLDetail, Value: sqlDetail},
+		"timeout":          {Source: src.Timeout, Value: cfg.Timeout.String()},
 	}
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	return enc.Encode(out)
 }
 
+type showCluster struct {
+	LogDirs      []string `json:"log_dirs,omitempty"`
+	YARNBaseURLs []string `json:"yarn_base_urls,omitempty"`
+	SHSTimeout   string   `json:"shs_timeout,omitempty"`
+}
+
+func clustersForShow(clusters map[string]config.ClusterConfig) map[string]showCluster {
+	if len(clusters) == 0 {
+		return nil
+	}
+	out := make(map[string]showCluster, len(clusters))
+	for name, cluster := range clusters {
+		row := showCluster{
+			LogDirs:      cluster.LogDirs,
+			YARNBaseURLs: cluster.YARN.BaseURLs,
+		}
+		if cluster.SHS.Timeout > 0 {
+			row.SHSTimeout = cluster.SHS.Timeout.String()
+		}
+		out[name] = row
+	}
+	return out
+}
+
 func render(w io.Writer, cfg *config.Config, src sources) {
+	fmt.Fprintf(w, "active_cluster (%s): %s\n", src.Cluster, cfg.ActiveCluster)
+	fmt.Fprintf(w, "selected_cluster (%s): %s\n", src.Cluster, cfg.SelectedCluster)
+	fmt.Fprintf(w, "clusters (%s):\n", src.Cluster)
+	if len(cfg.Clusters) == 0 {
+		fmt.Fprintln(w, "  (none)")
+	} else {
+		names := make([]string, 0, len(cfg.Clusters))
+		for name := range cfg.Clusters {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			cluster := cfg.Clusters[name]
+			marker := " "
+			if name == cfg.SelectedCluster {
+				marker = "*"
+			}
+			fmt.Fprintf(w, "  %s %s\n", marker, name)
+			for _, d := range cluster.LogDirs {
+				fmt.Fprintf(w, "      log_dir: %s\n", d)
+			}
+			for _, u := range cluster.YARN.BaseURLs {
+				fmt.Fprintf(w, "      yarn: %s\n", u)
+			}
+			if cluster.SHS.Timeout > 0 {
+				fmt.Fprintf(w, "      shs.timeout: %s\n", cluster.SHS.Timeout)
+			}
+		}
+	}
 	fmt.Fprintf(w, "log_dirs (%s):\n", src.LogDirs)
 	if len(cfg.LogDirs) == 0 {
 		fmt.Fprintln(w, "  (none — run `spark-cli config init`)")

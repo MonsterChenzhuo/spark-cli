@@ -36,6 +36,68 @@ func TestRunnerDryRunEmitsLogSourceWithoutParsing(t *testing.T) {
 	}
 }
 
+func TestRunnerUsesActiveClusterLogDirs(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("SPARK_CLI_CONFIG_DIR", configDir)
+	logDir := t.TempDir()
+	logPath := filepath.Join(logDir, "application_1_9")
+	if err := os.WriteFile(logPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := "active_cluster: prod\nclusters:\n  prod:\n    log_dirs:\n      - file://" + logDir + "\n"
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	rc := Run(context.Background(), Options{
+		Scenario: "app-summary",
+		AppID:    "application_1_9",
+		Format:   "json",
+		DryRun:   true,
+		Stdout:   &stdout,
+		Stderr:   &stderr,
+	})
+	if rc != 0 {
+		t.Fatalf("rc=%d stderr=%s", rc, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"log_path"`) || !strings.Contains(stdout.String(), logPath) {
+		t.Fatalf("stdout did not use active cluster log dir:\n%s", stdout.String())
+	}
+}
+
+func TestRunnerUsesExplicitClusterLogDirs(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("SPARK_CLI_CONFIG_DIR", configDir)
+	devDir := t.TempDir()
+	prodDir := t.TempDir()
+	prodLog := filepath.Join(prodDir, "application_1_10")
+	if err := os.WriteFile(prodLog, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := "active_cluster: dev\nclusters:\n  dev:\n    log_dirs:\n      - file://" + devDir + "\n  prod:\n    log_dirs:\n      - file://" + prodDir + "\n"
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	rc := Run(context.Background(), Options{
+		Scenario: "app-summary",
+		AppID:    "application_1_10",
+		Cluster:  "prod",
+		Format:   "json",
+		DryRun:   true,
+		Stdout:   &stdout,
+		Stderr:   &stderr,
+	})
+	if rc != 0 {
+		t.Fatalf("rc=%d stderr=%s", rc, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), prodLog) {
+		t.Fatalf("stdout did not use explicit prod cluster:\n%s", stdout.String())
+	}
+}
+
 func TestRunnerYARNLogsDoesNotRequireSparkLogDirs(t *testing.T) {
 	const appID = "application_1_2"
 	mux := http.NewServeMux()

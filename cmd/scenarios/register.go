@@ -37,6 +37,7 @@ func buildOpts(scenario, appID string, cc *cobra.Command) Options {
 	return Options{
 		Scenario:          scenario,
 		AppID:             appID,
+		Cluster:           state.Cluster,
 		LogDirs:           splitLogDirs(state.LogDirs),
 		YARNBaseURLs:      splitLogDirs(state.YARNBaseURLs),
 		YARNLogBytes:      state.YARNLogBytes,

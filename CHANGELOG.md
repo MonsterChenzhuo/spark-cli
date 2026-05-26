@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Configuration / cluster profiles
+
+- **Named cluster profiles** let users persist Spark History Server EventLog sources and YARN RM/gateway URLs as one local cluster unit via `active_cluster` and `clusters` in `config.yaml`. This prevents accidentally pairing SHS from one cluster with YARN from another.
+- **New `--cluster <name>` root flag** selects a configured cluster for one invocation. `active_cluster` is applied by default; explicit `--log-dirs`, `--yarn-base-urls`, and `--shs-timeout` flags still override after cluster selection.
+- **New `spark-cli config cluster add|list` commands** write and inspect local cluster profiles. `config cluster add prod --log-dirs shs://... --yarn-base-urls http://... --activate` creates or updates a profile and can make it the default.
+- **`spark-cli config show` now reports `active_cluster`, `selected_cluster`, and `clusters`** in both text and JSON formats, so agent workflows can see which profile produced the effective `log_dirs` / `yarn.base_urls`.
+
 ### YARN / Spark UI diagnostics
 
 - **New `spark-cli driver-thread-dump <appId>`** fetches Spark UI thread dumps through the YARN RM `trackingUrl` or gateway `/proxy/<appId>` path, returning `state_counts` plus raw thread stacks. This covers driver-side stalls before any job/stage is submitted without hand-written curl calls to `/executors/driver/threads`.

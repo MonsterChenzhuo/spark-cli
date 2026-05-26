@@ -154,12 +154,20 @@ func TestDetectSourcesSQLDetailEnv(t *testing.T) {
 // source 与 value,让 agent / 程序消费方一次拿到完整状态。round-9 加。
 func TestRenderJSONEmitsAllFieldsWithSources(t *testing.T) {
 	cfg := &config.Config{
-		LogDirs: []string{"shs://h:18081"},
-		HDFS:    config.HDFSConfig{User: "alice"},
-		Cache:   config.CacheConfig{Dir: "/cache"},
-		SHS:     config.SHSConfig{Timeout: 5 * time.Minute},
-		SQL:     config.SQLConfig{Detail: "full"},
-		Timeout: 30 * time.Second,
+		LogDirs:         []string{"shs://h:18081"},
+		HDFS:            config.HDFSConfig{User: "alice"},
+		Cache:           config.CacheConfig{Dir: "/cache"},
+		SHS:             config.SHSConfig{Timeout: 5 * time.Minute},
+		SQL:             config.SQLConfig{Detail: "full"},
+		Timeout:         30 * time.Second,
+		ActiveCluster:   "prod",
+		SelectedCluster: "prod",
+		Clusters: map[string]config.ClusterConfig{
+			"prod": {
+				LogDirs: []string{"shs://h:18081"},
+				YARN:    config.YARNConfig{BaseURLs: []string{"http://gw/yarn"}},
+			},
+		},
 	}
 	src := sources{
 		LogDirs: "file", HDFSUser: "env", HadoopConfDir: "default",
@@ -192,6 +200,15 @@ func TestRenderJSONEmitsAllFieldsWithSources(t *testing.T) {
 	if got["sql.detail"]["value"] != "full" {
 		t.Errorf("sql.detail value=%v want full", got["sql.detail"]["value"])
 	}
+	if got["active_cluster"]["value"] != "prod" {
+		t.Errorf("active_cluster value=%v want prod", got["active_cluster"]["value"])
+	}
+	if got["selected_cluster"]["value"] != "prod" {
+		t.Errorf("selected_cluster value=%v want prod", got["selected_cluster"]["value"])
+	}
+	if _, ok := got["clusters"]; !ok {
+		t.Fatalf("missing clusters field")
+	}
 }
 
 // `config show --cache-dir /tmp/x` 应当让 cache.dir 字段 source 标 "flag",
@@ -202,6 +219,7 @@ func TestApplyRootFlagOverrides(t *testing.T) {
 	root.PersistentFlags().String("cache-dir", "", "")
 	root.PersistentFlags().String("sql-detail", "", "")
 	root.PersistentFlags().String("shs-timeout", "", "")
+	root.PersistentFlags().String("cluster", "", "")
 	if err := root.PersistentFlags().Set("cache-dir", "/tmp/x"); err != nil {
 		t.Fatal(err)
 	}
@@ -211,11 +229,22 @@ func TestApplyRootFlagOverrides(t *testing.T) {
 	if err := root.PersistentFlags().Set("shs-timeout", "10m"); err != nil {
 		t.Fatal(err)
 	}
+	if err := root.PersistentFlags().Set("cluster", "prod"); err != nil {
+		t.Fatal(err)
+	}
 
 	child := &cobra.Command{Use: "show"}
 	root.AddCommand(child)
 
-	cfg := &config.Config{Cache: config.CacheConfig{Dir: "/from/yaml"}}
+	cfg := &config.Config{
+		Cache: config.CacheConfig{Dir: "/from/yaml"},
+		Clusters: map[string]config.ClusterConfig{
+			"prod": {
+				LogDirs: []string{"shs://prod:18081"},
+				YARN:    config.YARNConfig{BaseURLs: []string{"http://prod/yarn"}},
+			},
+		},
+	}
 	src := sources{CacheDir: "file", SQLDetail: "default", SHSTimeout: "default"}
 	applyRootFlagOverrides(child, cfg, &src)
 
@@ -236,6 +265,15 @@ func TestApplyRootFlagOverrides(t *testing.T) {
 	}
 	if src.SHSTimeout != "flag" {
 		t.Errorf("src.SHSTimeout=%q want flag", src.SHSTimeout)
+	}
+	if cfg.SelectedCluster != "prod" {
+		t.Errorf("cfg.SelectedCluster=%q want prod", cfg.SelectedCluster)
+	}
+	if cfg.LogDirs[0] != "shs://prod:18081" || cfg.YARN.BaseURLs[0] != "http://prod/yarn" {
+		t.Errorf("cluster did not override sources: log_dirs=%v yarn=%v", cfg.LogDirs, cfg.YARN.BaseURLs)
+	}
+	if src.Cluster != "flag" || src.LogDirs != "flag" || src.YARNBaseURLs != "flag" {
+		t.Errorf("cluster sources not marked flag: %+v", src)
 	}
 }
 

@@ -24,6 +24,7 @@ import (
 type Options struct {
 	Scenario          string
 	AppID             string
+	Cluster           string
 	LogDirs           []string
 	YARNBaseURLs      []string
 	YARNLogBytes      int64
@@ -263,6 +264,11 @@ func buildConfig(opts Options) (*config.Config, error) {
 		return nil, cerrors.New(cerrors.CodeConfigMissing, err.Error(), "")
 	}
 	config.ApplyEnv(cfg)
+	if opts.Cluster != "" {
+		if err := config.ApplyCluster(cfg, opts.Cluster); err != nil {
+			return nil, cerrors.New(cerrors.CodeFlagInvalid, err.Error(), "run `spark-cli config cluster list` to see configured clusters, or add one with `spark-cli config cluster add`")
+		}
+	}
 	if len(opts.LogDirs) > 0 {
 		cfg.LogDirs = opts.LogDirs
 	}

@@ -75,6 +75,35 @@ timeout: 30s
 Override per-invocation via `--log-dirs` / `--yarn-base-urls`, or env vars
 `SPARK_CLI_LOG_DIRS` / `SPARK_CLI_YARN_BASE_URLS`.
 
+For production use, prefer named cluster profiles so the Spark History Server
+and YARN gateway for the same cluster are selected together:
+
+```yaml
+active_cluster: prod
+clusters:
+  prod:
+    log_dirs:
+      - shs://history.example.com:18081
+    yarn:
+      base_urls:
+        - http://203.123.81.20:7765/gateway/hadoop-prod/yarn
+    shs:
+      timeout: 5m
+```
+
+```bash
+spark-cli config cluster add prod \
+  --log-dirs shs://history.example.com:18081 \
+  --yarn-base-urls http://203.123.81.20:7765/gateway/hadoop-prod/yarn \
+  --activate
+spark-cli config cluster list --format json
+spark-cli --cluster prod diagnose application_1772605260987_35693
+```
+
+`active_cluster` is used by default. `--cluster <name>` selects another local
+profile for one invocation. Explicit `--log-dirs` / `--yarn-base-urls` flags
+still win after cluster selection for ad-hoc debugging.
+
 ### HDFS configuration
 
 - Pure-Go client (`github.com/colinmarc/hdfs/v2`); **reads** `core-site.xml` / `hdfs-site.xml` and honors HA NameService entries.
@@ -181,11 +210,12 @@ mismatch, write errors) degrade silently to "miss + reparse".
 | `spark-cli yarn-logs <appId>` | Fetch YARN diagnostics and container log snippets |
 | `spark-cli driver-thread-dump <appId>` | Fetch Spark UI driver/executor thread dump through YARN tracking/proxy URL |
 | `spark-cli config show [--format json]` | Print effective configuration (yaml / env / default sources) |
+| `spark-cli config cluster add <name>` / `config cluster list` | Persist and inspect named cluster profiles |
 | `spark-cli cache list` / `cache clear [--app <id>] [--dry-run]` | Inspect / prune the parsed-application + SHS zip caches |
 | `spark-cli version` (also `--version`) | Print spark-cli version |
 
 All accept `--top N`, `--format json|table|markdown`, `--dry-run`, `--log-dirs`,
-`--cache-dir`, `--no-cache`, `--shs-timeout`, `--no-progress`,
+`--cluster`, `--cache-dir`, `--no-cache`, `--shs-timeout`, `--no-progress`,
 `--yarn-base-urls`, `--yarn-log-bytes`, `--executor-id`, `--sql-detail truncate|full|none` (default `truncate` — first 500 runes of the
 SQL description with a `...(truncated, total <N> chars)` marker; `full` keeps
 the original; `none` omits the entire `sql_executions` map).

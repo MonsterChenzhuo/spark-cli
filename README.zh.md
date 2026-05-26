@@ -75,6 +75,35 @@ timeout: 30s
 也可通过 `--log-dirs` / `--yarn-base-urls` 标志或 `SPARK_CLI_LOG_DIRS` /
 `SPARK_CLI_YARN_BASE_URLS` 环境变量逐次覆盖。
 
+生产环境建议使用命名集群,把同一个物理集群的 Spark History Server 与
+YARN gateway 绑定在一起,避免临时手填两个 URL 时串集群:
+
+```yaml
+active_cluster: prod
+clusters:
+  prod:
+    log_dirs:
+      - shs://history.example.com:18081
+    yarn:
+      base_urls:
+        - http://203.123.81.20:7765/gateway/hadoop-prod/yarn
+    shs:
+      timeout: 5m
+```
+
+```bash
+spark-cli config cluster add prod \
+  --log-dirs shs://history.example.com:18081 \
+  --yarn-base-urls http://203.123.81.20:7765/gateway/hadoop-prod/yarn \
+  --activate
+spark-cli config cluster list --format json
+spark-cli --cluster prod diagnose application_1772605260987_35693
+```
+
+默认使用 `active_cluster`;单次切集群用 `--cluster <name>`。如果同时传
+`--log-dirs` / `--yarn-base-urls`,这些显式 flag 仍会在集群选择后最终覆盖,
+方便临时调试。
+
 ### HDFS 配置
 
 - 使用纯 Go 客户端 (`github.com/colinmarc/hdfs/v2`),**自动读取** `core-site.xml` / `hdfs-site.xml`,支持 HA NameService。
@@ -170,11 +199,12 @@ Spark UI 原始线程栈;加 `--thread-summary-only` 时只输出摘要,适合 a
 | `spark-cli yarn-logs <appId>` | 通过 YARN RM/NM 获取应用 diagnostics 与 container 日志摘要 |
 | `spark-cli driver-thread-dump <appId>` | 通过 YARN tracking/proxy URL 获取 Spark UI driver/executor thread dump |
 | `spark-cli config show [--format json]` | 打印当前生效配置(yaml / env / default 来源标注) |
+| `spark-cli config cluster add <name>` / `config cluster list` | 录入 / 查看本地命名集群配置 |
 | `spark-cli cache list` / `cache clear [--app <id>] [--dry-run]` | 查看 / 清理本地的应用 + SHS zip 缓存 |
 | `spark-cli version` (与 `--version`) | 打印 spark-cli 版本 |
 
 均支持 `--top N`、`--format json|table|markdown`、`--dry-run`、`--log-dirs`、
-`--cache-dir`、`--no-cache`、`--shs-timeout`、`--no-progress`、
+`--cluster`、`--cache-dir`、`--no-cache`、`--shs-timeout`、`--no-progress`、
 `--yarn-base-urls`、`--yarn-log-bytes`、`--executor-id`、`--sql-detail truncate|full|none`(默认 `truncate` 把 SQL description 截到前
 500 个 rune 加 `...(truncated, total <N> chars)`;`full` 还原原始 SQL,`none`
 让整段 `sql_executions` 缺失)。

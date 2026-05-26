@@ -183,3 +183,77 @@ func TestLoadParsesCacheDir(t *testing.T) {
 		t.Errorf("Cache.Dir=%q want /var/cache/spark-cli", cfg.Cache.Dir)
 	}
 }
+
+func TestLoadAppliesActiveCluster(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SPARK_CLI_CONFIG_DIR", dir)
+	body := `
+active_cluster: prod
+log_dirs:
+  - file:///legacy
+yarn:
+  base_urls:
+    - http://legacy/yarn
+clusters:
+  prod:
+    log_dirs:
+      - shs://shs-prod:18081
+    yarn:
+      base_urls:
+        - http://gw/prod/yarn
+    shs:
+      timeout: 7m
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ActiveCluster != "prod" {
+		t.Errorf("ActiveCluster=%q want prod", cfg.ActiveCluster)
+	}
+	if cfg.SelectedCluster != "prod" {
+		t.Errorf("SelectedCluster=%q want prod", cfg.SelectedCluster)
+	}
+	if len(cfg.LogDirs) != 1 || cfg.LogDirs[0] != "shs://shs-prod:18081" {
+		t.Errorf("LogDirs=%v want prod shs log dir", cfg.LogDirs)
+	}
+	if len(cfg.YARN.BaseURLs) != 1 || cfg.YARN.BaseURLs[0] != "http://gw/prod/yarn" {
+		t.Errorf("YARN.BaseURLs=%v want prod yarn URL", cfg.YARN.BaseURLs)
+	}
+	if cfg.SHS.Timeout != 7*time.Minute {
+		t.Errorf("SHS.Timeout=%v want 7m", cfg.SHS.Timeout)
+	}
+}
+
+func TestApplyClusterSelectsNamedCluster(t *testing.T) {
+	cfg := &Config{
+		LogDirs: []string{"file:///legacy"},
+		YARN:    YARNConfig{BaseURLs: []string{"http://legacy/yarn"}},
+		SHS:     SHSConfig{Timeout: 5 * time.Minute},
+		Clusters: map[string]ClusterConfig{
+			"prod": {
+				LogDirs: []string{"shs://prod:18081"},
+				YARN:    YARNConfig{BaseURLs: []string{"http://prod/yarn"}},
+				SHS:     SHSConfig{Timeout: 9 * time.Minute},
+			},
+		},
+	}
+	if err := ApplyCluster(cfg, "prod"); err != nil {
+		t.Fatalf("ApplyCluster: %v", err)
+	}
+	if cfg.SelectedCluster != "prod" {
+		t.Errorf("SelectedCluster=%q want prod", cfg.SelectedCluster)
+	}
+	if cfg.LogDirs[0] != "shs://prod:18081" {
+		t.Errorf("LogDirs=%v", cfg.LogDirs)
+	}
+	if cfg.YARN.BaseURLs[0] != "http://prod/yarn" {
+		t.Errorf("YARN.BaseURLs=%v", cfg.YARN.BaseURLs)
+	}
+	if cfg.SHS.Timeout != 9*time.Minute {
+		t.Errorf("SHS.Timeout=%v want 9m", cfg.SHS.Timeout)
+	}
+}
