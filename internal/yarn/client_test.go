@@ -259,6 +259,70 @@ func TestFetchThreadDumpUsesYARNTrackingURL(t *testing.T) {
 	}
 }
 
+func TestFetchPaimonDiagnosticsReadsPaimonJSONEndpoints(t *testing.T) {
+	const appID = "application_1_11"
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+appID, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"app": map[string]any{
+			"id":          appID,
+			"user":        "alice",
+			"trackingUrl": srv.URL + "/yarn/proxy/" + appID + "/",
+		}})
+	})
+	mux.HandleFunc("/yarn/proxy/"+appID+"/paimon-diagnostics/json", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{
+			"schema_version": 1,
+			"facts": map[string]any{
+				"executor_count": 2,
+			},
+		})
+	})
+	mux.HandleFunc("/yarn/proxy/"+appID+"/paimon-diagnostics/threadDump/json", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("executorId"); got != "7" {
+			t.Fatalf("executorId=%q", got)
+		}
+		writeJSON(t, w, map[string]any{
+			"executor_id": "7",
+			"diagnosis": map[string]any{
+				"category": "executor_paimon_or_parquet_io",
+			},
+		})
+	})
+	mux.HandleFunc("/yarn/proxy/"+appID+"/paimon-diagnostics/profiler/json", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{
+			"diagnosis": map[string]any{
+				"category": "profiler_artifacts_available",
+			},
+			"facts": map[string]any{
+				"artifact_count": 1,
+			},
+		})
+	})
+
+	got, err := NewClient([]string{srv.URL + "/yarn"}, 5*time.Second).FetchPaimonDiagnostics(context.Background(), appID, "7")
+	if err != nil {
+		t.Fatalf("FetchPaimonDiagnostics: %v", err)
+	}
+	if got.ExecutorID != "7" || got.UIURL != srv.URL+"/yarn/proxy/"+appID {
+		t.Fatalf("unexpected routing fields: %+v", got)
+	}
+	if len(got.Warnings) != 0 {
+		t.Fatalf("warnings = %+v", got.Warnings)
+	}
+	if got.Overview["schema_version"].(float64) != 1 {
+		t.Fatalf("overview = %+v", got.Overview)
+	}
+	if got.ThreadDump["executor_id"] != "7" {
+		t.Fatalf("thread dump = %+v", got.ThreadDump)
+	}
+	if got.Profiler["diagnosis"].(map[string]any)["category"] != "profiler_artifacts_available" {
+		t.Fatalf("profiler = %+v", got.Profiler)
+	}
+}
+
 func TestFetchThreadDumpSummarizesExecutorCodegen(t *testing.T) {
 	const appID = "application_1_4"
 	mux := http.NewServeMux()

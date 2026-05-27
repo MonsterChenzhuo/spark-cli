@@ -270,6 +270,58 @@ func TestRunnerDriverThreadDumpReturnsEnvelopeWhenThreadEndpointFails(t *testing
 	}
 }
 
+func TestRunnerPaimonDiagnosticsDoesNotRequireSparkLogDirs(t *testing.T) {
+	const appID = "application_1_12"
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+appID, func(w http.ResponseWriter, r *http.Request) {
+		writeRunnerJSON(t, w, map[string]any{"app": map[string]any{
+			"id":          appID,
+			"user":        "airflow",
+			"trackingUrl": srv.URL + "/yarn/proxy/" + appID + "/",
+		}})
+	})
+	mux.HandleFunc("/yarn/proxy/"+appID+"/paimon-diagnostics/json", func(w http.ResponseWriter, r *http.Request) {
+		writeRunnerJSON(t, w, map[string]any{"schema_version": 1})
+	})
+	mux.HandleFunc("/yarn/proxy/"+appID+"/paimon-diagnostics/threadDump/json", func(w http.ResponseWriter, r *http.Request) {
+		writeRunnerJSON(t, w, map[string]any{
+			"executor_id": "driver",
+			"diagnosis": map[string]any{
+				"category": "driver_waiting_for_spark_job",
+			},
+		})
+	})
+	mux.HandleFunc("/yarn/proxy/"+appID+"/paimon-diagnostics/profiler/json", func(w http.ResponseWriter, r *http.Request) {
+		writeRunnerJSON(t, w, map[string]any{
+			"diagnosis": map[string]any{
+				"category": "profiler_waiting_for_artifacts",
+			},
+		})
+	})
+
+	var stdout, stderr bytes.Buffer
+	rc := Run(context.Background(), Options{
+		Scenario:     "paimon-diagnostics",
+		AppID:        appID,
+		YARNBaseURLs: []string{srv.URL + "/yarn"},
+		Format:       "json",
+		Stdout:       &stdout,
+		Stderr:       &stderr,
+	})
+	if rc != 0 {
+		t.Fatalf("rc=%d stderr=%s", rc, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, `"scenario":"paimon-diagnostics"`) ||
+		!strings.Contains(out, `"thread_dump"`) ||
+		!strings.Contains(out, `"profiler_waiting_for_artifacts"`) {
+		t.Fatalf("unexpected stdout:\n%s", out)
+	}
+}
+
 func writeRunnerJSON(t *testing.T, w http.ResponseWriter, v any) {
 	t.Helper()
 	w.Header().Set("Content-Type", "application/json")

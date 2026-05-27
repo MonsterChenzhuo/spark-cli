@@ -69,6 +69,9 @@ func Run(ctx context.Context, opts Options) int {
 	if opts.Scenario == "driver-thread-dump" {
 		return runDriverThreadDump(ctx, opts, cfg)
 	}
+	if opts.Scenario == "paimon-diagnostics" {
+		return runPaimonDiagnostics(ctx, opts, cfg)
+	}
 
 	quiet := resolveQuiet(opts.NoProgress, stdoutIsTTY())
 	// shsCacheDir: SHS zip 持久化路径。--no-cache 时旁路(走 system temp,与
@@ -204,6 +207,28 @@ func runDriverThreadDump(ctx context.Context, opts Options, cfg *config.Config) 
 	return render(opts, env)
 }
 
+func runPaimonDiagnostics(ctx context.Context, opts Options, cfg *config.Config) int {
+	env := scenario.Envelope{
+		Scenario: opts.Scenario,
+		AppID:    opts.AppID,
+		Columns: []string{
+			"base_url", "app", "ui_url", "overview_url", "thread_dump_url",
+			"profiler_url", "executor_id", "overview", "thread_dump",
+			"profiler", "warnings",
+		},
+	}
+	report, err := fetchPaimonDiagnostics(ctx, opts, cfg)
+	if err != nil {
+		return writeErr(opts.Stderr, cerrors.New(
+			cerrors.CodeLogUnreadable,
+			err.Error(),
+			"检查 --yarn-base-urls 是否指向可访问的 YARN gateway;确认 Spark 应用启用了 PaimonProfilerPlugin 并能访问 Spark UI",
+		))
+	}
+	env.Data = []any{report}
+	return render(opts, env)
+}
+
 func parseApp(fsys fs.FS, src eventlog.LogSource, appID string) (*model.Application, int64, error) {
 	r, err := eventlog.Open(src, fsys)
 	if err != nil {
@@ -294,7 +319,7 @@ func buildConfig(opts Options) (*config.Config, error) {
 	if opts.Timeout > 0 {
 		cfg.Timeout = opts.Timeout
 	}
-	if opts.Scenario == "yarn-logs" || opts.Scenario == "driver-thread-dump" {
+	if opts.Scenario == "yarn-logs" || opts.Scenario == "driver-thread-dump" || opts.Scenario == "paimon-diagnostics" {
 		if len(cfg.YARN.BaseURLs) == 0 {
 			return nil, cerrors.New(cerrors.CodeFlagInvalid, "yarn.base_urls is empty; set --yarn-base-urls or config yarn.base_urls", "例如 --yarn-base-urls http://203.123.81.20:7765/gateway/hadoop-prod/yarn")
 		}
@@ -338,6 +363,14 @@ func fetchThreadDump(ctx context.Context, opts Options, cfg *config.Config) (*ya
 		timeout = 30 * time.Second
 	}
 	return yarn.NewClient(cfg.YARN.BaseURLs, timeout).FetchThreadDump(ctx, opts.AppID, opts.ExecutorID)
+}
+
+func fetchPaimonDiagnostics(ctx context.Context, opts Options, cfg *config.Config) (*yarn.PaimonDiagnosticsReport, error) {
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	return yarn.NewClient(cfg.YARN.BaseURLs, timeout).FetchPaimonDiagnostics(ctx, opts.AppID, opts.ExecutorID)
 }
 
 // validateHint 给 cfg.Validate() 错误一个可执行 hint。Validate 自身在 internal/config

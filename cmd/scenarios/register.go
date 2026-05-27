@@ -15,6 +15,7 @@ func Register(root *cobra.Command) {
 		newScenarioCmd("diagnose", "Run all rules and emit findings"),
 		newScenarioCmd("yarn-logs", "Fetch YARN application diagnostics and container logs"),
 		newScenarioCmd("driver-thread-dump", "Fetch Spark UI thread dump through YARN proxy/tracking URL"),
+		newScenarioCmd("paimon-diagnostics", "Fetch Paimon diagnostics JSON through YARN proxy/tracking URL"),
 	)
 }
 

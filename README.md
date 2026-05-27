@@ -205,6 +205,24 @@ emitted by default; add `--thread-summary-only` to return just the compact summa
 `--executor-id` can also target a specific executor when the driver is already
 waiting for a submitted job.
 
+If the Spark application was started with Paimon's diagnostics/profiler plugin,
+fetch the tab's AI-readable JSON directly:
+
+```bash
+spark-cli paimon-diagnostics application_1772605260987_20765 \
+  --yarn-base-urls http://203.123.81.20:7765/gateway/hadoop-prod/yarn \
+  --executor-id 7
+```
+
+The command reads Spark UI endpoints `/paimon-diagnostics/json`,
+`/paimon-diagnostics/threadDump/json?executorId=<id>`, and
+`/paimon-diagnostics/profiler/json`. Output includes `overview`, `thread_dump`,
+and `profiler` objects as produced by the Paimon tab. Agents should read
+`thread_dump.facts.state_counts`, `thread_dump.facts.top_stacks`,
+`thread_dump.facts.flamegraph`, and `profiler.facts.artifacts` before parsing
+HTML. Missing endpoints are returned as `warnings` instead of failing the whole
+command.
+
 ### Cache
 
 The first invocation on a new EventLog persists the parsed `*model.Application`
@@ -237,6 +255,7 @@ mismatch, write errors) degrade silently to "miss + reparse".
 | `spark-cli gc-pressure <appId>` | GC ratio per stage / executor |
 | `spark-cli yarn-logs <appId>` | Fetch YARN diagnostics and container log snippets |
 | `spark-cli driver-thread-dump <appId>` | Fetch Spark UI driver/executor thread dump through YARN tracking/proxy URL |
+| `spark-cli paimon-diagnostics <appId>` | Fetch Paimon diagnostics thread-dump/profiler JSON through Spark UI |
 | `spark-cli config show [--format json]` | Print effective configuration (yaml / env / default sources) |
 | `spark-cli config cluster add <name>` / `config cluster list` | Persist and inspect named cluster profiles |
 | `spark-cli cache list` / `cache clear [--app <id>] [--dry-run]` | Inspect / prune the parsed-application + SHS zip caches |
@@ -277,6 +296,7 @@ Per-scenario extras:
 - `gc-pressure` returns `data` as a flat array of executor rows (`[{executor_id, host, tasks, run_ms, gc_ms, gc_ratio, verdict}, ...]`); the early spec's `{by_stage, by_executor}` two-section shape was collapsed long ago.
 - `diagnose` returns `summary: {critical, warn, ok, top_findings_by_impact?, findings_wall_coverage?}`. `top_findings_by_impact` ranks findings by `wall_share` (max across primary + `similar_stages`); `findings_wall_coverage` is the deduped (max-per-stage) sum **capped at 1.0** (parallel stages can naively sum > 1.0). Both omit when `app.DurationMs == 0`. Coverage `< 0.05` ⇒ bottleneck is structural — read `app-summary.top_busy_stages` / `top_io_bound_stages` instead of drilling further. **`severity` is diagnostic confidence, not ROI** — always sort by `top_findings_by_impact` first.
 - `diagnose` includes an `executor_supply` rule. For static allocation, it compares `spark.executor.instances` with EventLog-observed `executors_added` / `max_concurrent_executors`. A trigger proves executor under-supply in the EventLog, but does **not** prove the YARN ResourceManager reason; inspect RM/AM diagnostics for pending containers, user limit, queue capacity, node labels, reserved containers, or resource fragmentation.
+- `paimon-diagnostics` is a live Spark UI command, not an EventLog parser. It returns one row with `overview`, `thread_dump`, and `profiler` objects from the Paimon tab JSON endpoints. Use it when Spark UI jobs/stages are not enough and Paimon read/write appears stuck: `thread_dump.facts.top_stacks` is the thread-dump aggregate flamegraph source; `profiler.facts.artifacts` lists async-profiler CPU/wall-clock outputs and open URLs.
 - `data_skew` finding evidence carries `similar_stages: [{stage_id, wall_share, skew_factor}]` when more than one stage qualifies (primary picks the one with the largest `wall_share`, ties resolved by `skew_factor`). `top_findings_by_impact` and `findings_wall_coverage` aggregate across primary + similar_stages — agents can read evidence directly instead of re-running `data-skew`.
 - `app-summary` surfaces executor request config (`dynamic_allocation_enabled`, `configured_executor_instances`, `executor_cores`, `executor_memory`, `executor_memory_overhead`) next to observed executor counts, then returns three orthogonal stage views: `top_stages_by_duration` (raw wall, includes driver-side waits), `top_busy_stages` (`busy_ratio > 0.8` only — true CPU hotspots), and `top_io_bound_stages` (`busy_ratio < 0.8` but `spill >= 0.5 GB` or `shuffle_read >= 1 GB` — IO-stalled stages that `top_busy_stages` filters out). **All three together** prevent missing the real bottleneck.
 - `slow-stages` and `data-skew` return `sql_executions: {<id>: <description>}` at the top level — rows reference it via `sql_execution_id`. Descriptions are **truncated to the first 500 runes by default** (use `--sql-detail=full` to restore the original). Callsite-only entries (DataFrame jobs whose description and details are both `org.apache.spark.SparkContext.getCallSite(...)` placeholders) are filtered; if every entry would be noise the entire map is omitted.
