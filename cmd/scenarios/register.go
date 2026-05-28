@@ -4,7 +4,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Register attaches the persistent flags and 5 scenario commands to root.
+// Register attaches the persistent flags and scenario commands to root.
 func Register(root *cobra.Command) {
 	RegisterFlags(root)
 	root.AddCommand(
@@ -12,6 +12,7 @@ func Register(root *cobra.Command) {
 		newScenarioCmd("slow-stages", "Stages ranked by wall time"),
 		newScenarioCmd("data-skew", "Stages with task long-tail / input skew"),
 		newScenarioCmd("gc-pressure", "Executors ranked by GC ratio"),
+		newScenarioCmd("native-io", "Paimon native IO metrics from Spark EventLog"),
 		newScenarioCmd("diagnose", "Run all rules and emit findings"),
 		newScenarioCmd("yarn-logs", "Fetch YARN application diagnostics and container logs"),
 		newScenarioCmd("driver-thread-dump", "Fetch Spark UI thread dump through YARN proxy/tracking URL"),

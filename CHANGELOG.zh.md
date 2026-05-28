@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Paimon native IO EventLog 诊断
+
+- **新增 `spark-cli native-io <appId>` 场景命令**:解析 Spark EventLog 中的 Paimon `SparkListenerNativeIOEvent`,输出 AI 友好的 native IO 指标。兼容新的顶层 `native_io_*` 字段和旧版内嵌 `eventJson`。
+- **`native-io` summary 输出 phase / operation 拆解**(`top_phases`、`top_operations`),并带 reader/export/error 数、总 duration/rows/bytes 和吞吐。`data[]` 按 `duration_ms` 倒序,包含 Spark 上下文、文件/object 字段、原始数值 `metrics`、吞吐、memory 与 `verdict`。
+- **Application cache schema 升到 v2**:旧版本已经缓存过的 `Application` 会自动 miss 并重新解析,避免新命令在旧缓存上返回空 native IO 指标。
+
 ### 配置 / 命名集群
 
 - **新增命名集群配置**:可在 `config.yaml` 用 `active_cluster` 与 `clusters` 把 Spark History Server EventLog 来源和 YARN RM/gateway URL 沉淀为同一个本地集群单元,避免 SHS 与 YARN 手动分别传参时串到不同集群。

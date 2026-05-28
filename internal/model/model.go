@@ -50,6 +50,11 @@ type Application struct {
 	// event in the order they appeared. Used by failed_tasks rule to
 	// distinguish node-level failures from random task failures.
 	Blacklists []BlacklistEvent
+
+	// NativeIOEvents records Paimon native IO listener events from Spark
+	// EventLog. Scenarios aggregate these records into AI-readable native IO
+	// metrics without requiring callers to parse the embedded eventJson.
+	NativeIOEvents []NativeIOEvent
 }
 
 func NewApplication() *Application {
@@ -80,6 +85,44 @@ type BlacklistEvent struct {
 	Target   string
 	StageID  int
 	Failures int
+}
+
+type NativeIOEvent struct {
+	SchemaVersion int
+	EventID       string
+	EventTime     int64
+	AIKind        string
+	AISummary     string
+	EventType     string
+	OperationID   string
+	OperationName string
+	Phase         string
+
+	SQLExecutionID int64
+	StageID        int
+	StageAttemptID int
+	TaskAttemptID  int64
+	TaskIndex      int
+	AttemptNumber  int
+	ExecutorID     string
+	Host           string
+	ThreadID       int64
+
+	FilePath          string
+	OutputPath        string
+	ObjectRequestID   string
+	ObjectOperation   string
+	DurationMs        int64
+	Rows              int64
+	Bytes             int64
+	QueueDepth        int
+	RuntimeThreads    int
+	NativeMemoryBytes int64
+	PeakBufferedBytes int64
+	Metrics           map[string]float64
+	ErrorClass        string
+	ErrorMessage      string
+	StackTrace        string
 }
 
 type Executor struct {

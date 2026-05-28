@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Paimon native IO EventLog diagnostics
+
+- **New `spark-cli native-io <appId>` scenario** parses Paimon `SparkListenerNativeIOEvent` records from Spark EventLog and emits AI-readable native IO metrics. It supports both the new top-level `native_io_*` fields and legacy embedded `eventJson`.
+- **`native-io` summary reports phase and operation breakdowns** (`top_phases`, `top_operations`) plus reader/export/error counts, total duration/rows/bytes, and throughput. `data[]` is ranked by `duration_ms` and carries Spark context, file/object fields, raw numeric `metrics`, throughput, memory, and `verdict`.
+- **Application cache schema bumped to v2** so older cached `Application` snapshots are reparsed and cannot silently return empty native IO metrics for logs parsed before this feature.
+
 ### Configuration / cluster profiles
 
 - **Named cluster profiles** let users persist Spark History Server EventLog sources and YARN RM/gateway URLs as one local cluster unit via `active_cluster` and `clusters` in `config.yaml`. This prevents accidentally pairing SHS from one cluster with YARN from another.

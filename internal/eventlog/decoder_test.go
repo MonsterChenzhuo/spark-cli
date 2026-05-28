@@ -2,6 +2,7 @@ package eventlog
 
 import (
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -138,6 +139,66 @@ func TestDecodeSkipsOversizedSQLAdaptiveExecutionUpdate(t *testing.T) {
 	}
 	if app.DurationMs != 1000 {
 		t.Fatalf("duration = %d, want 1000", app.DurationMs)
+	}
+}
+
+func TestDecodeNativeIOEventTopLevelFields(t *testing.T) {
+	body := strings.Join([]string{
+		`{"Event":"SparkListenerApplicationStart","App Name":"native","App ID":"application_native","Timestamp":1000,"User":"alice"}`,
+		`{"Event":"org.apache.spark.scheduler.SparkListenerNativeIOEvent","eventJson":"{\"event_id\":\"native-1\"}","native_io_schema_version":1,"native_io_event_id":"native-1","native_io_event_time":1500,"native_io_ai_kind":"paimon_native_io_reader","native_io_ai_summary":"native-columnar-read OPERATION_END phase=READ_BATCH duration_ms=500 rows=4096 bytes=16384","native_io_event_type":"OPERATION_END","native_io_operation_id":"op-1","native_io_operation_name":"native-columnar-read","native_io_phase":"READ_BATCH","native_io_sql_execution_id":7,"native_io_stage_id":3,"native_io_stage_attempt_id":0,"native_io_task_attempt_id":99,"native_io_task_index":4,"native_io_attempt_number":1,"native_io_executor_id":"5","native_io_host":"worker-5","native_io_file_path":"obs://bucket/table/file.parquet","native_io_duration_ms":500,"native_io_rows":4096,"native_io_bytes":16384,"native_io_native_memory_bytes":1048576,"native_io_peak_buffered_bytes":2097152,"native_io_metrics":{"read_batch_ms":500,"read_batch_count":1,"rows":4096,"bytes":16384}}`,
+		`{"Event":"SparkListenerApplicationEnd","Timestamp":3000}`,
+	}, "\n")
+
+	app := model.NewApplication()
+	agg := model.NewAggregator(app)
+	parsed, err := Decode(strings.NewReader(body), agg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed != 3 {
+		t.Fatalf("parsed = %d, want 3", parsed)
+	}
+	if len(app.NativeIOEvents) != 1 {
+		t.Fatalf("native events = %d, want 1", len(app.NativeIOEvents))
+	}
+	ev := app.NativeIOEvents[0]
+	if ev.EventID != "native-1" || ev.OperationID != "op-1" || ev.Phase != "READ_BATCH" {
+		t.Fatalf("native event parsed wrong: %+v", ev)
+	}
+	if ev.SQLExecutionID != 7 || ev.StageID != 3 || ev.TaskAttemptID != 99 {
+		t.Fatalf("spark context fields parsed wrong: %+v", ev)
+	}
+	if ev.DurationMs != 500 || ev.Rows != 4096 || ev.Bytes != 16384 {
+		t.Fatalf("counters parsed wrong: %+v", ev)
+	}
+	if got := ev.Metrics["read_batch_ms"]; got != 500 {
+		t.Fatalf("metrics read_batch_ms=%v, want 500", got)
+	}
+}
+
+func TestDecodeNativeIOEventLegacyEventJson(t *testing.T) {
+	nativeJSON := `{"version":1,"event_id":"legacy-1","event_time":1500,"event_type":"OPERATION_END","operation_id":"op-legacy","operation_name":"native-columnar-read","phase":"READ_BATCH","sql_execution_id":8,"stage_id":4,"stage_attempt_id":0,"task_attempt_id":100,"executor_id":"6","host":"worker-6","file_path":"obs://bucket/table/legacy.parquet","duration_ms":42,"rows":10,"bytes":1024,"metrics_json":"{\"read_batch_ms\":42,\"rows\":10}"}`
+	body := strings.Join([]string{
+		`{"Event":"SparkListenerApplicationStart","App Name":"native","App ID":"application_native","Timestamp":1000,"User":"alice"}`,
+		`{"Event":"org.apache.spark.scheduler.SparkListenerNativeIOEvent","eventJson":` + strconv.Quote(nativeJSON) + `}`,
+		`{"Event":"SparkListenerApplicationEnd","Timestamp":3000}`,
+	}, "\n")
+
+	app := model.NewApplication()
+	agg := model.NewAggregator(app)
+	_, err := Decode(strings.NewReader(body), agg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(app.NativeIOEvents) != 1 {
+		t.Fatalf("native events = %d, want 1", len(app.NativeIOEvents))
+	}
+	ev := app.NativeIOEvents[0]
+	if ev.EventID != "legacy-1" || ev.OperationID != "op-legacy" || ev.StageID != 4 {
+		t.Fatalf("legacy eventJson parsed wrong: %+v", ev)
+	}
+	if got := ev.Metrics["read_batch_ms"]; got != 42 {
+		t.Fatalf("legacy metrics read_batch_ms=%v, want 42", got)
 	}
 }
 

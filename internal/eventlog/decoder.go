@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/opay-bigdata/spark-cli/internal/model"
@@ -118,6 +119,9 @@ func dispatch(event string, raw []byte, agg *model.Aggregator) error {
 		return err
 	}
 	if handled, err := dispatchStageAndTask(event, raw, agg); handled || err != nil {
+		return err
+	}
+	if handled, err := dispatchNativeIO(event, raw, agg); handled || err != nil {
 		return err
 	}
 	// Unknown events skipped silently.
@@ -240,6 +244,22 @@ func dispatchStageAndTask(event string, raw []byte, agg *model.Aggregator) (bool
 	return true, nil
 }
 
+func dispatchNativeIO(event string, raw []byte, agg *model.Aggregator) (bool, error) {
+	if event != "org.apache.spark.scheduler.SparkListenerNativeIOEvent" {
+		return false, nil
+	}
+	var e evtNativeIO
+	if err := json.Unmarshal(raw, &e); err != nil {
+		return true, parseErr(err)
+	}
+	nativeEvent := nativeIOFromEvent(&e)
+	if nativeEvent.EventID == "" && nativeEvent.OperationID == "" && nativeEvent.EventType == "" {
+		return true, nil
+	}
+	agg.OnNativeIOEvent(nativeEvent)
+	return true, nil
+}
+
 func taskEndFromEvent(e *evtTaskEnd) model.TaskEnd {
 	var m model.TaskMetrics
 	if e.TaskMetrics != nil {
@@ -260,6 +280,186 @@ func taskEndFromEvent(e *evtTaskEnd) model.TaskEnd {
 		LaunchMs:   e.TaskInfo.LaunchTime,
 		FinishMs:   e.TaskInfo.FinishTime,
 		Metrics:    m,
+	}
+}
+
+func nativeIOFromEvent(e *evtNativeIO) model.NativeIOEvent {
+	out := model.NativeIOEvent{
+		SQLExecutionID: -1,
+		StageID:        -1,
+		StageAttemptID: -1,
+		TaskAttemptID:  -1,
+		TaskIndex:      -1,
+		AttemptNumber:  -1,
+		Metrics:        map[string]float64{},
+	}
+	if e.EventJson != "" {
+		fillNativeIOFromPayload(&out, e.EventJson)
+	}
+	if e.NativeIOSchemaVersion != nil {
+		out.SchemaVersion = *e.NativeIOSchemaVersion
+	}
+	if e.NativeIOEventID != "" {
+		out.EventID = e.NativeIOEventID
+	}
+	if e.NativeIOEventTime != nil {
+		out.EventTime = *e.NativeIOEventTime
+	}
+	if e.NativeIOAIKind != "" {
+		out.AIKind = e.NativeIOAIKind
+	}
+	if e.NativeIOAISummary != "" {
+		out.AISummary = e.NativeIOAISummary
+	}
+	if e.NativeIOEventType != "" {
+		out.EventType = e.NativeIOEventType
+	}
+	if e.NativeIOOperationID != "" {
+		out.OperationID = e.NativeIOOperationID
+	}
+	if e.NativeIOOperationName != "" {
+		out.OperationName = e.NativeIOOperationName
+	}
+	if e.NativeIOPhase != "" {
+		out.Phase = e.NativeIOPhase
+	}
+	setInt64(&out.SQLExecutionID, e.NativeIOSQLExecutionID)
+	setInt(&out.StageID, e.NativeIOStageID)
+	setInt(&out.StageAttemptID, e.NativeIOStageAttemptID)
+	setInt64(&out.TaskAttemptID, e.NativeIOTaskAttemptID)
+	setInt(&out.TaskIndex, e.NativeIOTaskIndex)
+	setInt(&out.AttemptNumber, e.NativeIOAttemptNumber)
+	if e.NativeIOExecutorID != "" {
+		out.ExecutorID = e.NativeIOExecutorID
+	}
+	if e.NativeIOHost != "" {
+		out.Host = e.NativeIOHost
+	}
+	setInt64(&out.ThreadID, e.NativeIOThreadID)
+	if e.NativeIOFilePath != "" {
+		out.FilePath = e.NativeIOFilePath
+	}
+	if e.NativeIOOutputPath != "" {
+		out.OutputPath = e.NativeIOOutputPath
+	}
+	if e.NativeIOObjectRequestID != "" {
+		out.ObjectRequestID = e.NativeIOObjectRequestID
+	}
+	if e.NativeIOObjectOperation != "" {
+		out.ObjectOperation = e.NativeIOObjectOperation
+	}
+	setInt64(&out.DurationMs, e.NativeIODurationMs)
+	setInt64(&out.Rows, e.NativeIORows)
+	setInt64(&out.Bytes, e.NativeIOBytes)
+	setInt(&out.QueueDepth, e.NativeIOQueueDepth)
+	setInt(&out.RuntimeThreads, e.NativeIORuntimeThreads)
+	setInt64(&out.NativeMemoryBytes, e.NativeIONativeMemoryBytes)
+	setInt64(&out.PeakBufferedBytes, e.NativeIOPeakBufferedBytes)
+	if metrics := nativeIOMetricsFromRaw(e.NativeIOMetrics); len(metrics) > 0 {
+		out.Metrics = metrics
+	}
+	if e.NativeIOErrorClass != "" {
+		out.ErrorClass = e.NativeIOErrorClass
+	}
+	if e.NativeIOErrorMessage != "" {
+		out.ErrorMessage = e.NativeIOErrorMessage
+	}
+	if e.NativeIOStackTrace != "" {
+		out.StackTrace = e.NativeIOStackTrace
+	}
+	return out
+}
+
+func fillNativeIOFromPayload(out *model.NativeIOEvent, eventJson string) {
+	var p nativeIOPayload
+	if err := json.Unmarshal([]byte(eventJson), &p); err != nil {
+		return
+	}
+	out.SchemaVersion = p.Version
+	out.EventID = p.EventID
+	out.EventTime = p.EventTime
+	out.EventType = p.EventType
+	out.OperationID = p.OperationID
+	out.OperationName = p.OperationName
+	out.Phase = p.Phase
+	setInt64(&out.SQLExecutionID, p.SQLExecutionID)
+	setInt(&out.StageID, p.StageID)
+	setInt(&out.StageAttemptID, p.StageAttemptID)
+	setInt64(&out.TaskAttemptID, p.TaskAttemptID)
+	setInt(&out.TaskIndex, p.TaskIndex)
+	setInt(&out.AttemptNumber, p.AttemptNumber)
+	out.ExecutorID = p.ExecutorID
+	out.Host = p.Host
+	setInt64(&out.ThreadID, p.ThreadID)
+	out.FilePath = p.FilePath
+	out.OutputPath = p.OutputPath
+	out.ObjectRequestID = p.ObjectRequestID
+	out.ObjectOperation = p.ObjectOperation
+	setInt64(&out.DurationMs, p.DurationMs)
+	setInt64(&out.Rows, p.Rows)
+	setInt64(&out.Bytes, p.Bytes)
+	setInt(&out.QueueDepth, p.QueueDepth)
+	setInt(&out.RuntimeThreads, p.RuntimeThreads)
+	setInt64(&out.NativeMemoryBytes, p.NativeMemoryBytes)
+	setInt64(&out.PeakBufferedBytes, p.PeakBufferedBytes)
+	if metrics := nativeIOMetricsFromJSON(p.MetricsJSON); len(metrics) > 0 {
+		out.Metrics = metrics
+	}
+	out.ErrorClass = p.ErrorClass
+	out.ErrorMessage = p.ErrorMessage
+	out.StackTrace = p.StackTrace
+}
+
+func nativeIOMetricsFromJSON(metricsJSON string) map[string]float64 {
+	if strings.TrimSpace(metricsJSON) == "" {
+		return nil
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(metricsJSON), &raw); err != nil {
+		return nil
+	}
+	return nativeIOMetricsFromRaw(raw)
+}
+
+func nativeIOMetricsFromRaw(raw map[string]json.RawMessage) map[string]float64 {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make(map[string]float64)
+	for k, v := range raw {
+		if n, ok := parseNativeIOMetricValue(v); ok {
+			out[k] = n
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func parseNativeIOMetricValue(raw json.RawMessage) (float64, bool) {
+	var n float64
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return n, true
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		if parsed, err := strconv.ParseFloat(s, 64); err == nil {
+			return parsed, true
+		}
+	}
+	return 0, false
+}
+
+func setInt64(dst *int64, src *int64) {
+	if src != nil {
+		*dst = *src
+	}
+}
+
+func setInt(dst *int, src *int) {
+	if src != nil {
+		*dst = *src
 	}
 }
 

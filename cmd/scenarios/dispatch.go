@@ -34,6 +34,11 @@ func buildScenarioBody(opts Options, app *model.Application, env *scenario.Envel
 	case "gc-pressure":
 		env.Columns = scenario.GCPressureColumns()
 		env.Data = rowsToAny(scenario.GCPressure(app, opts.Top))
+	case "native-io":
+		rows, sum := scenario.NativeIO(app, opts.Top)
+		env.Columns = scenario.NativeIOColumns()
+		env.Data = rowsToAny(rows)
+		env.Summary = sum
 	case "diagnose":
 		findings, sum := scenario.Diagnose(app)
 		env.Columns = scenario.DiagnoseColumns()

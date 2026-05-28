@@ -115,6 +115,13 @@ func (a *Aggregator) OnExecutorBlacklisted(ts int64, executorID string, stageID,
 	})
 }
 
+func (a *Aggregator) OnNativeIOEvent(event NativeIOEvent) {
+	if event.Metrics == nil {
+		event.Metrics = map[string]float64{}
+	}
+	a.app.NativeIOEvents = append(a.app.NativeIOEvents, event)
+}
+
 func (a *Aggregator) OnJobEnd(id int, endMs int64, result string) {
 	if j, ok := a.app.Jobs[id]; ok {
 		j.EndMs = endMs

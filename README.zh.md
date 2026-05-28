@@ -241,6 +241,7 @@ spark-cli paimon-diagnostics application_1772605260987_20765 \
 | `spark-cli slow-stages <appId>` | 按耗时排序的 Stage |
 | `spark-cli data-skew <appId>` | 倾斜 Stage |
 | `spark-cli gc-pressure <appId>` | 每 Stage / Executor 的 GC 占比 |
+| `spark-cli native-io <appId>` | 从 EventLog 提取并分析 Paimon native IO 指标 |
 | `spark-cli yarn-logs <appId>` | 通过 YARN RM/NM 获取应用 diagnostics 与 container 日志摘要 |
 | `spark-cli driver-thread-dump <appId>` | 通过 YARN tracking/proxy URL 获取 Spark UI driver/executor thread dump |
 | `spark-cli paimon-diagnostics <appId>` | 通过 Spark UI 获取 Paimon diagnostics thread-dump/profiler JSON |
@@ -282,6 +283,7 @@ spark-cli paimon-diagnostics application_1772605260987_20765 \
 
 各场景特例:
 - `gc-pressure` 的 `data` 是 executor 行的扁平数组(`[{executor_id, host, tasks, run_ms, gc_ms, gc_ratio, verdict}, ...]`);早期 spec 设想的 `{by_stage, by_executor}` 双段已收敛为单段。
+- `native-io` 解析 Paimon 写入 EventLog 的 `SparkListenerNativeIOEvent`,同时支持新的顶层 `native_io_*` 字段和旧版内嵌 `eventJson`。`summary` 给 event/operation 数、reader/export/error 数、总 rows/bytes/duration、`top_phases`、`top_operations`;`data` 按 `duration_ms` 倒序输出 `--top` 条 native IO 事件,包含 Spark 上下文(`sql_execution_id`、`stage_id`、`task_attempt_id`、executor/host)、文件/object 字段、吞吐、native memory、原始数值 `metrics` 和 `verdict`。示例见 [`docs/examples/native-io-eventlog.md`](docs/examples/native-io-eventlog.md)。
 - `diagnose` 顶层带 `summary: {critical, warn, ok, top_findings_by_impact?, findings_wall_coverage?}`。`top_findings_by_impact` 按 `wall_share` 倒序(单条 finding 取 primary + similar_stages 的 max);`findings_wall_coverage` 是这些 wall_share 按 stage 去重后加和,**cap 到 1.0**(stage 在 wall 上并行时 naive sum 可能 > 1)。两者在 `app.DurationMs == 0` 时整段 omitempty。**coverage < 0.05 ⇒ 瓶颈在作业结构层,跳到 `app-summary.top_busy_stages` / `top_io_bound_stages` 看真热点,别继续下钻 finding**。**`severity` 是诊断置信度,不是 ROI** —— 永远以 `top_findings_by_impact` 排序为准。
 - `diagnose` 新增 `executor_supply` 规则。静态分配时会比较 `spark.executor.instances` 与 EventLog 观察到的 `executors_added` / `max_concurrent_executors`;命中只能证明 EventLog 里 executor 供给不足,**不能**证明 YARN ResourceManager 为什么没继续分配。根因仍需查 RM/AM 的 pending containers、user limit、队列容量、节点标签、reserved containers、资源碎片等诊断。
 - `paimon-diagnostics` 是实时 Spark UI 命令,不是 EventLog 解析器。它返回一行,包含来自 Paimon tab JSON 端点的 `overview`、`thread_dump`、`profiler`。当 Spark UI jobs/stages 看不出进度,但 Paimon 读写疑似卡住时使用: `thread_dump.facts.top_stacks` 是 thread dump 聚合火焰图来源;`profiler.facts.artifacts` 列出 async-profiler CPU/wall-clock 输出和打开 URL。

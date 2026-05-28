@@ -253,6 +253,7 @@ mismatch, write errors) degrade silently to "miss + reparse".
 | `spark-cli slow-stages <appId>` | Stages by wall time |
 | `spark-cli data-skew <appId>` | Skewed stages |
 | `spark-cli gc-pressure <appId>` | GC ratio per stage / executor |
+| `spark-cli native-io <appId>` | Paimon native IO EventLog metrics and phase/operation summary |
 | `spark-cli yarn-logs <appId>` | Fetch YARN diagnostics and container log snippets |
 | `spark-cli driver-thread-dump <appId>` | Fetch Spark UI driver/executor thread dump through YARN tracking/proxy URL |
 | `spark-cli paimon-diagnostics <appId>` | Fetch Paimon diagnostics thread-dump/profiler JSON through Spark UI |
@@ -294,6 +295,7 @@ The repo ships `.claude/skills/spark/SKILL.md`. Claude Code auto-loads it when p
 
 Per-scenario extras:
 - `gc-pressure` returns `data` as a flat array of executor rows (`[{executor_id, host, tasks, run_ms, gc_ms, gc_ratio, verdict}, ...]`); the early spec's `{by_stage, by_executor}` two-section shape was collapsed long ago.
+- `native-io` parses Paimon `SparkListenerNativeIOEvent` records from EventLog. It supports both top-level `native_io_*` fields and legacy embedded `eventJson`. The envelope `summary` reports event/operation counts, reader/export/error counts, total rows/bytes/duration, `top_phases`, and `top_operations`; `data` is the top `--top` native IO events ranked by `duration_ms`, with direct Spark context (`sql_execution_id`, `stage_id`, `task_attempt_id`, executor/host), file/object fields, throughput, memory, raw numeric `metrics`, and a simple `verdict`. See [`docs/examples/native-io-eventlog.md`](docs/examples/native-io-eventlog.md).
 - `diagnose` returns `summary: {critical, warn, ok, top_findings_by_impact?, findings_wall_coverage?}`. `top_findings_by_impact` ranks findings by `wall_share` (max across primary + `similar_stages`); `findings_wall_coverage` is the deduped (max-per-stage) sum **capped at 1.0** (parallel stages can naively sum > 1.0). Both omit when `app.DurationMs == 0`. Coverage `< 0.05` ⇒ bottleneck is structural — read `app-summary.top_busy_stages` / `top_io_bound_stages` instead of drilling further. **`severity` is diagnostic confidence, not ROI** — always sort by `top_findings_by_impact` first.
 - `diagnose` includes an `executor_supply` rule. For static allocation, it compares `spark.executor.instances` with EventLog-observed `executors_added` / `max_concurrent_executors`. A trigger proves executor under-supply in the EventLog, but does **not** prove the YARN ResourceManager reason; inspect RM/AM diagnostics for pending containers, user limit, queue capacity, node labels, reserved containers, or resource fragmentation.
 - `paimon-diagnostics` is a live Spark UI command, not an EventLog parser. It returns one row with `overview`, `thread_dump`, and `profiler` objects from the Paimon tab JSON endpoints. Use it when Spark UI jobs/stages are not enough and Paimon read/write appears stuck: `thread_dump.facts.top_stacks` is the thread-dump aggregate flamegraph source; `profiler.facts.artifacts` lists async-profiler CPU/wall-clock outputs and open URLs.

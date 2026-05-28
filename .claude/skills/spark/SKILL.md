@@ -34,6 +34,7 @@ The user must provide a Spark `applicationId` (e.g. `application_1735000000_0001
    - `tiny_tasks` triggered → 分区过细,evidence 现在带 `wall_share` / `wall_ms` + 多 stage 命中时含 `similar_stages`;suggestion 直接给"降到 ~N partition"的具体目标(基于"目标 task ~500ms"经验式),不必自己再算
    - `idle_stage` triggered → stage wall-clock 远大于 executor 实际工作时间(driver 端 broadcast/串行计算/调度等待),用 `spark-cli slow-stages <appId>` 看具体 stage,然后排查执行计划
    - `executor_supply` triggered → 静态配置的 `spark.executor.instances` 大于 EventLog 实际注册/并发 executor。**只能说明 executor 供给不足,不能从 EventLog 直接断言 YARN 为什么没分配**;引用 evidence 里的 `configured_executor_instances` / `max_concurrent_executors` / `executors_added`。如果 `diagnose` 顶层有 `yarn`,优先读 `yarn.app.diagnostics` 与 `yarn.containers[].diagnostics/log_url`;否则在配置了 `yarn.base_urls` / `--yarn-base-urls` 后运行 `spark-cli yarn-logs <appId> --top 5` 查 RM/AM 的 pending containers、user limit、队列容量、节点标签、reserved containers、container 资源碎片。
+   - Paimon native IO enabled or user asks about native IO收益 / DV / columnar reader → `spark-cli native-io <appId> --top 20`。优先读 `summary.top_phases` / `top_operations` 找 READ_BATCH、DV_FILTER、EXPORT 等阶段耗时,再看 `data[].metrics`、`throughput_mb_per_s`、`verdict`、`file_path`、`stage_id`、`task_attempt_id`。该命令读 EventLog,不是 live 页面;若 EventLog 还没写完或应用卡在 job 前,继续用 `paimon-diagnostics` / `driver-thread-dump`。
    - All `ok` but user reports slowness → `spark-cli slow-stages <appId> --top 5`
 
 3. **For overview**: `spark-cli app-summary <appId>`。app-summary 同时输出三个互补切面,**永远要三个一起看**才能不漏瓶颈:
@@ -73,10 +74,11 @@ Every command emits one JSON object on stdout:
 }
 ```
 
-`app_duration_ms` 是应用 wall 时长(`SparkListenerApplicationEnd - SparkListenerApplicationStart`),omitempty 在 `app.DurationMs == 0`(没 ApplicationEnd 事件)时缺失。所有 5 场景一致输出 —— 看 `wall_share` 时直接换算绝对秒数,不必再额外跑 `app-summary`。
+`app_duration_ms` 是应用 wall 时长(`SparkListenerApplicationEnd - SparkListenerApplicationStart`),omitempty 在 `app.DurationMs == 0`(没 ApplicationEnd 事件)时缺失。所有 EventLog 场景一致输出 —— 看 `wall_share` / native IO 耗时时直接换算绝对秒数,不必再额外跑 `app-summary`。
 
 Exceptions:
 - `gc-pressure` returns `data: [{executor_id, host, tasks, run_ms, gc_ms, gc_ratio, verdict}, ...]` —— 跟其他场景一致是数组(每行一个 executor),不再像早期 spec 那样有 by_stage / by_executor 双段
+- `native-io` parses Paimon `SparkListenerNativeIOEvent` records. It supports both top-level `native_io_*` fields and legacy embedded `eventJson`. `summary` contains `{events_total, operations_total, reader_events, export_events, error_events, total_duration_ms, total_rows, total_bytes, throughput_mb_per_s, throughput_rows_per_s, top_phases, top_operations}`; `data[]` is ranked by `duration_ms` and includes direct Spark context, file/object fields, raw numeric `metrics`, throughput, memory, and `verdict`.
 - `diagnose` adds `summary: {critical, warn, ok, top_findings_by_impact?, findings_wall_coverage?}`. `top_findings_by_impact` is an array of `{rule_id, severity, wall_share}` sorted desc by `wall_share` — `wall_share` 取**该 finding 命中所有 stage(primary + similar_stages)的 max** 而非 sum,直观对应"本规则击中的最严重 stage"。`findings_wall_coverage` is the deduped (max-per-stage) sum of those wall shares **capped at 1.0**(stage 在 wall 上并行,naive sum 可能 > 1.0,语义上不应超 100%);**< 0.05 means the bottleneck is structural — read `app-summary.top_busy_stages` / `top_io_bound_stages` instead of drilling findings**. Both fields missing (omitempty) when `app.DurationMs == 0` (no ApplicationEnd event).
 - When YARN is configured (`yarn.base_urls` / `--yarn-base-urls`), `diagnose` may add top-level `yarn: {app, containers, warnings}`. This is RM/NM context for the same appId: read `app.state`, `app.final_status`, `app.diagnostics`, and container `log_url` / `diagnostics` before asking the user for driver logs. `diagnose` only includes log URLs; use `spark-cli yarn-logs <appId> --yarn-log-bytes 65536` when you need stderr/stdout/syslog snippets.
 - `paimon-diagnostics` returns one live Spark UI row: `{overview, thread_dump, profiler, warnings}` from the Paimon tab JSON endpoints. It is for currently running Paimon read/write stalls where EventLog/Spark stages are not enough. `thread_dump.facts.top_stacks` is the aggregate flamegraph source for thread dumps; `thread_dump.diagnosis.category` summarizes the likely stack shape; `profiler.facts.artifacts[]` lists async-profiler CPU/wall/html outputs and their `open_url`.
@@ -100,7 +102,7 @@ Errors go to **stderr** as `{"error": {"code": "...", "message": "...", "hint": 
 - `--log-dirs <uri,uri>` — comma-separated `file://`, `hdfs://`, and/or `shs://host:port` URIs (Spark History Server REST endpoint) to search
 - `--cluster <name>` — select a local named cluster profile from `config.yaml` (`active_cluster` is used by default). Profiles bind `log_dirs` and `yarn.base_urls` for the same physical cluster; explicit `--log-dirs` / `--yarn-base-urls` still override after selection.
 - `--format json|table|markdown` — default `json`; use `markdown` when embedding in chat
-- `--top N` — for `slow-stages` / `data-skew` / `gc-pressure`
+- `--top N` — for `slow-stages` / `data-skew` / `gc-pressure` / `native-io`
 - `--dry-run` — locate the log without parsing (fast sanity check)
 - `--cache-dir <path>` — persistent cache dir (default `~/.cache/spark-cli`); cached runs report `parsed_events: 0`
 - `--no-cache` — bypass the parsed-application cache for this invocation (no read, no write)
@@ -121,6 +123,7 @@ Errors go to **stderr** as `{"error": {"code": "...", "message": "...", "hint": 
 - `spark-cli config cluster list [--format json]` — 查看本地已沉淀的集群和当前 `active_cluster`。
 - `spark-cli yarn-logs <appId> --top 5` — fetch YARN application diagnostics, attempt/container log URLs, and bounded stderr/stdout/syslog snippets. It normalizes numeric appAttempt ids before calling the containers API and falls back to appAttempt metadata / YARN HTML log links when that API returns 400 or `{}`.
 - `spark-cli yarn-logs <appId> --executor-id <id> --yarn-log-types stderr,gc --yarn-log-bytes 131072` — fetch a specific executor's stderr and common GC logs. Read `containers[].log_findings`; `type=full_gc` is strong evidence that heartbeat timeout / executor lost symptoms were caused by JVM Full GC stalls.
+- `spark-cli native-io <appId> --top 20` — read Paimon native IO metrics from EventLog, including phase/operation summaries and top slow native IO segments.
 - `spark-cli paimon-diagnostics <appId> --executor-id <id>` — fetch Paimon diagnostics tab JSON (`overview`, `thread_dump`, `profiler`) through Spark UI. Use this before asking a human to screenshot Paimon-diagnostics pages.
 - `spark-cli self-update` — update the installed binary from the latest GitHub release after checksum verification. Use `--dry-run` to inspect the target asset first or `--version vX.Y.Z` to pin a release.
 - `spark-cli cache list [--format json]` — 列所有 cached parsed application + SHS zip(按 size 降序),应用 cache hit 慢于预期时先看这个。

@@ -6,9 +6,10 @@ package cache
 import "github.com/opay-bigdata/spark-cli/internal/model"
 
 // currentSchemaVersion is bumped manually whenever model field TYPES change or
-// fields are renamed. Adding/removing fields is gob-tolerant and does NOT
-// require a bump. Mismatched versions cause cache miss + silent rebuild.
-const currentSchemaVersion = 1
+// fields are renamed. It is also bumped when a new scenario depends on data
+// that older cached Application snapshots never parsed. Mismatched versions
+// cause cache miss + silent rebuild.
+const currentSchemaVersion = 2
 
 // cacheEnvelope is the on-disk payload, gob-encoded then zstd-compressed.
 type cacheEnvelope struct {

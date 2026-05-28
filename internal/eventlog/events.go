@@ -1,5 +1,7 @@
 package eventlog
 
+import "encoding/json"
+
 // Minimal event field structs — only what aggregator consumes.
 // Field names match Spark's JSON keys exactly.
 
@@ -137,4 +139,80 @@ type evtTaskEnd struct {
 			RecordsWritten int64 `json:"Shuffle Records Written"`
 		} `json:"Shuffle Write Metrics"`
 	} `json:"Task Metrics"`
+}
+
+type evtNativeIO struct {
+	EventJson string `json:"eventJson"`
+
+	NativeIOSchemaVersion *int   `json:"native_io_schema_version"`
+	NativeIOEventID       string `json:"native_io_event_id"`
+	NativeIOEventTime     *int64 `json:"native_io_event_time"`
+	NativeIOAIKind        string `json:"native_io_ai_kind"`
+	NativeIOAISummary     string `json:"native_io_ai_summary"`
+	NativeIOEventType     string `json:"native_io_event_type"`
+	NativeIOOperationID   string `json:"native_io_operation_id"`
+	NativeIOOperationName string `json:"native_io_operation_name"`
+	NativeIOPhase         string `json:"native_io_phase"`
+
+	NativeIOSQLExecutionID *int64 `json:"native_io_sql_execution_id"`
+	NativeIOStageID        *int   `json:"native_io_stage_id"`
+	NativeIOStageAttemptID *int   `json:"native_io_stage_attempt_id"`
+	NativeIOTaskAttemptID  *int64 `json:"native_io_task_attempt_id"`
+	NativeIOTaskIndex      *int   `json:"native_io_task_index"`
+	NativeIOAttemptNumber  *int   `json:"native_io_attempt_number"`
+	NativeIOExecutorID     string `json:"native_io_executor_id"`
+	NativeIOHost           string `json:"native_io_host"`
+	NativeIOThreadID       *int64 `json:"native_io_thread_id"`
+
+	NativeIOFilePath          string                     `json:"native_io_file_path"`
+	NativeIOOutputPath        string                     `json:"native_io_output_path"`
+	NativeIOObjectRequestID   string                     `json:"native_io_object_request_id"`
+	NativeIOObjectOperation   string                     `json:"native_io_object_operation"`
+	NativeIODurationMs        *int64                     `json:"native_io_duration_ms"`
+	NativeIORows              *int64                     `json:"native_io_rows"`
+	NativeIOBytes             *int64                     `json:"native_io_bytes"`
+	NativeIOQueueDepth        *int                       `json:"native_io_queue_depth"`
+	NativeIORuntimeThreads    *int                       `json:"native_io_runtime_threads"`
+	NativeIONativeMemoryBytes *int64                     `json:"native_io_native_memory_bytes"`
+	NativeIOPeakBufferedBytes *int64                     `json:"native_io_peak_buffered_bytes"`
+	NativeIOMetrics           map[string]json.RawMessage `json:"native_io_metrics"`
+	NativeIOErrorClass        string                     `json:"native_io_error_class"`
+	NativeIOErrorMessage      string                     `json:"native_io_error_message"`
+	NativeIOStackTrace        string                     `json:"native_io_stack_trace"`
+}
+
+type nativeIOPayload struct {
+	Version       int    `json:"version"`
+	EventID       string `json:"event_id"`
+	EventTime     int64  `json:"event_time"`
+	EventType     string `json:"event_type"`
+	OperationID   string `json:"operation_id"`
+	OperationName string `json:"operation_name"`
+	Phase         string `json:"phase"`
+
+	SQLExecutionID *int64 `json:"sql_execution_id"`
+	StageID        *int   `json:"stage_id"`
+	StageAttemptID *int   `json:"stage_attempt_id"`
+	TaskAttemptID  *int64 `json:"task_attempt_id"`
+	TaskIndex      *int   `json:"task_index"`
+	AttemptNumber  *int   `json:"attempt_number"`
+	ExecutorID     string `json:"executor_id"`
+	Host           string `json:"host"`
+	ThreadID       *int64 `json:"thread_id"`
+
+	FilePath          string `json:"file_path"`
+	OutputPath        string `json:"output_path"`
+	ObjectRequestID   string `json:"object_request_id"`
+	ObjectOperation   string `json:"object_operation"`
+	DurationMs        *int64 `json:"duration_ms"`
+	Rows              *int64 `json:"rows"`
+	Bytes             *int64 `json:"bytes"`
+	QueueDepth        *int   `json:"queue_depth"`
+	RuntimeThreads    *int   `json:"runtime_threads"`
+	NativeMemoryBytes *int64 `json:"native_memory_bytes"`
+	PeakBufferedBytes *int64 `json:"peak_buffered_bytes"`
+	MetricsJSON       string `json:"metrics_json"`
+	ErrorClass        string `json:"error_class"`
+	ErrorMessage      string `json:"error_message"`
+	StackTrace        string `json:"stack_trace"`
 }
