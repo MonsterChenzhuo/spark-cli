@@ -5,7 +5,7 @@ description: Use when investigating Spark application performance, slow stages, 
 
 # Spark Performance Diagnostics
 
-You have access to `spark-cli`, a single-binary CLI that parses Spark EventLogs and emits JSON envelopes. Always start with `diagnose` — it runs all rules at once.
+You have access to `spark-cli`, a single-binary CLI that parses Spark EventLogs and emits JSON envelopes. Always confirm the cluster first, then start with guided `diagnose` — it runs all rules at once while keeping stdout as one JSON envelope.
 
 ## Required input
 
@@ -13,9 +13,22 @@ The user must provide a Spark `applicationId` (e.g. `application_1735000000_0001
 
 ## Workflow
 
-1. **Always run diagnose first**:
+0. **Confirm cluster before reading EventLogs**:
    ```
-   spark-cli diagnose <appId>
+   spark-cli config cluster list --format json
+   spark-cli config show --format json
+   ```
+   Check `active_cluster`, `selected_cluster`, `clusters`, `log_dirs`, and `yarn.base_urls`.
+   - If no cluster is configured and `log_dirs` is empty, ask the user for the Spark History Server / HDFS EventLog source and YARN gateway, then record it with:
+     ```
+     spark-cli config cluster add <name> --log-dirs <shs://...|hdfs://...|file://...> --yarn-base-urls <url> --activate
+     ```
+   - If multiple clusters exist and none is selected, choose with `--cluster <name>` after confirming the intended physical cluster.
+   - `spark-cli diagnose <appId> --guided` enforces this SOP: it auto-selects the only configured cluster, fails when multiple clusters exist without a selection, and writes preflight notes to stderr. stdout remains the normal `diagnose` envelope, so agents should parse stdout only.
+
+1. **Always run guided diagnose first**:
+   ```
+   spark-cli diagnose <appId> --guided
    ```
    Read `summary.critical` and `summary.warn`. Even `severity: "ok"` rows are meaningful — they confirm a check ran. **优先看 `summary.top_findings_by_impact`**(按 `wall_share` 倒序的 `[{rule_id, severity, wall_share}]`)—— 这个数组直接告诉你哪个 finding 占整作业耗时最多,不要再自己心算。`app.DurationMs == 0`(没 ApplicationEnd 事件)或 finding 没 `stage_id` 关联时这段会缺失(omitempty)。**先看 `summary.findings_wall_coverage`**(所有非 ok finding 涉及 stage 占应用 wall 的总比例,按 stage_id 去重 + cap 1.0)—— **当它 < 0.05** 时,瓶颈基本不在 finding 列表里(常见为作业结构碎片化 / driver-side 等待 / 太多 action),应当**直接跳到 `app-summary` 看 `top_busy_stages` / `top_io_bound_stages` / `stages_total` / `jobs_total`**,而不是继续逐条下钻 finding。
    **severity 是诊断置信度,不是 ROI 优先级**:`disk_spill warn (wall_share 0.5)` 实际比 `data_skew critical (wall_share 0.05)` 更值得修;按 severity 字符串排优先级会错位,永远以 `top_findings_by_impact` 为准。
@@ -107,6 +120,7 @@ Errors go to **stderr** as `{"error": {"code": "...", "message": "...", "hint": 
 - `--format json|table|markdown` — default `json`; use `markdown` when embedding in chat
 - `--top N` — for `slow-stages` / `data-skew` / `gc-pressure` / `native-io`
 - `--dry-run` — locate the log without parsing (fast sanity check)
+- `--guided` — for `diagnose`, confirm/select a named cluster before reading EventLogs; preflight notes go to stderr and stdout remains the diagnose envelope
 - `--cache-dir <path>` — persistent cache dir (default `~/.cache/spark-cli`); cached runs report `parsed_events: 0`
 - `--no-cache` — bypass the parsed-application cache for this invocation (no read, no write)
 - `--shs-timeout <duration>` — HTTP timeout for `shs://` log-dirs (default `5m`;生产 zip 几个 GB 是常态,失败时 hint 直接告知此参数)

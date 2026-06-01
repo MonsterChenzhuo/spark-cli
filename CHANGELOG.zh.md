@@ -18,6 +18,7 @@
 
 - **新增命名集群配置**:可在 `config.yaml` 用 `active_cluster` 与 `clusters` 把 Spark History Server EventLog 来源和 YARN RM/gateway URL 沉淀为同一个本地集群单元,避免 SHS 与 YARN 手动分别传参时串到不同集群。
 - **新增 root flag `--cluster <name>`**:单次命令选择一个已配置集群。默认应用 `active_cluster`;显式 `--log-dirs`、`--yarn-base-urls`、`--shs-timeout` 仍会在集群选择后覆盖,适合临时调试。
+- **新增 `diagnose --guided` SOP 预检**:读取 EventLog 前先确认集群选择。只有一个 cluster 时自动选择;多个 cluster 但没有 `--cluster` / `active_cluster` 时返回错误;完全没有 source 时给出 `config cluster add ... --activate` 指引;stdout 仍保持原 `diagnose` JSON 信封,预检说明只写 stderr。
 - **新增 `spark-cli config cluster add|list`**:用于写入和查看本地命名集群。示例:`config cluster add prod --log-dirs shs://... --yarn-base-urls http://... --activate` 会新增或更新 profile,并可设为默认集群。
 - **`spark-cli config show` 展示 `active_cluster`、`selected_cluster`、`clusters`**:text 与 JSON 两种格式都能看到当前有效配置来自哪个集群,便于 agent 流程确认 `log_dirs` / `yarn.base_urls` 的来源。
 - **新增 `spark-cli self-update` 命令**:按当前 OS/arch 下载 GitHub 最新 release 归档,校验 `checksums.txt`,并替换本机二进制。支持 `update` / `upgrade` 别名、`--dry-run`、`--version` 和 `--install-dir`。

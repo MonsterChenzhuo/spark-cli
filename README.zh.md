@@ -5,7 +5,7 @@
 ## 快速开始
 
 ```bash
-spark-cli diagnose application_1735000000_0001
+spark-cli diagnose application_1735000000_0001 --guided
 ```
 
 `diagnose` 报告 `data_skew` 严重时,继续下钻:
@@ -108,12 +108,36 @@ spark-cli config cluster add prod \
   --yarn-base-urls http://203.123.81.20:7765/gateway/hadoop-prod/yarn \
   --activate
 spark-cli config cluster list --format json
-spark-cli --cluster prod diagnose application_1772605260987_35693
+spark-cli --cluster prod diagnose application_1772605260987_35693 --guided
 ```
 
 默认使用 `active_cluster`;单次切集群用 `--cluster <name>`。如果同时传
 `--log-dirs` / `--yarn-base-urls`,这些显式 flag 仍会在集群选择后最终覆盖,
 方便临时调试。
+
+### 诊断 SOP
+
+生产排障建议走 guided 流程,先确认集群选择,再读取 EventLog:
+
+```bash
+spark-cli config cluster list --format json
+spark-cli config show --format json
+spark-cli diagnose application_1772605260987_35693 --guided
+```
+
+如果还没有录入集群,先沉淀一个命名集群:
+
+```bash
+spark-cli config cluster add prod \
+  --log-dirs shs://history.example.com:18081 \
+  --yarn-base-urls http://203.123.81.20:7765/gateway/hadoop-prod/yarn \
+  --activate
+```
+
+`--guided` 不改变 stdout 的 `diagnose` JSON 信封;预检信息写 stderr。它会在只有
+一个集群时自动选择该集群,在多个集群但未选择时直接失败并提示 `--cluster`,
+并在缺少 `yarn.base_urls` 时提示后续 live YARN / thread dump 需要补 URL。完整
+agent 流程见 [`docs/examples/diagnostic-sop.md`](docs/examples/diagnostic-sop.md)。
 
 ### HDFS 配置
 
@@ -252,7 +276,7 @@ spark-cli paimon-diagnostics application_1772605260987_20765 \
 | `spark-cli self-update` (别名 `update`、`upgrade`) | 下载最新 release 二进制、校验 checksum 并替换本机可执行文件 |
 | `spark-cli version` (与 `--version`) | 打印 spark-cli 版本 |
 
-均支持 `--top N`、`--format json|table|markdown`、`--dry-run`、`--log-dirs`、
+均支持 `--top N`、`--format json|table|markdown`、`--dry-run`、`--guided`、`--log-dirs`、
 `--cluster`、`--cache-dir`、`--no-cache`、`--shs-timeout`、`--no-progress`、
 `--yarn-base-urls`、`--yarn-log-bytes`、`--yarn-log-types`、`--executor-id`、`--sql-detail truncate|full|none`(默认 `truncate` 把 SQL description 截到前
 500 个 rune 加 `...(truncated, total <N> chars)`;`full` 还原原始 SQL,`none`
@@ -260,7 +284,7 @@ spark-cli paimon-diagnostics application_1772605260987_20765 \
 
 ## 给 AI agent
 
-仓库内置 `.claude/skills/spark/SKILL.md`。Claude Code 检测到即自动加载,告知 agent 「先 diagnose 再下钻」的标准流程。
+仓库内置 `.claude/skills/spark/SKILL.md`。Claude Code 检测到即自动加载,告知 agent 「先确认集群,再 guided diagnose,最后下钻」的标准流程。
 
 ## 输出契约
 

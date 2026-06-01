@@ -98,6 +98,100 @@ func TestRunnerUsesExplicitClusterLogDirs(t *testing.T) {
 	}
 }
 
+func TestGuidedDiagnoseRequiresClusterChoiceWhenMultipleProfilesExist(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("SPARK_CLI_CONFIG_DIR", configDir)
+	cfg := `
+clusters:
+  dev:
+    log_dirs:
+      - file:///dev/spark-history
+  prod:
+    log_dirs:
+      - file:///prod/spark-history
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	rc := Run(context.Background(), Options{
+		Scenario: "diagnose",
+		AppID:    "application_1_11",
+		Guided:   true,
+		Format:   "json",
+		DryRun:   true,
+		Stdout:   &stdout,
+		Stderr:   &stderr,
+	})
+	if rc != 2 {
+		t.Fatalf("rc=%d want 2 stdout=%s stderr=%s", rc, stdout.String(), stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("guided preflight should fail before stdout envelope, got %s", stdout.String())
+	}
+	errText := stderr.String()
+	if !strings.Contains(errText, "multiple cluster profiles") || !strings.Contains(errText, "config cluster list") {
+		t.Fatalf("stderr missing cluster choice hint:\n%s", errText)
+	}
+}
+
+func TestGuidedDiagnoseSelectsOnlyConfiguredCluster(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("SPARK_CLI_CONFIG_DIR", configDir)
+	logDir := t.TempDir()
+	logPath := filepath.Join(logDir, "application_1_12")
+	if err := os.WriteFile(logPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := "clusters:\n  prod:\n    log_dirs:\n      - file://" + logDir + "\n    yarn:\n      base_urls:\n        - http://gw/prod/yarn\n"
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	rc := Run(context.Background(), Options{
+		Scenario: "diagnose",
+		AppID:    "application_1_12",
+		Guided:   true,
+		Format:   "json",
+		DryRun:   true,
+		Stdout:   &stdout,
+		Stderr:   &stderr,
+	})
+	if rc != 0 {
+		t.Fatalf("rc=%d stderr=%s", rc, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), logPath) {
+		t.Fatalf("stdout did not use only configured cluster:\n%s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), `selected only configured cluster "prod"`) {
+		t.Fatalf("stderr missing guided selection note:\n%s", stderr.String())
+	}
+}
+
+func TestGuidedDiagnoseSuggestsClusterAddWhenNoSourcesExist(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("SPARK_CLI_CONFIG_DIR", configDir)
+
+	var stdout, stderr bytes.Buffer
+	rc := Run(context.Background(), Options{
+		Scenario: "diagnose",
+		AppID:    "application_1_13",
+		Guided:   true,
+		Format:   "json",
+		DryRun:   true,
+		Stdout:   &stdout,
+		Stderr:   &stderr,
+	})
+	if rc != 2 {
+		t.Fatalf("rc=%d want 2 stdout=%s stderr=%s", rc, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "config cluster add") || !strings.Contains(stderr.String(), "--activate") {
+		t.Fatalf("stderr missing cluster add hint:\n%s", stderr.String())
+	}
+}
+
 func TestRunnerYARNLogsDoesNotRequireSparkLogDirs(t *testing.T) {
 	const appID = "application_1_2"
 	mux := http.NewServeMux()

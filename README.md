@@ -5,7 +5,7 @@ A single-binary CLI for diagnosing Apache Spark application performance from Eve
 ## Quick start
 
 ```bash
-spark-cli diagnose application_1735000000_0001
+spark-cli diagnose application_1735000000_0001 --guided
 ```
 
 If `diagnose` flags `data_skew`:
@@ -108,12 +108,39 @@ spark-cli config cluster add prod \
   --yarn-base-urls http://203.123.81.20:7765/gateway/hadoop-prod/yarn \
   --activate
 spark-cli config cluster list --format json
-spark-cli --cluster prod diagnose application_1772605260987_35693
+spark-cli --cluster prod diagnose application_1772605260987_35693 --guided
 ```
 
 `active_cluster` is used by default. `--cluster <name>` selects another local
 profile for one invocation. Explicit `--log-dirs` / `--yarn-base-urls` flags
 still win after cluster selection for ad-hoc debugging.
+
+### Diagnostic SOP
+
+For production triage, use the guided path so cluster selection is confirmed
+before the EventLog is read:
+
+```bash
+spark-cli config cluster list --format json
+spark-cli config show --format json
+spark-cli diagnose application_1772605260987_35693 --guided
+```
+
+If no cluster is configured, record one first:
+
+```bash
+spark-cli config cluster add prod \
+  --log-dirs shs://history.example.com:18081 \
+  --yarn-base-urls http://203.123.81.20:7765/gateway/hadoop-prod/yarn \
+  --activate
+```
+
+`--guided` keeps stdout as the normal `diagnose` JSON envelope. Preflight notes
+go to stderr: it selects the only configured cluster automatically, fails when
+multiple clusters exist and none is selected, and warns when `yarn.base_urls` is
+missing so live YARN/thread probes will need a URL later. See
+[`docs/examples/diagnostic-sop.md`](docs/examples/diagnostic-sop.md) for the
+full agent workflow.
 
 ### HDFS configuration
 
@@ -264,7 +291,7 @@ mismatch, write errors) degrade silently to "miss + reparse".
 | `spark-cli self-update` (aliases `update`, `upgrade`) | Download the latest release binary, verify checksum, and replace the local executable |
 | `spark-cli version` (also `--version`) | Print spark-cli version |
 
-All accept `--top N`, `--format json|table|markdown`, `--dry-run`, `--log-dirs`,
+All accept `--top N`, `--format json|table|markdown`, `--dry-run`, `--guided`, `--log-dirs`,
 `--cluster`, `--cache-dir`, `--no-cache`, `--shs-timeout`, `--no-progress`,
 `--yarn-base-urls`, `--yarn-log-bytes`, `--yarn-log-types`, `--executor-id`, `--sql-detail truncate|full|none` (default `truncate` — first 500 runes of the
 SQL description with a `...(truncated, total <N> chars)` marker; `full` keeps
@@ -272,7 +299,7 @@ the original; `none` omits the entire `sql_executions` map).
 
 ## For AI agents
 
-The repo ships `.claude/skills/spark/SKILL.md`. Claude Code auto-loads it when present. The skill teaches the diagnose-first workflow.
+The repo ships `.claude/skills/spark/SKILL.md`. Claude Code auto-loads it when present. The skill teaches the cluster-confirmation SOP and the guided diagnose-first workflow.
 
 ## Output contract
 

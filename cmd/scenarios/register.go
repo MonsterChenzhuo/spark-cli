@@ -57,6 +57,7 @@ func buildOpts(scenario, appID string, cc *cobra.Command) Options {
 		Top:               state.Top,
 		DryRun:            state.DryRun,
 		NoProgress:        state.NoProgress,
+		Guided:            state.Guided,
 		SQLDetail:         state.SQLDetail,
 		Stdout:            cc.OutOrStdout(),
 		Stderr:            cc.ErrOrStderr(),

@@ -18,6 +18,7 @@ Guidance for Claude Code (and other AI agents) working in this repository.
 - **`data_skew` finding 在多 stage 命中时**,evidence 含 `similar_stages: [{stage_id, wall_share, skew_factor}]`(按 wall_share 倒序最多 4 条)。primary `stage_id` 选 wall_share 最大的(平局回退 skew_factor),`top_findings_by_impact` 与 `findings_wall_coverage` 都会跨 primary + similar_stages 聚合 —— agent 直接读 evidence 就能看到完整多 stage 列表,不必再回头跑 `data-skew`。
 - `slow-stages` / `data-skew` 信封顶层带 `sql_executions: map[int64]string`,key 是 `sql_execution_id`、value 是 description。**默认按 `--sql-detail=truncate` 截到前 500 个 rune,过长追加 `...(truncated, total <N> chars)`**;`--sql-detail=full` 还原原始 SQL,`--sql-detail=none` 整段 omit(也可 `SPARK_CLI_SQL_DETAIL` / yaml `sql.detail` 覆盖)。对 DataFrame 作业自动回退到 details 首行;若 description / details 都是 callsite 占位形态则该条整行过滤。row 内只保 `sql_execution_id`,**不再带** `sql_description` 字段 —— 切走重复嵌入,把 JSON 体积从几十 KB 压到几 KB。所有条目都是 callsite 噪音时整段 map 走 `omitempty` 缺失;app-summary / gc-pressure / diagnose 不带这个字段
 - `native-io` 解析 Paimon `SparkListenerNativeIOEvent`,同时支持顶层 `native_io_*` 字段和旧版内嵌 `eventJson`。`summary` 给 event/operation 数、reader/export/error 数、total rows/bytes/duration、`top_phases`、`top_operations`;`data` 按 `duration_ms` 倒序输出 `--top` 条 native IO 事件,包含 Spark 上下文、文件/object 字段、吞吐、memory、原始数值 `metrics` 和 `verdict`。
+- `diagnose --guided` 是诊断 SOP 入口:先做命名集群预检,只有一个 cluster 时自动选择,多个 cluster 未选择时返回 `FLAG_INVALID`,没有 cluster/log_dirs 时返回带 `config cluster add ... --activate` 的 `CONFIG_MISSING` hint。预检说明只写 stderr,stdout 仍然是原 `diagnose` 的单一 JSON envelope,不要把 stderr 当机器可解析输出。
 - `app-summary` 的 `data` row 同时带 **三个** stage 切面,**永远要三个一起看**才不漏瓶颈:`top_stages_by_duration[]`(按 wall 倒序,包含 driver-side 等待 stage),`top_busy_stages[]`(过滤 `busy_ratio > 0.8` 后按 `busy_ratio * duration` 倒序,真正 executor 吃 CPU 的热点),**`top_io_bound_stages[]`**(`busy_ratio < 0.8` 但 `spill_disk_gb >= 0.5` 或 `shuffle_read_gb >= 1.0` 的 stage,按 wall_share 倒序 limit 3)。`top_io_bound_stages` 是 `top_busy_stages` 的互补切面 —— spill 主导的 stage executor 都在等盘,busy_ratio 被压得很低,`top_busy_stages` 阈值看不到但才是真瓶颈(实测 stage spill 9.86 GB / busy_ratio 0.048,只看 top_busy_stages 完全错过)。
 - `slow-stages` row 三档 `*_mb_per_task`(`input_mb_per_task` / `shuffle_read_mb_per_task` / `shuffle_write_mb_per_task`)。读侧 / 写侧 / source-scan stage 分别看对应字段判 partition 粒度,`NumTasks=0` 时三个一律 0
 
@@ -69,6 +70,12 @@ clusters:
 ```
 
 `config.Load()` 会先应用 `active_cluster`;运行时 `--cluster <name>` 在 env 之后、显式 `--log-dirs` / `--yarn-base-urls` 等 flag 之前应用。也就是说:默认用 `active_cluster`,临时切集群用 `--cluster prod`,而逐次调试仍可用具体 flag 最终覆盖。`spark-cli config cluster add <name> --log-dirs ... --yarn-base-urls ... [--shs-timeout 5m] [--activate]` 负责把 profile 写入本地 `config.yaml`;`spark-cli config cluster list [--format json]` 用于查看已沉淀的集群。
+
+标准排障 SOP:
+
+1. 先跑 `spark-cli config cluster list --format json` 与 `spark-cli config show --format json`,确认 `active_cluster` / `selected_cluster` / `log_dirs` / `yarn.base_urls`。
+2. 没有集群时,先 `spark-cli config cluster add <name> --log-dirs ... --yarn-base-urls ... --activate` 录入;多个集群但未选时,必须让用户确认目标集群并用 `--cluster <name>`。
+3. 再跑 `spark-cli diagnose <appId> --guided`。`--guided` 不改 stdout envelope,只在 stderr 输出预检说明;agent 解析 stdout 即可。
 
 ## 开发约定
 

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/url"
 	"path"
+	"sort"
 	"strings"
 	"time"
 
@@ -43,6 +44,9 @@ type Options struct {
 	// NoProgress 来自 --no-progress flag,与 SPARK_CLI_QUIET 环境变量、stdout
 	// TTY 检测一并由 resolveQuiet 合成最终的 SHS 静默决定。
 	NoProgress bool
+	// Guided 只对 diagnose 生效:先确认命名集群选择,必要时给出录入/选择提示,
+	// stdout 仍保持原 diagnose envelope,预检信息写 stderr。
+	Guided bool
 	// SQLDetail 控制 envelope.sql_executions 中每条 description 的呈现形态:
 	// "truncate"(默认 ~500 rune)、"full"(完整 SQL)、"none"(整段 omit)。
 	// 空字符串 / 非法值由 scenario.NormalizeSQLDetail 落到 truncate。
@@ -59,7 +63,7 @@ func Run(ctx context.Context, opts Options) int {
 		opts.Stderr = io.Discard
 	}
 
-	cfg, err := buildConfig(opts)
+	cfg, err := prepareConfig(opts)
 	if err != nil {
 		return writeErr(opts.Stderr, err)
 	}
@@ -162,6 +166,84 @@ func Run(ctx context.Context, opts Options) int {
 		attachYARN(ctx, opts, cfg, &env, 0)
 	}
 	return render(opts, env)
+}
+
+func prepareConfig(opts Options) (*config.Config, error) {
+	cfg, err := buildConfig(opts)
+	if err != nil {
+		return nil, err
+	}
+	if opts.Guided && opts.Scenario == "diagnose" {
+		if err := guidedPreflight(cfg, opts, opts.Stderr); err != nil {
+			return nil, err
+		}
+	}
+	return cfg, nil
+}
+
+func guidedPreflight(cfg *config.Config, opts Options, w io.Writer) error {
+	if len(opts.LogDirs) > 0 {
+		fmt.Fprintln(w, "spark-cli: guided preflight using explicit --log-dirs; named cluster selection is bypassed for this run")
+		guidedWarnYARN(cfg, w)
+		return nil
+	}
+
+	if cfg.SelectedCluster == "" {
+		names := clusterNames(cfg.Clusters)
+		switch len(names) {
+		case 0:
+			if len(cfg.LogDirs) > 0 {
+				fmt.Fprintln(w, "spark-cli: guided preflight using legacy top-level log_dirs; consider recording them as a named cluster")
+				guidedWarnYARN(cfg, w)
+				return nil
+			}
+			return cerrors.New(
+				cerrors.CodeConfigMissing,
+				"no cluster profile or log_dirs configured",
+				"run `spark-cli config cluster add <name> --log-dirs shs://history:18081 --yarn-base-urls http://gateway/yarn --activate`, then retry `spark-cli diagnose <appId> --guided`",
+			)
+		case 1:
+			if err := config.ApplyCluster(cfg, names[0]); err != nil {
+				return cerrors.New(cerrors.CodeFlagInvalid, err.Error(), "run `spark-cli config cluster list` to inspect configured clusters")
+			}
+			fmt.Fprintf(w, "spark-cli: guided preflight selected only configured cluster %q\n", names[0])
+		default:
+			return cerrors.New(
+				cerrors.CodeFlagInvalid,
+				"multiple cluster profiles configured but none selected",
+				"run `spark-cli config cluster list --format json`, then retry with `--cluster <name>` or set active_cluster via `spark-cli config cluster add <name> ... --activate`",
+			)
+		}
+	} else {
+		fmt.Fprintf(w, "spark-cli: guided preflight using cluster %q\n", cfg.SelectedCluster)
+	}
+
+	if len(cfg.LogDirs) == 0 {
+		return cerrors.New(
+			cerrors.CodeConfigMissing,
+			"selected cluster has no log_dirs",
+			"update it with `spark-cli config cluster add "+cfg.SelectedCluster+" --log-dirs shs://history:18081 --yarn-base-urls http://gateway/yarn --activate`",
+		)
+	}
+	guidedWarnYARN(cfg, w)
+	return nil
+}
+
+func clusterNames(clusters map[string]config.ClusterConfig) []string {
+	names := make([]string, 0, len(clusters))
+	for name := range clusters {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func guidedWarnYARN(cfg *config.Config, w io.Writer) {
+	if len(cfg.YARN.BaseURLs) == 0 {
+		fmt.Fprintln(w, "spark-cli: guided preflight warning: yarn.base_urls is empty; diagnose will run EventLog rules but live YARN/thread probes need a YARN gateway URL")
+		return
+	}
+	fmt.Fprintf(w, "spark-cli: guided preflight found %d YARN base URL(s) for live probes\n", len(cfg.YARN.BaseURLs))
 }
 
 func runYARNLogs(ctx context.Context, opts Options, cfg *config.Config) int {
@@ -323,6 +405,9 @@ func buildConfig(opts Options) (*config.Config, error) {
 		if len(cfg.YARN.BaseURLs) == 0 {
 			return nil, cerrors.New(cerrors.CodeFlagInvalid, "yarn.base_urls is empty; set --yarn-base-urls or config yarn.base_urls", "例如 --yarn-base-urls http://203.123.81.20:7765/gateway/hadoop-prod/yarn")
 		}
+		return cfg, nil
+	}
+	if opts.Guided && opts.Scenario == "diagnose" {
 		return cfg, nil
 	}
 	if err := cfg.Validate(); err != nil {
