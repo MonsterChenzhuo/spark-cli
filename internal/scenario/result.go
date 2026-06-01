@@ -12,6 +12,10 @@ import (
 // 体积。需要完整 SQL 时使用 --sql-detail=full。
 const sqlTruncateRunes = 500
 
+// ContractVersion identifies the machine-readable stdout contract. Bump only
+// when the top-level JSON contract changes incompatibly for AI consumers.
+const ContractVersion = 1
+
 // SQLDetailModes 允许值;非法值由 normalize 落到 SQLDetailDefault。
 const (
 	SQLDetailFull     = "full"
@@ -60,15 +64,16 @@ func truncateSQL(s, mode string) string {
 // payload small (production logs with multi-line SQL would otherwise repeat
 // the same multi-KB string per row).
 type Envelope struct {
-	Scenario     string `json:"scenario"`
-	AppID        string `json:"app_id"`
-	AppName      string `json:"app_name"`
-	LogPath      string `json:"log_path"`
-	LogFormat    string `json:"log_format"`
-	Compression  string `json:"compression"`
-	Incomplete   bool   `json:"incomplete"`
-	ParsedEvents int64  `json:"parsed_events"`
-	ElapsedMs    int64  `json:"elapsed_ms"`
+	ContractVersion int    `json:"contract_version"`
+	Scenario        string `json:"scenario"`
+	AppID           string `json:"app_id"`
+	AppName         string `json:"app_name"`
+	LogPath         string `json:"log_path"`
+	LogFormat       string `json:"log_format"`
+	Compression     string `json:"compression"`
+	Incomplete      bool   `json:"incomplete"`
+	ParsedEvents    int64  `json:"parsed_events"`
+	ElapsedMs       int64  `json:"elapsed_ms"`
 	// AppDurationMs 来自 SparkListenerApplicationEnd(没该事件时为 0,字段经
 	// omitempty 缺失)。给 agent 一个绝对秒数参照,看 wall_share 时不必再去
 	// app-summary 拿 duration_ms 才能换算。

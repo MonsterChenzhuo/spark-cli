@@ -23,24 +23,25 @@ import (
 )
 
 type Options struct {
-	Scenario          string
-	AppID             string
-	Cluster           string
-	LogDirs           []string
-	YARNBaseURLs      []string
-	YARNLogBytes      int64
-	YARNLogTypes      []string
-	ExecutorID        string
-	ThreadSummaryOnly bool
-	HDFSUser          string
-	HadoopConfDir     string
-	CacheDir          string
-	NoCache           bool
-	SHSTimeout        time.Duration
-	Timeout           time.Duration
-	Format            string
-	Top               int
-	DryRun            bool
+	Scenario              string
+	AppID                 string
+	Cluster               string
+	LogDirs               []string
+	YARNBaseURLs          []string
+	YARNLogBytes          int64
+	YARNLogTypes          []string
+	ExecutorID            string
+	ThreadSummaryOnly     bool
+	HDFSUser              string
+	HadoopConfDir         string
+	CacheDir              string
+	NoCache               bool
+	SHSTimeout            time.Duration
+	TLSInsecureSkipVerify bool
+	Timeout               time.Duration
+	Format                string
+	Top                   int
+	DryRun                bool
 	// NoProgress 来自 --no-progress flag,与 SPARK_CLI_QUIET 环境变量、stdout
 	// TTY 检测一并由 resolveQuiet 合成最终的 SHS 静默决定。
 	NoProgress bool
@@ -108,12 +109,13 @@ func Run(ctx context.Context, opts Options) int {
 	resolvedAppID := deriveAppID(opts.AppID, src)
 
 	env := scenario.Envelope{
-		Scenario:    opts.Scenario,
-		AppID:       resolvedAppID,
-		LogPath:     logPath,
-		LogFormat:   src.Format,
-		Compression: string(src.Compression),
-		Incomplete:  src.Incomplete,
+		ContractVersion: scenario.ContractVersion,
+		Scenario:        opts.Scenario,
+		AppID:           resolvedAppID,
+		LogPath:         logPath,
+		LogFormat:       src.Format,
+		Compression:     string(src.Compression),
+		Incomplete:      src.Incomplete,
 	}
 
 	if opts.DryRun {
@@ -248,9 +250,10 @@ func guidedWarnYARN(cfg *config.Config, w io.Writer) {
 
 func runYARNLogs(ctx context.Context, opts Options, cfg *config.Config) int {
 	env := scenario.Envelope{
-		Scenario: opts.Scenario,
-		AppID:    opts.AppID,
-		Columns:  []string{"base_url", "app", "containers", "warnings"},
+		ContractVersion: scenario.ContractVersion,
+		Scenario:        opts.Scenario,
+		AppID:           opts.AppID,
+		Columns:         []string{"base_url", "app", "containers", "warnings"},
 	}
 	report, err := fetchYARN(ctx, opts, cfg, opts.YARNLogBytes)
 	if err != nil {
@@ -270,9 +273,10 @@ func runDriverThreadDump(ctx context.Context, opts Options, cfg *config.Config) 
 		columns = append(columns, "threads")
 	}
 	env := scenario.Envelope{
-		Scenario: opts.Scenario,
-		AppID:    opts.AppID,
-		Columns:  columns,
+		ContractVersion: scenario.ContractVersion,
+		Scenario:        opts.Scenario,
+		AppID:           opts.AppID,
+		Columns:         columns,
 	}
 	report, err := fetchThreadDump(ctx, opts, cfg)
 	if err != nil {
@@ -291,8 +295,9 @@ func runDriverThreadDump(ctx context.Context, opts Options, cfg *config.Config) 
 
 func runPaimonDiagnostics(ctx context.Context, opts Options, cfg *config.Config) int {
 	env := scenario.Envelope{
-		Scenario: opts.Scenario,
-		AppID:    opts.AppID,
+		ContractVersion: scenario.ContractVersion,
+		Scenario:        opts.Scenario,
+		AppID:           opts.AppID,
 		Columns: []string{
 			"base_url", "app", "ui_url", "overview_url", "thread_dump_url",
 			"profiler_url", "executor_id", "overview", "thread_dump",
@@ -348,12 +353,8 @@ func render(opts Options, env scenario.Envelope) int {
 	switch opts.Format {
 	case "", "json":
 		err = output.WriteJSON(opts.Stdout, env)
-	case "table":
-		err = output.WriteTable(opts.Stdout, env)
-	case "markdown":
-		err = output.WriteMarkdown(opts.Stdout, env)
 	default:
-		err = cerrors.New(cerrors.CodeFlagInvalid, fmt.Sprintf("unknown --format %q", opts.Format), "use json|table|markdown")
+		err = cerrors.New(cerrors.CodeFlagInvalid, fmt.Sprintf("unknown --format %q", opts.Format), "use json")
 	}
 	if err != nil {
 		return writeErr(opts.Stderr, err)
@@ -395,6 +396,9 @@ func buildConfig(opts Options) (*config.Config, error) {
 	if opts.SHSTimeout > 0 {
 		cfg.SHS.Timeout = opts.SHSTimeout
 	}
+	if opts.TLSInsecureSkipVerify {
+		cfg.TLS.InsecureSkipVerify = true
+	}
 	if opts.SQLDetail != "" {
 		cfg.SQL.Detail = opts.SQLDetail
 	}
@@ -434,7 +438,9 @@ func fetchYARN(ctx context.Context, opts Options, cfg *config.Config, maxLogByte
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	return yarn.NewClient(cfg.YARN.BaseURLs, timeout).FetchApplicationLogs(ctx, opts.AppID, yarn.Options{
+	return yarn.NewClientWithOptions(cfg.YARN.BaseURLs, timeout, yarn.ClientOptions{
+		InsecureSkipVerify: cfg.TLS.InsecureSkipVerify,
+	}).FetchApplicationLogs(ctx, opts.AppID, yarn.Options{
 		TopContainers: opts.Top,
 		LogTypes:      opts.YARNLogTypes,
 		MaxLogBytes:   maxLogBytes,
@@ -447,7 +453,9 @@ func fetchThreadDump(ctx context.Context, opts Options, cfg *config.Config) (*ya
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	return yarn.NewClient(cfg.YARN.BaseURLs, timeout).FetchThreadDump(ctx, opts.AppID, opts.ExecutorID)
+	return yarn.NewClientWithOptions(cfg.YARN.BaseURLs, timeout, yarn.ClientOptions{
+		InsecureSkipVerify: cfg.TLS.InsecureSkipVerify,
+	}).FetchThreadDump(ctx, opts.AppID, opts.ExecutorID)
 }
 
 func fetchPaimonDiagnostics(ctx context.Context, opts Options, cfg *config.Config) (*yarn.PaimonDiagnosticsReport, error) {
@@ -455,7 +463,9 @@ func fetchPaimonDiagnostics(ctx context.Context, opts Options, cfg *config.Confi
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	return yarn.NewClient(cfg.YARN.BaseURLs, timeout).FetchPaimonDiagnostics(ctx, opts.AppID, opts.ExecutorID)
+	return yarn.NewClientWithOptions(cfg.YARN.BaseURLs, timeout, yarn.ClientOptions{
+		InsecureSkipVerify: cfg.TLS.InsecureSkipVerify,
+	}).FetchPaimonDiagnostics(ctx, opts.AppID, opts.ExecutorID)
 }
 
 // validateHint 给 cfg.Validate() 错误一个可执行 hint。Validate 自身在 internal/config
@@ -464,7 +474,7 @@ func fetchPaimonDiagnostics(ctx context.Context, opts Options, cfg *config.Confi
 func validateHint(err error) string {
 	msg := err.Error()
 	if strings.Contains(msg, "log_dirs is empty") {
-		return "run `spark-cli config init` 写默认 config,或加 --log-dirs file:///path / hdfs://nn/path / shs://host:port"
+		return "run `spark-cli config init` 写默认 config,或加 --log-dirs file:///path / hdfs://nn/path / shs://host:port / shs+https://host:port"
 	}
 	if strings.Contains(msg, "timeout must be positive") {
 		return "config.yaml `timeout:` 或 --timeout 必须是正值,例如 30s"
@@ -479,7 +489,7 @@ func buildFS(cfg *config.Config, quiet bool, shsCacheDir string) (map[string]fs.
 	for _, dir := range cfg.LogDirs {
 		u, err := url.Parse(dir)
 		if err != nil {
-			return nil, nil, cerrors.New(cerrors.CodeFlagInvalid, "bad log_dir: "+dir, "use file:// or hdfs://")
+			return nil, nil, cerrors.New(cerrors.CodeFlagInvalid, "bad log_dir: "+dir, "use file://, hdfs://, shs:// or shs+https://")
 		}
 		switch u.Scheme {
 		case "file":
@@ -500,18 +510,19 @@ func buildFS(cfg *config.Config, quiet bool, shsCacheDir string) (map[string]fs.
 				out["hdfs"] = h
 				closers = append(closers, h)
 			}
-		case "shs":
-			if _, ok := out["shs"]; !ok {
+		case "shs", "shs+https":
+			if _, ok := out[u.Scheme]; !ok {
 				sh := fs.NewSHS(strings.TrimRight(dir, "/"), cfg.SHS.Timeout, fs.SHSOptions{
-					Quiet:     quiet,
-					CacheDir:  shsCacheDir,
-					UserAgent: "spark-cli/" + CLIVersion,
+					Quiet:              quiet,
+					CacheDir:           shsCacheDir,
+					UserAgent:          "spark-cli/" + CLIVersion,
+					InsecureSkipVerify: cfg.TLS.InsecureSkipVerify,
 				})
-				out["shs"] = sh
+				out[u.Scheme] = sh
 				closers = append(closers, sh)
 			}
 		default:
-			return nil, closers, cerrors.New(cerrors.CodeFlagInvalid, "unsupported scheme: "+u.Scheme, "use file://, hdfs:// or shs://")
+			return nil, closers, cerrors.New(cerrors.CodeFlagInvalid, "unsupported scheme: "+u.Scheme, "use file://, hdfs://, shs:// or shs+https://")
 		}
 	}
 	return out, closers, nil

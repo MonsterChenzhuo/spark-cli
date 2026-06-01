@@ -58,6 +58,31 @@ func TestFetchApplicationLogsBuildsContainerLogURLsBehindGateway(t *testing.T) {
 	}
 }
 
+func TestFetchApplicationLogsWithInsecureTLS(t *testing.T) {
+	const appID = "application_tls_1"
+	mux := http.NewServeMux()
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+appID, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"app": map[string]any{"id": appID, "user": "alice"}})
+	})
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+appID+"/appattempts", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"appAttempts": map[string]any{"appAttempt": []map[string]any{}}})
+	})
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+
+	got, err := NewClientWithOptions(
+		[]string{srv.URL + "/yarn"},
+		5*time.Second,
+		ClientOptions{InsecureSkipVerify: true},
+	).FetchApplicationLogs(context.Background(), appID, Options{TopContainers: 1})
+	if err != nil {
+		t.Fatalf("FetchApplicationLogs via self-signed HTTPS gateway: %v", err)
+	}
+	if got.App.ID != appID || got.App.User != "alice" {
+		t.Fatalf("app summary = %+v", got.App)
+	}
+}
+
 func TestFetchApplicationLogsIncludesSmallLogSnippets(t *testing.T) {
 	const appID = "application_1_2"
 	mux := http.NewServeMux()

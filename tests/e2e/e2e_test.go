@@ -151,10 +151,10 @@ func TestE2E_NativeIOScenario(t *testing.T) {
 	}
 }
 
-// markdown / table format 在所有 EventLog 场景都不应崩溃,且 header 应当含
-// 应用 wall 时长(round-4 加的 formatAppDuration)。这是 e2e smoke,unit
-// test 已经守门具体细节。
-func TestE2E_FormatTableAndMarkdownSmoke(t *testing.T) {
+// spark-cli 是 AI-only CLI,EventLog 场景只允许 JSON。历史上保留的
+// table/markdown 展示格式必须明确拒绝,避免 agent 调错格式后拿到不可解析
+// stdout。
+func TestE2E_EventLogScenariosRejectHumanFormats(t *testing.T) {
 	dir := t.TempDir()
 	src, err := os.ReadFile(filepath.Join("..", "testdata", "tiny_app.json"))
 	if err != nil {
@@ -171,19 +171,53 @@ func TestE2E_FormatTableAndMarkdownSmoke(t *testing.T) {
 				rc := cmd.RunWith(context.Background(),
 					[]string{sc, "application_1_1", "--log-dirs", "file://" + dir, "--format", format},
 					&stdout, &stderr)
-				if rc != 0 {
-					t.Fatalf("rc=%d stderr=%s", rc, stderr.String())
+				if rc != 2 {
+					t.Fatalf("rc=%d want 2 stderr=%s stdout=%s", rc, stderr.String(), stdout.String())
 				}
-				out := stdout.String()
-				if out == "" {
-					t.Errorf("empty output for %s/%s", sc, format)
+				if stdout.Len() != 0 {
+					t.Fatalf("stdout should be empty for rejected format, got %s", stdout.String())
 				}
-				// 应当含应用 wall 时长(fixture 跑 1s,formatAppDuration 输出 "app: 1.0s")
-				if !bytes.Contains([]byte(out), []byte("app: ")) {
-					t.Errorf("%s/%s missing app duration in header:\n%s", sc, format, out)
+				if !bytes.Contains(stderr.Bytes(), []byte(`"FLAG_INVALID"`)) {
+					t.Fatalf("stderr missing FLAG_INVALID: %s", stderr.String())
 				}
 			})
 		}
+	}
+}
+
+func TestE2E_AllScenariosEmitContractVersion(t *testing.T) {
+	dir := t.TempDir()
+	src, err := os.ReadFile(filepath.Join("..", "testdata", "tiny_app.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(dir, "application_1_1")
+	if err := os.WriteFile(logPath, src, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, sc := range []string{"app-summary", "spark-conf", "slow-stages", "data-skew", "gc-pressure", "native-io", "diagnose"} {
+		t.Run(sc, func(t *testing.T) {
+			cmd.ResetForTest()
+			var stdout, stderr bytes.Buffer
+			rc := cmd.RunWith(context.Background(),
+				[]string{sc, "application_1_1", "--log-dirs", "file://" + dir, "--format", "json"},
+				&stdout, &stderr)
+			if rc != 0 {
+				t.Fatalf("rc=%d stderr=%s", rc, stderr.String())
+			}
+			var m map[string]any
+			if err := json.Unmarshal(stdout.Bytes(), &m); err != nil {
+				t.Fatalf("not json: %v\n%s", err, stdout.String())
+			}
+			v, ok := m["contract_version"]
+			if !ok {
+				t.Fatalf("scenario=%s missing contract_version\n%s", sc, stdout.String())
+			}
+			if v != float64(1) {
+				t.Fatalf("scenario=%s contract_version=%v want 1", sc, v)
+			}
+		})
 	}
 }
 
@@ -239,9 +273,12 @@ func TestE2E_VersionFlagAndCommandMatch(t *testing.T) {
 			if rc != 0 {
 				t.Fatalf("rc=%d stderr=%s", rc, stderr.String())
 			}
-			out := stdout.String()
-			if !strings.HasPrefix(out, "spark-cli ") {
-				t.Errorf("output=%q want prefix \"spark-cli \"", out)
+			var got map[string]any
+			if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+				t.Fatalf("stdout should be json: %v\n%s", err, stdout.String())
+			}
+			if got["command"] != "version" || got["version"] == "" {
+				t.Errorf("unexpected version response: %+v", got)
 			}
 		})
 	}

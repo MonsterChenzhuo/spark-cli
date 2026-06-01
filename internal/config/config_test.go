@@ -140,6 +140,23 @@ func TestApplyFlagsSHSTimeout(t *testing.T) {
 	}
 }
 
+func TestApplyEnvTLSInsecureSkipVerify(t *testing.T) {
+	cfg := &Config{}
+	t.Setenv("SPARK_CLI_TLS_INSECURE_SKIP_VERIFY", "true")
+	ApplyEnv(cfg)
+	if !cfg.TLS.InsecureSkipVerify {
+		t.Errorf("TLS.InsecureSkipVerify=%v want true", cfg.TLS.InsecureSkipVerify)
+	}
+}
+
+func TestApplyFlagsTLSInsecureSkipVerify(t *testing.T) {
+	cfg := &Config{}
+	ApplyFlags(cfg, FlagOverrides{TLSInsecureSkipVerify: true})
+	if !cfg.TLS.InsecureSkipVerify {
+		t.Errorf("TLS.InsecureSkipVerify=%v want true", cfg.TLS.InsecureSkipVerify)
+	}
+}
+
 func TestLoadParsesSHSTimeout(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SPARK_CLI_CONFIG_DIR", dir)
@@ -153,6 +170,27 @@ func TestLoadParsesSHSTimeout(t *testing.T) {
 	}
 	if cfg.SHS.Timeout != 90*time.Second {
 		t.Errorf("SHS.Timeout=%v want 90s", cfg.SHS.Timeout)
+	}
+}
+
+func TestLoadParsesTLSInsecureSkipVerify(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SPARK_CLI_CONFIG_DIR", dir)
+	body := `
+log_dirs:
+  - shs+https://history.example.com:18081/gateway/sparkhistory
+tls:
+  insecure_skip_verify: true
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.TLS.InsecureSkipVerify {
+		t.Errorf("TLS.InsecureSkipVerify=%v want true", cfg.TLS.InsecureSkipVerify)
 	}
 }
 
@@ -203,6 +241,8 @@ clusters:
         - http://gw/prod/yarn
     shs:
       timeout: 7m
+    tls:
+      insecure_skip_verify: true
 `
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -226,6 +266,9 @@ clusters:
 	if cfg.SHS.Timeout != 7*time.Minute {
 		t.Errorf("SHS.Timeout=%v want 7m", cfg.SHS.Timeout)
 	}
+	if !cfg.TLS.InsecureSkipVerify {
+		t.Errorf("TLS.InsecureSkipVerify=%v want true", cfg.TLS.InsecureSkipVerify)
+	}
 }
 
 func TestApplyClusterSelectsNamedCluster(t *testing.T) {
@@ -238,6 +281,7 @@ func TestApplyClusterSelectsNamedCluster(t *testing.T) {
 				LogDirs: []string{"shs://prod:18081"},
 				YARN:    YARNConfig{BaseURLs: []string{"http://prod/yarn"}},
 				SHS:     SHSConfig{Timeout: 9 * time.Minute},
+				TLS:     TLSConfig{InsecureSkipVerify: true},
 			},
 		},
 	}
@@ -255,5 +299,8 @@ func TestApplyClusterSelectsNamedCluster(t *testing.T) {
 	}
 	if cfg.SHS.Timeout != 9*time.Minute {
 		t.Errorf("SHS.Timeout=%v want 9m", cfg.SHS.Timeout)
+	}
+	if !cfg.TLS.InsecureSkipVerify {
+		t.Errorf("TLS.InsecureSkipVerify=%v want true", cfg.TLS.InsecureSkipVerify)
 	}
 }

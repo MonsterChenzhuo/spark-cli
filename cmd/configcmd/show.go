@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,15 +17,16 @@ import (
 )
 
 type sources struct {
-	Cluster       string // "flag" | "env" | "file" | "default"
-	LogDirs       string
-	YARNBaseURLs  string
-	HDFSUser      string
-	HadoopConfDir string
-	CacheDir      string
-	SHSTimeout    string
-	SQLDetail     string
-	Timeout       string
+	Cluster               string // "flag" | "env" | "file" | "default"
+	LogDirs               string
+	YARNBaseURLs          string
+	HDFSUser              string
+	HadoopConfDir         string
+	CacheDir              string
+	SHSTimeout            string
+	TLSInsecureSkipVerify string
+	SQLDetail             string
+	Timeout               string
 }
 
 func newShowCmd() *cobra.Command {
@@ -42,22 +43,34 @@ func newShowCmd() *cobra.Command {
 			config.ApplyEnv(cfg)
 			applyRootFlagOverrides(cmd, cfg, &src)
 			switch format {
-			case "json":
+			case "", "json":
 				return renderJSON(cmd.OutOrStdout(), cfg, src)
-			case "", "text":
-				render(cmd.OutOrStdout(), cfg, src)
-				return nil
 			default:
-				return fmt.Errorf("unknown --format %q (use text|json)", format)
+				return fmt.Errorf("unknown --format %q (use json)", format)
 			}
 		},
 	}
-	c.Flags().StringVar(&format, "format", "", "Output format: text (default) | json")
+	c.Flags().StringVar(&format, "format", "", "Output format: json")
 	return c
 }
 
 func detectSources(cfg *config.Config) sources {
-	src := sources{Cluster: "default", LogDirs: "default", YARNBaseURLs: "default", HDFSUser: "default", HadoopConfDir: "default", CacheDir: "default", SHSTimeout: "default", SQLDetail: "default", Timeout: "default"}
+	src := defaultSources()
+	markFileSources(cfg, &src)
+	markEnvSources(&src)
+	return src
+}
+
+func defaultSources() sources {
+	return sources{
+		Cluster: "default", LogDirs: "default", YARNBaseURLs: "default",
+		HDFSUser: "default", HadoopConfDir: "default", CacheDir: "default",
+		SHSTimeout: "default", TLSInsecureSkipVerify: "default",
+		SQLDetail: "default", Timeout: "default",
+	}
+}
+
+func markFileSources(cfg *config.Config, src *sources) {
 	dir := os.Getenv("SPARK_CLI_CONFIG_DIR")
 	if dir == "" {
 		home, _ := os.UserHomeDir()
@@ -86,11 +99,17 @@ func detectSources(cfg *config.Config) sources {
 		if cfg.SHS.Timeout != 0 {
 			src.SHSTimeout = "file"
 		}
+		if cfg.TLS.InsecureSkipVerify {
+			src.TLSInsecureSkipVerify = "file"
+		}
 		if cfg.SQL.Detail != "" && cfg.SQL.Detail != "truncate" {
 			src.SQLDetail = "file"
 		}
 		src.Timeout = "file"
 	}
+}
+
+func markEnvSources(src *sources) {
 	if os.Getenv("SPARK_CLI_LOG_DIRS") != "" {
 		src.LogDirs = "env"
 	}
@@ -109,13 +128,15 @@ func detectSources(cfg *config.Config) sources {
 	if os.Getenv("SPARK_CLI_SHS_TIMEOUT") != "" {
 		src.SHSTimeout = "env"
 	}
+	if os.Getenv("SPARK_CLI_TLS_INSECURE_SKIP_VERIFY") != "" {
+		src.TLSInsecureSkipVerify = "env"
+	}
 	if os.Getenv("SPARK_CLI_SQL_DETAIL") != "" {
 		src.SQLDetail = "env"
 	}
 	if os.Getenv("SPARK_CLI_TIMEOUT") != "" {
 		src.Timeout = "env"
 	}
-	return src
 }
 
 // applyRootFlagOverrides 让 root persistent flag(--log-dirs / --cache-dir /
@@ -150,6 +171,9 @@ func applyClusterFlagOverride(cmd *cobra.Command, cfg *config.Config, src *sourc
 			src.YARNBaseURLs = "flag"
 			if cfg.SHS.Timeout > 0 {
 				src.SHSTimeout = "flag"
+			}
+			if cfg.TLS.InsecureSkipVerify {
+				src.TLSInsecureSkipVerify = "flag"
 			}
 		}
 	}
@@ -192,6 +216,12 @@ func applyTuningFlagOverrides(cmd *cobra.Command, cfg *config.Config, src *sourc
 		cfg.SQL.Detail = v
 		src.SQLDetail = "flag"
 	}
+	if v, ok := changedPersistentFlag(cmd, "tls-insecure-skip-verify"); ok && v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.TLS.InsecureSkipVerify = b
+			src.TLSInsecureSkipVerify = "flag"
+		}
+	}
 	if v, ok := changedPersistentFlag(cmd, "timeout"); ok && v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.Timeout = d
@@ -227,17 +257,18 @@ func renderJSON(w io.Writer, cfg *config.Config, src sources) error {
 		Value  any    `json:"value"`
 	}
 	out := map[string]field{
-		"active_cluster":   {Source: src.Cluster, Value: cfg.ActiveCluster},
-		"selected_cluster": {Source: src.Cluster, Value: cfg.SelectedCluster},
-		"clusters":         {Source: src.Cluster, Value: clustersForShow(cfg.Clusters)},
-		"log_dirs":         {Source: src.LogDirs, Value: cfg.LogDirs},
-		"yarn.base_urls":   {Source: src.YARNBaseURLs, Value: cfg.YARN.BaseURLs},
-		"hdfs.user":        {Source: src.HDFSUser, Value: cfg.HDFS.User},
-		"hdfs.conf_dir":    {Source: src.HadoopConfDir, Value: cfg.HDFS.ConfDir},
-		"cache.dir":        {Source: src.CacheDir, Value: cacheDir},
-		"shs.timeout":      {Source: src.SHSTimeout, Value: cfg.SHS.Timeout.String()},
-		"sql.detail":       {Source: src.SQLDetail, Value: sqlDetail},
-		"timeout":          {Source: src.Timeout, Value: cfg.Timeout.String()},
+		"active_cluster":           {Source: src.Cluster, Value: cfg.ActiveCluster},
+		"selected_cluster":         {Source: src.Cluster, Value: cfg.SelectedCluster},
+		"clusters":                 {Source: src.Cluster, Value: clustersForShow(cfg.Clusters)},
+		"log_dirs":                 {Source: src.LogDirs, Value: cfg.LogDirs},
+		"yarn.base_urls":           {Source: src.YARNBaseURLs, Value: cfg.YARN.BaseURLs},
+		"hdfs.user":                {Source: src.HDFSUser, Value: cfg.HDFS.User},
+		"hdfs.conf_dir":            {Source: src.HadoopConfDir, Value: cfg.HDFS.ConfDir},
+		"cache.dir":                {Source: src.CacheDir, Value: cacheDir},
+		"shs.timeout":              {Source: src.SHSTimeout, Value: cfg.SHS.Timeout.String()},
+		"tls.insecure_skip_verify": {Source: src.TLSInsecureSkipVerify, Value: cfg.TLS.InsecureSkipVerify},
+		"sql.detail":               {Source: src.SQLDetail, Value: sqlDetail},
+		"timeout":                  {Source: src.Timeout, Value: cfg.Timeout.String()},
 	}
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
@@ -248,6 +279,7 @@ type showCluster struct {
 	LogDirs      []string `json:"log_dirs,omitempty"`
 	YARNBaseURLs []string `json:"yarn_base_urls,omitempty"`
 	SHSTimeout   string   `json:"shs_timeout,omitempty"`
+	TLSInsecure  bool     `json:"tls_insecure_skip_verify,omitempty"`
 }
 
 func clustersForShow(clusters map[string]config.ClusterConfig) map[string]showCluster {
@@ -263,67 +295,8 @@ func clustersForShow(clusters map[string]config.ClusterConfig) map[string]showCl
 		if cluster.SHS.Timeout > 0 {
 			row.SHSTimeout = cluster.SHS.Timeout.String()
 		}
+		row.TLSInsecure = cluster.TLS.InsecureSkipVerify
 		out[name] = row
 	}
 	return out
-}
-
-func render(w io.Writer, cfg *config.Config, src sources) {
-	fmt.Fprintf(w, "active_cluster (%s): %s\n", src.Cluster, cfg.ActiveCluster)
-	fmt.Fprintf(w, "selected_cluster (%s): %s\n", src.Cluster, cfg.SelectedCluster)
-	fmt.Fprintf(w, "clusters (%s):\n", src.Cluster)
-	if len(cfg.Clusters) == 0 {
-		fmt.Fprintln(w, "  (none)")
-	} else {
-		names := make([]string, 0, len(cfg.Clusters))
-		for name := range cfg.Clusters {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		for _, name := range names {
-			cluster := cfg.Clusters[name]
-			marker := " "
-			if name == cfg.SelectedCluster {
-				marker = "*"
-			}
-			fmt.Fprintf(w, "  %s %s\n", marker, name)
-			for _, d := range cluster.LogDirs {
-				fmt.Fprintf(w, "      log_dir: %s\n", d)
-			}
-			for _, u := range cluster.YARN.BaseURLs {
-				fmt.Fprintf(w, "      yarn: %s\n", u)
-			}
-			if cluster.SHS.Timeout > 0 {
-				fmt.Fprintf(w, "      shs.timeout: %s\n", cluster.SHS.Timeout)
-			}
-		}
-	}
-	fmt.Fprintf(w, "log_dirs (%s):\n", src.LogDirs)
-	if len(cfg.LogDirs) == 0 {
-		fmt.Fprintln(w, "  (none — run `spark-cli config init`)")
-	}
-	for _, d := range cfg.LogDirs {
-		fmt.Fprintf(w, "  - %s\n", d)
-	}
-	fmt.Fprintf(w, "yarn.base_urls (%s):\n", src.YARNBaseURLs)
-	if len(cfg.YARN.BaseURLs) == 0 {
-		fmt.Fprintln(w, "  (none)")
-	}
-	for _, d := range cfg.YARN.BaseURLs {
-		fmt.Fprintf(w, "  - %s\n", d)
-	}
-	fmt.Fprintf(w, "hdfs.user (%s): %s\n", src.HDFSUser, cfg.HDFS.User)
-	fmt.Fprintf(w, "hdfs.conf_dir (%s): %s\n", src.HadoopConfDir, cfg.HDFS.ConfDir)
-	cacheDir := cfg.Cache.Dir
-	if cacheDir == "" {
-		cacheDir = cache.DefaultDir()
-	}
-	fmt.Fprintf(w, "cache.dir (%s): %s\n", src.CacheDir, cacheDir)
-	fmt.Fprintf(w, "shs.timeout (%s): %s\n", src.SHSTimeout, cfg.SHS.Timeout)
-	sqlDetail := cfg.SQL.Detail
-	if sqlDetail == "" {
-		sqlDetail = "truncate"
-	}
-	fmt.Fprintf(w, "sql.detail (%s): %s\n", src.SQLDetail, sqlDetail)
-	fmt.Fprintf(w, "timeout (%s): %s\n", src.Timeout, cfg.Timeout)
 }

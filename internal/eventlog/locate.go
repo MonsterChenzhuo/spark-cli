@@ -112,11 +112,11 @@ func (l *Locator) Resolve(appIDInput string) (LogSource, error) {
 func (l *Locator) fsFor(dirURI string) (fs.FS, error) {
 	u, err := url.Parse(dirURI)
 	if err != nil {
-		return nil, cerrors.New(cerrors.CodeFlagInvalid, "bad log_dir: "+dirURI, "use file:// or hdfs:// URI")
+		return nil, cerrors.New(cerrors.CodeFlagInvalid, "bad log_dir: "+dirURI, "use file://, hdfs://, shs:// or shs+https:// URI")
 	}
 	fsys, ok := l.fsByScheme[u.Scheme]
 	if !ok {
-		return nil, cerrors.New(cerrors.CodeFlagInvalid, "unsupported scheme: "+u.Scheme, "use file:// or hdfs://")
+		return nil, cerrors.New(cerrors.CodeFlagInvalid, "unsupported scheme: "+u.Scheme, "use file://, hdfs://, shs:// or shs+https://")
 	}
 	return fsys, nil
 }

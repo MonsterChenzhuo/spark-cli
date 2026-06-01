@@ -3,7 +3,6 @@ package cachecmd
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -38,19 +37,16 @@ func newListCmd() *cobra.Command {
 			dir := resolveCacheDir(cmd)
 			out := scanCache(dir)
 			switch format {
-			case "json":
+			case "", "json":
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetEscapeHTML(false)
 				return enc.Encode(out)
-			case "", "text":
-				renderListText(cmd.OutOrStdout(), out)
-				return nil
 			default:
-				return fmt.Errorf("unknown --format %q (use text|json)", format)
+				return fmt.Errorf("unknown --format %q (use json)", format)
 			}
 		},
 	}
-	c.Flags().StringVar(&format, "format", "", "Output format: text (default) | json")
+	c.Flags().StringVar(&format, "format", "", "Output format: json")
 	return c
 }
 
@@ -108,19 +104,6 @@ func scanCache(dir string) listOutput {
 		return out.Entries[i].SizeMiB > out.Entries[j].SizeMiB
 	})
 	return out
-}
-
-func renderListText(w io.Writer, out listOutput) {
-	fmt.Fprintf(w, "cache_dir: %s\n", out.Dir)
-	fmt.Fprintf(w, "total: %d entries · %.2f MiB\n\n", out.Total, out.TotalMiB)
-	if out.Total == 0 {
-		return
-	}
-	fmt.Fprintf(w, "%-12s  %-40s  %s\n", "kind", "name", "size_mib")
-	fmt.Fprintf(w, "%-12s  %-40s  %s\n", strings.Repeat("-", 12), strings.Repeat("-", 40), strings.Repeat("-", 8))
-	for _, e := range out.Entries {
-		fmt.Fprintf(w, "%-12s  %-40s  %.2f\n", e.Kind, e.Name, e.SizeMiB)
-	}
 }
 
 func round3(f float64) float64 {

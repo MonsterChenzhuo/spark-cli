@@ -8,26 +8,27 @@ import (
 )
 
 type globalState struct {
-	Cluster           string
-	LogDirs           string
-	YARNBaseURLs      string
-	YARNLogBytes      int64
-	YARNLogTypes      string
-	ExecutorID        string
-	ThreadSummaryOnly bool
-	HDFSUser          string
-	HadoopConfDir     string
-	CacheDir          string
-	NoCache           bool
-	SHSTimeout        string
-	SQLDetail         string
-	Timeout           string
-	Format            string
-	Top               int
-	DryRun            bool
-	NoProgress        bool
-	Guided            bool
-	ExitCode          int
+	Cluster               string
+	LogDirs               string
+	YARNBaseURLs          string
+	YARNLogBytes          int64
+	YARNLogTypes          string
+	ExecutorID            string
+	ThreadSummaryOnly     bool
+	HDFSUser              string
+	HadoopConfDir         string
+	CacheDir              string
+	NoCache               bool
+	SHSTimeout            string
+	TLSInsecureSkipVerify bool
+	SQLDetail             string
+	Timeout               string
+	Format                string
+	Top                   int
+	DryRun                bool
+	NoProgress            bool
+	Guided                bool
+	ExitCode              int
 }
 
 // CLIVersion 由 cmd 包在 init 时注入(走 -X github.com/.../cmd.version 链)。
@@ -53,7 +54,7 @@ func ResetForTest() { state = defaultState() }
 // RegisterFlags binds the persistent flags spark-cli scenarios need on root.
 func RegisterFlags(root *cobra.Command) {
 	root.PersistentFlags().StringVar(&state.Cluster, "cluster", state.Cluster, "Named cluster profile from config.clusters to use")
-	root.PersistentFlags().StringVar(&state.LogDirs, "log-dirs", state.LogDirs, "Comma-separated EventLog sources: file:///path | hdfs://nn:port/path | shs://host:port (Spark History Server REST endpoint)")
+	root.PersistentFlags().StringVar(&state.LogDirs, "log-dirs", state.LogDirs, "Comma-separated EventLog sources: file:///path | hdfs://nn:port/path | shs://host:port | shs+https://host:port (Spark History Server REST endpoint)")
 	root.PersistentFlags().StringVar(&state.YARNBaseURLs, "yarn-base-urls", state.YARNBaseURLs, "Comma-separated YARN RM/gateway base URLs, e.g. http://rm:8088 or http://host/gateway/prod/yarn")
 	root.PersistentFlags().Int64Var(&state.YARNLogBytes, "yarn-log-bytes", state.YARNLogBytes, "Max bytes per YARN container log type for yarn-logs; diagnose only emits log URLs")
 	root.PersistentFlags().StringVar(&state.YARNLogTypes, "yarn-log-types", state.YARNLogTypes, "Comma-separated YARN log files for yarn-logs, e.g. stderr,stdout,syslog,gc.log.0.current; gc expands common GC log names")
@@ -62,14 +63,15 @@ func RegisterFlags(root *cobra.Command) {
 	root.PersistentFlags().StringVar(&state.HDFSUser, "hdfs-user", state.HDFSUser, "HDFS simple-auth user (defaults to $USER)")
 	root.PersistentFlags().StringVar(&state.HadoopConfDir, "hadoop-conf-dir", state.HadoopConfDir, "Path to Hadoop XML config dir; falls back to HADOOP_CONF_DIR / HADOOP_HOME")
 	root.PersistentFlags().StringVar(&state.Timeout, "timeout", state.Timeout, "Overall parse timeout, e.g. 30s")
-	root.PersistentFlags().StringVar(&state.Format, "format", state.Format, "Output format: json | table | markdown")
+	root.PersistentFlags().StringVar(&state.Format, "format", state.Format, "Output format: json")
 	root.PersistentFlags().IntVar(&state.Top, "top", state.Top, "Top N for ranked scenarios")
 	root.PersistentFlags().BoolVar(&state.DryRun, "dry-run", state.DryRun, "Locate file only; do not parse events")
 	root.PersistentFlags().BoolVar(&state.NoProgress, "no-progress", state.NoProgress, "Force-silence SHS progress lines (overrides SPARK_CLI_QUIET env and stdout-TTY auto-detect)")
 	root.PersistentFlags().BoolVar(&state.Guided, "guided", state.Guided, "Run diagnose SOP preflight: confirm/select cluster before reading EventLogs")
 	root.PersistentFlags().StringVar(&state.CacheDir, "cache-dir", state.CacheDir, "Directory for the parsed-application cache (defaults to $XDG_CACHE_HOME/spark-cli or ~/.cache/spark-cli)")
 	root.PersistentFlags().BoolVar(&state.NoCache, "no-cache", state.NoCache, "Bypass the parsed-application cache for this invocation (do not read or write)")
-	root.PersistentFlags().StringVar(&state.SHSTimeout, "shs-timeout", state.SHSTimeout, "HTTP timeout for shs:// requests (default 5m;生产 zip 几 GB 是常态,设小了会撞墙)")
+	root.PersistentFlags().StringVar(&state.SHSTimeout, "shs-timeout", state.SHSTimeout, "HTTP timeout for shs:// / shs+https:// requests (default 5m;生产 zip 几 GB 是常态,设小了会撞墙)")
+	root.PersistentFlags().BoolVar(&state.TLSInsecureSkipVerify, "tls-insecure-skip-verify", state.TLSInsecureSkipVerify, "Skip HTTPS certificate verification for SHS/YARN gateways with self-signed certificates")
 	root.PersistentFlags().StringVar(&state.SQLDetail, "sql-detail", state.SQLDetail, "SQL description detail in sql_executions: truncate(default ~500 runes) | full | none")
 }
 

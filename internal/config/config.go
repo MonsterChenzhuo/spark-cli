@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,10 +27,16 @@ type CacheConfig struct {
 	Dir string `yaml:"dir"`
 }
 
-// SHSConfig 控制 Spark History Server (`shs://`) 数据源的 HTTP 行为。
-// 当前仅暴露 Timeout; TLS / 鉴权未支持。
+// SHSConfig 控制 Spark History Server (`shs://` / `shs+https://`) 数据源的 HTTP 行为。
+// 鉴权未支持。
 type SHSConfig struct {
 	Timeout time.Duration `yaml:"timeout"`
+}
+
+// TLSConfig 控制私有 HTTPS gateway 的证书校验行为。默认严格校验;仅在用户明确配置
+// insecure_skip_verify 时跳过证书链校验,用于内网自签证书网关。
+type TLSConfig struct {
+	InsecureSkipVerify bool `yaml:"insecure_skip_verify"`
 }
 
 // YARNConfig 控制 ResourceManager / gateway REST 来源。BaseURLs 可以是原生
@@ -45,6 +52,7 @@ type ClusterConfig struct {
 	LogDirs []string   `yaml:"log_dirs"`
 	YARN    YARNConfig `yaml:"yarn"`
 	SHS     SHSConfig  `yaml:"shs"`
+	TLS     TLSConfig  `yaml:"tls"`
 }
 
 // SQLConfig 控制 SQL description 在 envelope 顶层 sql_executions map 中的呈现。
@@ -62,6 +70,7 @@ type Config struct {
 	HDFS            HDFSConfig               `yaml:"hdfs"`
 	Cache           CacheConfig              `yaml:"cache"`
 	SHS             SHSConfig                `yaml:"shs"`
+	TLS             TLSConfig                `yaml:"tls"`
 	YARN            YARNConfig               `yaml:"yarn"`
 	SQL             SQLConfig                `yaml:"sql"`
 	Timeout         time.Duration            `yaml:"timeout"`
@@ -109,12 +118,14 @@ func Load() (*Config, error) {
 			SHS     struct {
 				Timeout string `yaml:"timeout"`
 			} `yaml:"shs"`
+			TLS TLSConfig `yaml:"tls"`
 		} `yaml:"clusters"`
 		HDFS  HDFSConfig  `yaml:"hdfs"`
 		Cache CacheConfig `yaml:"cache"`
 		SHS   struct {
 			Timeout string `yaml:"timeout"`
 		} `yaml:"shs"`
+		TLS     TLSConfig  `yaml:"tls"`
 		YARN    YARNConfig `yaml:"yarn"`
 		SQL     SQLConfig  `yaml:"sql"`
 		Timeout string     `yaml:"timeout"`
@@ -127,12 +138,14 @@ func Load() (*Config, error) {
 	cfg.HDFS = raw.HDFS
 	cfg.Cache = raw.Cache
 	cfg.YARN = raw.YARN
+	cfg.TLS = raw.TLS
 	if len(raw.Clusters) > 0 {
 		cfg.Clusters = make(map[string]ClusterConfig, len(raw.Clusters))
 		for name, cluster := range raw.Clusters {
 			c := ClusterConfig{
 				LogDirs: cluster.LogDirs,
 				YARN:    cluster.YARN,
+				TLS:     cluster.TLS,
 			}
 			if cluster.SHS.Timeout != "" {
 				d, err := time.ParseDuration(cluster.SHS.Timeout)
@@ -190,6 +203,11 @@ func ApplyEnv(cfg *Config) {
 			cfg.SHS.Timeout = d
 		}
 	}
+	if v := os.Getenv("SPARK_CLI_TLS_INSECURE_SKIP_VERIFY"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.TLS.InsecureSkipVerify = b
+		}
+	}
 	if v := os.Getenv("SPARK_CLI_TIMEOUT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.Timeout = d
@@ -201,14 +219,15 @@ func ApplyEnv(cfg *Config) {
 }
 
 type FlagOverrides struct {
-	LogDirs       string
-	YARNBaseURLs  string
-	HDFSUser      string
-	HadoopConfDir string
-	CacheDir      string
-	SHSTimeout    time.Duration
-	SQLDetail     string
-	Timeout       time.Duration
+	LogDirs               string
+	YARNBaseURLs          string
+	HDFSUser              string
+	HadoopConfDir         string
+	CacheDir              string
+	SHSTimeout            time.Duration
+	TLSInsecureSkipVerify bool
+	SQLDetail             string
+	Timeout               time.Duration
 }
 
 func ApplyFlags(cfg *Config, f FlagOverrides) {
@@ -229,6 +248,9 @@ func ApplyFlags(cfg *Config, f FlagOverrides) {
 	}
 	if f.SHSTimeout > 0 {
 		cfg.SHS.Timeout = f.SHSTimeout
+	}
+	if f.TLSInsecureSkipVerify {
+		cfg.TLS.InsecureSkipVerify = true
 	}
 	if f.SQLDetail != "" {
 		cfg.SQL.Detail = f.SQLDetail
@@ -258,6 +280,9 @@ func ApplyCluster(cfg *Config, name string) error {
 	}
 	if cluster.SHS.Timeout > 0 {
 		cfg.SHS.Timeout = cluster.SHS.Timeout
+	}
+	if cluster.TLS.InsecureSkipVerify {
+		cfg.TLS.InsecureSkipVerify = true
 	}
 	cfg.SelectedCluster = name
 	return nil

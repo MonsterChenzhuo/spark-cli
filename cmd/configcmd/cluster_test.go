@@ -22,6 +22,7 @@ func TestClusterAddWritesConfig(t *testing.T) {
 		"--log-dirs", "shs://shs-prod:18081",
 		"--yarn-base-urls", "http://gw/prod/yarn",
 		"--shs-timeout", "7m",
+		"--tls-insecure-skip-verify",
 		"--activate",
 	})
 	var stdout bytes.Buffer
@@ -30,6 +31,19 @@ func TestClusterAddWritesConfig(t *testing.T) {
 
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
 		t.Fatalf("cluster add: %v\n%s", err, stdout.String())
+	}
+	var resp struct {
+		Command   string `json:"command"`
+		Cluster   string `json:"cluster"`
+		Path      string `json:"path"`
+		Activated bool   `json:"activated"`
+		Written   bool   `json:"written"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
+		t.Fatalf("cluster add stdout should be json: %v\n%s", err, stdout.String())
+	}
+	if resp.Command != "config cluster add" || resp.Cluster != "prod" || !resp.Activated || !resp.Written {
+		t.Fatalf("unexpected response: %+v", resp)
 	}
 
 	cfg, err := config.Load()
@@ -45,11 +59,16 @@ func TestClusterAddWritesConfig(t *testing.T) {
 	if len(cfg.YARN.BaseURLs) != 1 || cfg.YARN.BaseURLs[0] != "http://gw/prod/yarn" {
 		t.Fatalf("YARN.BaseURLs=%v", cfg.YARN.BaseURLs)
 	}
+	if !cfg.TLS.InsecureSkipVerify {
+		t.Fatalf("TLS.InsecureSkipVerify=%v want true", cfg.TLS.InsecureSkipVerify)
+	}
 	body, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), "clusters:") || !strings.Contains(string(body), "active_cluster: prod") {
+	if !strings.Contains(string(body), "clusters:") ||
+		!strings.Contains(string(body), "active_cluster: prod") ||
+		!strings.Contains(string(body), "insecure_skip_verify: true") {
 		t.Fatalf("config yaml missing cluster fields:\n%s", string(body))
 	}
 }
@@ -66,6 +85,8 @@ clusters:
     yarn:
       base_urls:
         - http://gw/prod/yarn
+    tls:
+      insecure_skip_verify: true
 `
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -88,6 +109,7 @@ clusters:
 			LogDirs      []string `json:"log_dirs"`
 			YARNBaseURLs []string `json:"yarn_base_urls"`
 			SHSTimeout   string   `json:"shs_timeout"`
+			TLSInsecure  bool     `json:"tls_insecure_skip_verify"`
 		} `json:"clusters"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
@@ -101,5 +123,62 @@ clusters:
 	}
 	if got.Clusters[0].YARNBaseURLs[0] != "http://gw/prod/yarn" {
 		t.Fatalf("YARNBaseURLs=%v", got.Clusters[0].YARNBaseURLs)
+	}
+	if !got.Clusters[0].TLSInsecure {
+		t.Fatalf("TLSInsecure=%v want true", got.Clusters[0].TLSInsecure)
+	}
+}
+
+func TestClusterListDefaultsToJSON(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SPARK_CLI_CONFIG_DIR", dir)
+	body := `
+active_cluster: prod
+clusters:
+  prod:
+    log_dirs:
+      - shs://shs-prod:18081
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := New()
+	cmd.SetArgs([]string{"cluster", "list"})
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stdout)
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("cluster list: %v\n%s", err, stdout.String())
+	}
+	var got struct {
+		ActiveCluster string `json:"active_cluster"`
+		Clusters      []struct {
+			Name string `json:"name"`
+		} `json:"clusters"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("default output should be json: %v\n%s", err, stdout.String())
+	}
+	if got.ActiveCluster != "prod" || got.Clusters[0].Name != "prod" {
+		t.Fatalf("unexpected output: %+v", got)
+	}
+}
+
+func TestClusterListRejectsTextFormat(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SPARK_CLI_CONFIG_DIR", dir)
+
+	cmd := New()
+	cmd.SetArgs([]string{"cluster", "list", "--format", "text"})
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stdout)
+	err := cmd.ExecuteContext(context.Background())
+	if err == nil {
+		t.Fatalf("cluster list --format text should fail, stdout=%s", stdout.String())
+	}
+	if !strings.Contains(err.Error(), `unknown --format "text"`) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

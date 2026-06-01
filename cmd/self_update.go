@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"fmt"
+	"encoding/json"
 	"runtime"
 
 	"github.com/spf13/cobra"
@@ -20,12 +20,15 @@ func newSelfUpdateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if res.DryRun {
-				fmt.Fprintf(cmd.OutOrStdout(), "spark-cli self-update dry-run: would install %s to %s\n", res.Asset, res.Target)
-				return nil
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "spark-cli self-update: installed %s to %s\n", res.Version, res.Target)
-			return nil
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			enc.SetEscapeHTML(false)
+			return enc.Encode(selfUpdateResponse{
+				Command: "self-update",
+				DryRun:  res.DryRun,
+				Version: res.Version,
+				Asset:   res.Asset,
+				Target:  res.Target,
+			})
 		},
 	}
 	cmd.Flags().StringVar(&opts.Version, "version", "", "Release tag to install, e.g. v0.1.2 (default: latest)")
@@ -37,4 +40,12 @@ func newSelfUpdateCmd() *cobra.Command {
 	_ = cmd.Flags().MarkHidden("os")
 	_ = cmd.Flags().MarkHidden("arch")
 	return cmd
+}
+
+type selfUpdateResponse struct {
+	Command string `json:"command"`
+	DryRun  bool   `json:"dry_run"`
+	Version string `json:"version,omitempty"`
+	Asset   string `json:"asset,omitempty"`
+	Target  string `json:"target"`
 }

@@ -1,6 +1,6 @@
 # spark-cli
 
-A single-binary CLI for diagnosing Apache Spark application performance from EventLogs. Designed for AI agents (Claude Code) and humans alike — every command emits a structured JSON envelope on stdout.
+A single-binary CLI for diagnosing Apache Spark application performance from EventLogs. Designed for autonomous AI agents: successful stdout is JSON-only, with structured stderr errors for recovery.
 
 ## Quick start
 
@@ -20,7 +20,9 @@ Each row carries `input_skew_factor` alongside `skew_factor`. `data_skew` ladder
 
 ### One-liner (recommended)
 
-Installs the latest release binary into `/usr/local/bin` and the bundled Claude Code skill into `~/.claude/skills/spark/`. Re-run the same command to upgrade.
+Installs the latest release binary into `/usr/local/bin` and the bundled agent
+skills into `~/.claude/skills/spark/` and `~/.agents/skills/spark/`. Re-run the
+same command to upgrade.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/MonsterChenzhuo/spark-cli/main/scripts/install.sh | bash
@@ -36,7 +38,9 @@ curl -fsSL https://raw.githubusercontent.com/MonsterChenzhuo/spark-cli/main/scri
 curl -fsSL https://raw.githubusercontent.com/MonsterChenzhuo/spark-cli/main/scripts/install.sh | PREFIX="$HOME/.local/bin" NO_SKILL=1 bash
 ```
 
-Supported envs: `VERSION`, `PREFIX`, `SKILL_DIR`, `NO_SUDO`, `NO_SKILL`, `REPO`. See `scripts/install.sh` header for details.
+Supported envs: `VERSION`, `PREFIX`, `CLAUDE_SKILL_DIR`, `AGENTS_SKILL_DIR`,
+`SKILL_DIR` (legacy alias for `CLAUDE_SKILL_DIR`), `NO_SUDO`, `NO_SKILL`,
+`REPO`. See `scripts/install.sh` header for details.
 
 After `spark-cli` is installed, update the local binary in place with:
 
@@ -62,8 +66,7 @@ Download the archive for your OS from GitHub Releases, then `tar -xzf … && mv 
 ## Configure
 
 ```bash
-spark-cli config init       # writes ~/.config/spark-cli/config.yaml
-$EDITOR ~/.config/spark-cli/config.yaml
+spark-cli config init       # non-interactive; writes ~/.config/spark-cli/config.yaml and returns JSON
 ```
 
 ```yaml
@@ -72,19 +75,23 @@ log_dirs:
   - hdfs://mycluster/spark-history     # HA NameService logical name (recommended)
   # - hdfs://nn:8020/spark-history     # or an explicit host:port
   # - shs://history.example.com:18081  # Spark History Server REST API
+  # - shs+https://gateway.example.com/sparkhistory  # HTTPS SHS gateway
 hdfs:
   user: hadoop
   conf_dir: /etc/hadoop/conf           # optional; auto-discovered via HADOOP_CONF_DIR / HADOOP_HOME if empty
 shs:
   timeout: 5m  # default; production EventLog zips often need minutes — first-fetch progress is printed to stderr (silence with SPARK_CLI_QUIET=1)
+tls:
+  insecure_skip_verify: false  # set true only for HTTPS gateways with self-signed certificates
 yarn:
   base_urls:
     - http://203.123.81.20:7765/gateway/hadoop-prod/yarn  # optional RM/gateway prefix
 timeout: 30s
 ```
 
-Override per-invocation via `--log-dirs` / `--yarn-base-urls`, or env vars
-`SPARK_CLI_LOG_DIRS` / `SPARK_CLI_YARN_BASE_URLS`.
+Override per-invocation via `--log-dirs` / `--yarn-base-urls` /
+`--tls-insecure-skip-verify`, or env vars `SPARK_CLI_LOG_DIRS`,
+`SPARK_CLI_YARN_BASE_URLS`, and `SPARK_CLI_TLS_INSECURE_SKIP_VERIFY`.
 
 For production use, prefer named cluster profiles so the Spark History Server
 and YARN gateway for the same cluster are selected together:
@@ -100,6 +107,8 @@ clusters:
         - http://203.123.81.20:7765/gateway/hadoop-prod/yarn
     shs:
       timeout: 5m
+    tls:
+      insecure_skip_verify: false
 ```
 
 ```bash
@@ -107,7 +116,12 @@ spark-cli config cluster add prod \
   --log-dirs shs://history.example.com:18081 \
   --yarn-base-urls http://203.123.81.20:7765/gateway/hadoop-prod/yarn \
   --activate
-spark-cli config cluster list --format json
+# For a self-signed HTTPS gateway:
+spark-cli config cluster add id \
+  --log-dirs shs+https://gateway.example.com/component/Spark2x/JobHistory2x/89 \
+  --yarn-base-urls https://gateway.example.com/component/Yarn/ResourceManager/25 \
+  --tls-insecure-skip-verify
+spark-cli config cluster list
 spark-cli --cluster prod diagnose application_1772605260987_35693 --guided
 ```
 
@@ -121,8 +135,8 @@ For production triage, use the guided path so cluster selection is confirmed
 before the EventLog is read:
 
 ```bash
-spark-cli config cluster list --format json
-spark-cli config show --format json
+spark-cli config cluster list
+spark-cli config show
 spark-cli diagnose application_1772605260987_35693 --guided
 ```
 
@@ -153,7 +167,7 @@ full agent workflow.
   5. `HADOOP_HOME/etc/hadoop` or `HADOOP_HOME/conf`
   6. Falls back to the literal `host:port` from `--log-dirs` (no HA logical-name support in this mode)
 - HDFS user resolution: `--hdfs-user` → `SPARK_CLI_HDFS_USER` → `hdfs.user` → `$USER`. Note: it reads `$USER`, **not** Hadoop's `$HADOOP_USER_NAME`.
-- Kerberos / SASL / TLS are **not supported**; this targets simple-auth clusters only.
+- Kerberos / SASL / TLS are **not supported for HDFS**; this targets simple-auth HDFS clusters only.
 
 ### Spark History Server
 
@@ -168,13 +182,14 @@ spark-cli diagnose application_1771556836054_861265 \
 ```
 
 - The latest numeric `attemptId` is auto-selected.
-- HTTP only; **no** TLS, Basic Auth, Bearer token, or Kerberos in v1.
+- Use `shs://` for HTTP endpoints and `shs+https://` for HTTPS gateways. Basic Auth, Bearer token, and Kerberos are still unsupported.
+- For private HTTPS gateways with self-signed certificates, explicitly set `tls.insecure_skip_verify: true`, `SPARK_CLI_TLS_INSECURE_SKIP_VERIFY=true`, or pass `--tls-insecure-skip-verify`. This setting applies to SHS and YARN gateway clients.
 - Timeout precedence (highest → lowest): `--shs-timeout` flag → `SPARK_CLI_SHS_TIMEOUT` env → `shs.timeout` in YAML → default `5m`. Timeout errors return `LOG_UNREADABLE` with a `hint` naming the flag — no need to grep docs after the first failure.
 - Progress lines (`spark-cli: downloading EventLog zip from SHS ...` / `ready in <duration>`) follow `--no-progress` flag → `SPARK_CLI_QUIET` env (`1/true` 静默, `0/false` 强制显示) → stdout TTY 检测;**agent 重定向 stdout 时默认静默,交互终端默认显示**。
 - **Persistent on-disk zip cache** (since v0.x): the downloaded zip is written to `<cache_dir>/shs/<host>/<appID>_<lastUpdated>.zip` (atomic tmp+rename) and reused across CLI invocations. Subsequent commands on the same appID only fetch the cheap metadata JSON to compare `lastUpdated`; on a hit the zip is read from disk. Stale attempts (older `lastUpdated` for the same appID) are swept on each successful download. `--no-cache` falls back to a one-shot system tempfile.
 - Zip bodies up to 256 MiB without disk caching are decoded in memory; with disk caching enabled the response always lands on disk via tmp+rename.
-- `shs://` supports gateway path prefixes, for example
-  `shs://host:7765/gateway/prod/sparkhistory`; the CLI preserves the prefix
+- `shs://` / `shs+https://` support gateway path prefixes, for example
+  `shs+https://host:7765/gateway/prod/sparkhistory`; the CLI preserves the prefix
   when calling `/api/v1/applications/...`.
 
 ### YARN logs
@@ -285,27 +300,35 @@ mismatch, write errors) degrade silently to "miss + reparse".
 | `spark-cli yarn-logs <appId>` | Fetch YARN diagnostics and container log snippets |
 | `spark-cli driver-thread-dump <appId>` | Fetch Spark UI driver/executor thread dump through YARN tracking/proxy URL |
 | `spark-cli paimon-diagnostics <appId>` | Fetch Paimon diagnostics thread-dump/profiler JSON through Spark UI |
-| `spark-cli config show [--format json]` | Print effective configuration (yaml / env / default sources) |
+| `spark-cli config show` | Print effective configuration JSON (yaml / env / default sources) |
 | `spark-cli config cluster add <name>` / `config cluster list` | Persist and inspect named cluster profiles |
 | `spark-cli cache list` / `cache clear [--app <id>] [--dry-run]` | Inspect / prune the parsed-application + SHS zip caches |
 | `spark-cli self-update` (aliases `update`, `upgrade`) | Download the latest release binary, verify checksum, and replace the local executable |
-| `spark-cli version` (also `--version`) | Print spark-cli version |
+| `spark-cli version` (also `--version`) | Print spark-cli version JSON |
+| `spark-cli --help` / `spark-cli help <command>` | Print command metadata JSON |
 
-All accept `--top N`, `--format json|table|markdown`, `--dry-run`, `--guided`, `--log-dirs`,
+Scenario and live diagnostic commands accept `--format json` only. Non-JSON
+formats are rejected with `FLAG_INVALID`; utility commands also return JSON by
+default. Common diagnostic flags include `--top N`, `--dry-run`, `--guided`, `--log-dirs`,
 `--cluster`, `--cache-dir`, `--no-cache`, `--shs-timeout`, `--no-progress`,
-`--yarn-base-urls`, `--yarn-log-bytes`, `--yarn-log-types`, `--executor-id`, `--sql-detail truncate|full|none` (default `truncate` — first 500 runes of the
-SQL description with a `...(truncated, total <N> chars)` marker; `full` keeps
-the original; `none` omits the entire `sql_executions` map).
+`--tls-insecure-skip-verify`, `--yarn-base-urls`, `--yarn-log-bytes`,
+`--yarn-log-types`, `--executor-id`, and `--sql-detail truncate|full|none`
+(default `truncate` — first 500 runes of the SQL description with a
+`...(truncated, total <N> chars)` marker; `full` keeps the original; `none`
+omits the entire `sql_executions` map). Shell completion output is disabled so
+successful stdout stays JSON-only.
 
 ## For AI agents
 
-The repo ships `.claude/skills/spark/SKILL.md`. Claude Code auto-loads it when present. The skill teaches the cluster-confirmation SOP and the guided diagnose-first workflow.
+The repo ships `.agents/skills/spark/SKILL.md` and `.claude/skills/spark/SKILL.md`.
+Agent clients load the matching skill to follow the cluster-confirmation SOP and guided diagnose-first workflow.
 
 ## Output contract
 
 ```json
 {
   "scenario": "data-skew",
+  "contract_version": 1,
   "app_id": "...",
   "log_path": "hdfs://...",
   "log_format": "v1",

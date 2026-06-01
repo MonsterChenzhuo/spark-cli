@@ -2,11 +2,18 @@
 
 ## Unreleased
 
+### AI-only JSON 契约
+
+- **不兼容变更 — 成功 stdout 只输出 JSON**:EventLog 场景命令和 live 诊断命令只接受 `--format json`;`table`、`markdown`、text 输出会返回 `FLAG_INVALID`。工具类命令(`config`、`cache`、`self-update`、`version`)也默认输出命令专用 JSON。
+- **场景信封新增 `contract_version: 1`**:下游 agent 可先判断契约版本,再按字段解析,为后续不兼容 JSON 变更留出口。
+- **`spark-cli --help` 与 `spark-cli help <command>` 改为输出 JSON 命令元数据**,并禁用 Cobra shell `completion` 命令,保证成功 stdout 始终机器可读。
+- **`config init` 改为非交互**:写入配置后返回 JSON 元数据,不再从 stdin 读取提示输入。
+- **release/install 同时覆盖两套 agent skill**:归档包含 `.agents/skills/spark/SKILL.md` 与 `.claude/skills/spark/SKILL.md`;`scripts/install.sh` 默认通过 `AGENTS_SKILL_DIR` 与 `CLAUDE_SKILL_DIR` 镜像两边,`SKILL_DIR` 作为旧 Claude 目录别名保留。
+
 ### Spark 配置诊断
 
 - **新增 `spark-cli spark-conf <appId>` 场景命令**:读取 `SparkListenerEnvironmentUpdate` 里的 Spark Properties,输出 `key/value/category/importance/tuning_hint` 行,并在 `summary.parameter_hints` 中把 driver broadcast wait、shuffle spill、data skew、GC pressure 等常见问题映射到应优先查看的参数。
 - **`idle_stage` finding 现在会附带 driver/broadcast 配置证据**:可用时输出 `spark_driver_memory`、`spark_driver_memory_overhead`、`spark_sql_auto_broadcast_join_threshold`、`spark_sql_broadcast_timeout`,排查 broadcast/collect 等待时不必再单独打开 Spark UI environment。
-- **`gc-pressure --format table|markdown` 现在按当前扁平 executor 行渲染**:不再输出早已从 JSON 形态移除的旧 `{by_stage, by_executor}` 双段。
 
 ### Paimon native IO EventLog 诊断
 
@@ -20,7 +27,8 @@
 - **新增 root flag `--cluster <name>`**:单次命令选择一个已配置集群。默认应用 `active_cluster`;显式 `--log-dirs`、`--yarn-base-urls`、`--shs-timeout` 仍会在集群选择后覆盖,适合临时调试。
 - **新增 `diagnose --guided` SOP 预检**:读取 EventLog 前先确认集群选择。只有一个 cluster 时自动选择;多个 cluster 但没有 `--cluster` / `active_cluster` 时返回错误;完全没有 source 时给出 `config cluster add ... --activate` 指引;stdout 仍保持原 `diagnose` JSON 信封,预检说明只写 stderr。
 - **新增 `spark-cli config cluster add|list`**:用于写入和查看本地命名集群。示例:`config cluster add prod --log-dirs shs://... --yarn-base-urls http://... --activate` 会新增或更新 profile,并可设为默认集群。
-- **`spark-cli config show` 展示 `active_cluster`、`selected_cluster`、`clusters`**:text 与 JSON 两种格式都能看到当前有效配置来自哪个集群,便于 agent 流程确认 `log_dirs` / `yarn.base_urls` 的来源。
+- **SHS/YARN profile 支持 HTTPS gateway**:`--log-dirs` 新增 `shs+https://host[:port][/path]`;`tls.insecure_skip_verify`、`SPARK_CLI_TLS_INSECURE_SKIP_VERIFY`、`--tls-insecure-skip-verify` 以及 `config cluster add --tls-insecure-skip-verify` 用于自签证书内网 gateway。
+- **`spark-cli config show` 展示 `active_cluster`、`selected_cluster`、`clusters`**:JSON 中能看到当前有效配置来自哪个集群,便于 agent 流程确认 `log_dirs` / `yarn.base_urls` 的来源。
 - **新增 `spark-cli self-update` 命令**:按当前 OS/arch 下载 GitHub 最新 release 归档,校验 `checksums.txt`,并替换本机二进制。支持 `update` / `upgrade` 别名、`--dry-run`、`--version` 和 `--install-dir`。
 
 ### YARN / Spark UI 诊断增强
@@ -51,7 +59,7 @@
 - **`--version` flag 自动支持**(原本只有 `version` subcommand,`--version` 报 unknown flag),输出格式与 subcommand 完全一致。
 
 CLI / 接口:
-- **`--log-dirs` / `--no-progress` / `--shs-timeout` 帮助文案重写**:`--log-dirs` 列出三种 scheme(`file://` / `hdfs://` / `shs://`);`--no-progress` 说明 TTY 自动检测;`--shs-timeout` 标注默认 5m。
+- **`--log-dirs` / `--no-progress` / `--shs-timeout` 帮助文案重写**:`--log-dirs` 列出支持的 scheme(`file://` / `hdfs://` / `shs://` / `shs+https://`);`--no-progress` 说明 TTY 自动检测;`--shs-timeout` 标注默认 5m。
 - **SHS HTTP 请求带 `User-Agent: spark-cli/<version>`**,SHS 运维能从访问日志识别 spark-cli 流量来源。
 
 代码质量:
@@ -127,7 +135,7 @@ CLI / 接口:
 - 新增 `shs://host:port` scheme,可写入 `--log-dirs`。spark-cli 通过 `GET /api/v1/applications/<id>/<attempt>/logs`(返回 zip 包)拉日志,把 zip 内部条目以现有 `fs.FS` 抽象暴露,定位器、解码器、规则、应用解析缓存全部透明工作。
 - 自动选取 `/api/v1/applications/<id>` 返回数值最大的 `attemptId`。当 SHS 返回的 attempt 完全没有 `attemptId` 字段(Spark 3.4+ 单 attempt 默认行为)时,spark-cli 会省略 attempt 段、改用 `/api/v1/applications/<id>/logs` —— 修复对该类应用报 APP_NOT_FOUND 的问题。
 - 新增 flag `--shs-timeout`、环境变量 `SPARK_CLI_SHS_TIMEOUT`、YAML 字段 `shs.timeout`(默认 `60s`)。`spark-cli config show` 输出当前值与来源。
-- 仅 HTTP —— TLS、Basic Auth、Bearer Token、Kerberos 暂不在 v1 范围内。
+- `shs://` 走 HTTP;`shs+https://` 走 HTTPS。Basic Auth、Bearer Token、Kerberos 仍不在 v1 范围内。
 - `Content-Length` ≤ 256 MiB 的 zip 在内存解码;更大或未知长度时 spill 到 `os.CreateTemp`,进程退出时清理。
 - **已知限制**:即便应用解析缓存命中,每次调用仍要下载 zip —— `Locator.Resolve` 必须读 zip 内容才能判定 V1 / V2 布局。持久化 zip 缓存在 roadmap 上。
 

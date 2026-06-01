@@ -129,7 +129,7 @@ func TestE2ECacheListReadsCustomCacheDir(t *testing.T) {
 	}
 }
 
-// `cache clear --dry-run --cache-dir <tmp>` 应当报告"would remove"但不真删。
+// `cache clear --dry-run --cache-dir <tmp>` 应当输出 JSON 并报告候选数量,但不真删。
 func TestE2ECacheClearDryRunDoesNotDelete(t *testing.T) {
 	logsDir := t.TempDir()
 	cacheDir := t.TempDir()
@@ -155,8 +155,15 @@ func TestE2ECacheClearDryRunDoesNotDelete(t *testing.T) {
 	if rc != 0 {
 		t.Fatalf("rc=%d stderr=%s", rc, stderr.String())
 	}
-	if !bytes.Contains(stdout.Bytes(), []byte("would remove")) {
-		t.Errorf("expected 'would remove' marker:\n%s", stdout.String())
+	var clearOut map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &clearOut); err != nil {
+		t.Fatalf("not json: %v\n%s", err, stdout.String())
+	}
+	if clearOut["command"] != "cache clear" || clearOut["dry_run"] != true {
+		t.Fatalf("unexpected clear output: %+v", clearOut)
+	}
+	if removed, _ := clearOut["removed"].(float64); removed < 1 {
+		t.Fatalf("expected dry-run candidates, got %+v", clearOut)
 	}
 	afterEntries, _ := os.ReadDir(cacheDir)
 	if len(afterEntries) != len(beforeEntries) {

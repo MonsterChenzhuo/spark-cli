@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-Guidance for Claude Code (and other AI agents) working in this repository.
+Guidance for Codex (and other AI agents) working in this repository.
 
 ## What this is
 
@@ -12,14 +12,12 @@ Guidance for Claude Code (and other AI agents) working in this repository.
 
 特例:
 - envelope 顶层 `contract_version` 当前固定为 `1`;新增不兼容 JSON 契约时先设计版本迁移,并同步 e2e / README / skills / CHANGELOG
-- envelope 顶层 `app_duration_ms` 来自 `model.Application.DurationMs`(`SparkListenerApplicationEnd - Start`),`omitempty` 在没 ApplicationEnd 事件时缺失。所有 EventLog 场景一致输出 —— agent 看 `wall_share` / native IO 耗时时就能直接换算绝对秒数,不必再额外跑 `app-summary`
+- envelope 顶层 `app_duration_ms` 来自 `model.Application.DurationMs`(`SparkListenerApplicationEnd - Start`),`omitempty` 在没 ApplicationEnd 事件时缺失。所有 EventLog 场景一致输出 —— agent 看 `wall_share` 就能直接换算绝对秒数,不必再额外跑 `app-summary`
 - `gc-pressure` 的 `data` 是数组 (与其他场景一致),非对象 —— 早期 spec 设想的双段已收敛为单段
 - `diagnose` 的信封额外带 `summary: {critical, warn, ok, top_findings_by_impact?, findings_wall_coverage?}`。`top_findings_by_impact` 是按 `wall_share` 倒序的 `[{rule_id, severity, wall_share}]` 摘要,只收录有 `stage_id` 关联且 `wall_share > 0` 的 finding;**`wall_share` 取 finding 命中所有 stage(primary + similar_stages)的 max**(用 max 而非 sum,避免并行 stage 时 > 1.0 让人迷惑;全局总覆盖留给 findings_wall_coverage)。`findings_wall_coverage` 是这些 wall_share 按 stage 去重后加和(同一 stage 多个 finding 取 max),**cap 到 1.0**(stage 在 wall 上并行时 naive sum 可能 > 1,语义上不应超 100%);**< 0.05 表示瓶颈不在 finding 范围内**(常见为作业结构碎片化 / driver-side 等待),agent 应当跳到 `app-summary.top_busy_stages` / `top_io_bound_stages`。两个字段在 `app.DurationMs == 0`(没 ApplicationEnd 事件)时一并 omitempty 缺失
 - **`severity` 是诊断置信度,不是 ROI 优先级**:`disk_spill warn (wall_share 0.5)` 实际比 `data_skew critical (wall_share 0.05)` 更值得修;按 severity 字符串排优先级会错位,永远以 `top_findings_by_impact` 为准。文档此处说明给 LLM agent 消费。
 - **`data_skew` finding 在多 stage 命中时**,evidence 含 `similar_stages: [{stage_id, wall_share, skew_factor}]`(按 wall_share 倒序最多 4 条)。primary `stage_id` 选 wall_share 最大的(平局回退 skew_factor),`top_findings_by_impact` 与 `findings_wall_coverage` 都会跨 primary + similar_stages 聚合 —— agent 直接读 evidence 就能看到完整多 stage 列表,不必再回头跑 `data-skew`。
 - `slow-stages` / `data-skew` 信封顶层带 `sql_executions: map[int64]string`,key 是 `sql_execution_id`、value 是 description。**默认按 `--sql-detail=truncate` 截到前 500 个 rune,过长追加 `...(truncated, total <N> chars)`**;`--sql-detail=full` 还原原始 SQL,`--sql-detail=none` 整段 omit(也可 `SPARK_CLI_SQL_DETAIL` / yaml `sql.detail` 覆盖)。对 DataFrame 作业自动回退到 details 首行;若 description / details 都是 callsite 占位形态则该条整行过滤。row 内只保 `sql_execution_id`,**不再带** `sql_description` 字段 —— 切走重复嵌入,把 JSON 体积从几十 KB 压到几 KB。所有条目都是 callsite 噪音时整段 map 走 `omitempty` 缺失;app-summary / gc-pressure / diagnose 不带这个字段
-- `native-io` 解析 Paimon `SparkListenerNativeIOEvent`,同时支持顶层 `native_io_*` 字段和旧版内嵌 `eventJson`。`summary` 给 event/operation 数、reader/export/error 数、total rows/bytes/duration、`top_phases`、`top_operations`;`data` 按 `duration_ms` 倒序输出 `--top` 条 native IO 事件,包含 Spark 上下文、文件/object 字段、吞吐、memory、原始数值 `metrics` 和 `verdict`。
-- `diagnose --guided` 是诊断 SOP 入口:先做命名集群预检,只有一个 cluster 时自动选择,多个 cluster 未选择时返回 `FLAG_INVALID`,没有 cluster/log_dirs 时返回带 `config cluster add ... --activate` 的 `CONFIG_MISSING` hint。预检说明只写 stderr,stdout 仍然是原 `diagnose` 的单一 JSON envelope,不要把 stderr 当机器可解析输出。
 - `app-summary` 的 `data` row 同时带 **三个** stage 切面,**永远要三个一起看**才不漏瓶颈:`top_stages_by_duration[]`(按 wall 倒序,包含 driver-side 等待 stage),`top_busy_stages[]`(过滤 `busy_ratio > 0.8` 后按 `busy_ratio * duration` 倒序,真正 executor 吃 CPU 的热点),**`top_io_bound_stages[]`**(`busy_ratio < 0.8` 但 `spill_disk_gb >= 0.5` 或 `shuffle_read_gb >= 1.0` 的 stage,按 wall_share 倒序 limit 3)。`top_io_bound_stages` 是 `top_busy_stages` 的互补切面 —— spill 主导的 stage executor 都在等盘,busy_ratio 被压得很低,`top_busy_stages` 阈值看不到但才是真瓶颈(实测 stage spill 9.86 GB / busy_ratio 0.048,只看 top_busy_stages 完全错过)。
 - `slow-stages` row 三档 `*_mb_per_task`(`input_mb_per_task` / `shuffle_read_mb_per_task` / `shuffle_write_mb_per_task`)。读侧 / 写侧 / source-scan stage 分别看对应字段判 partition 粒度,`NumTasks=0` 时三个一律 0
 
@@ -74,21 +72,15 @@ clusters:
 
 HTTPS gateway 的 SHS 要写 `shs+https://host[:port][/path]`;若内网证书是自签或本机 CA 不信任,必须显式配 `tls.insecure_skip_verify: true`(也可用 `SPARK_CLI_TLS_INSECURE_SKIP_VERIFY=true` / `--tls-insecure-skip-verify`),该开关同时作用于 SHS 与 YARN client。`config.Load()` 会先应用 `active_cluster`;运行时 `--cluster <name>` 在 env 之后、显式 `--log-dirs` / `--yarn-base-urls` 等 flag 之前应用。也就是说:默认用 `active_cluster`,临时切集群用 `--cluster prod`,而逐次调试仍可用具体 flag 最终覆盖。`spark-cli config cluster add <name> --log-dirs ... --yarn-base-urls ... [--shs-timeout 5m] [--tls-insecure-skip-verify] [--activate]` 负责把 profile 写入本地 `config.yaml`;`spark-cli config cluster list` 用于查看已沉淀的集群。
 
-标准排障 SOP:
-
-1. 先跑 `spark-cli config cluster list` 与 `spark-cli config show`,确认 `active_cluster` / `selected_cluster` / `log_dirs` / `yarn.base_urls`。
-2. 没有集群时,先 `spark-cli config cluster add <name> --log-dirs ... --yarn-base-urls ... --activate` 录入;多个集群但未选时,必须让用户确认目标集群并用 `--cluster <name>`。
-3. 再跑 `spark-cli diagnose <appId> --guided`。`--guided` 不改 stdout envelope,只在 stderr 输出预检说明;agent 解析 stdout 即可。
-
 ## 开发约定
 
 - **Go 1.22 锁定**: `go.mod` 显式 `go 1.22`,不要被工具链自动 bump (有依赖如 tdigest 想要更高版本,但本仓库限定 1.22)。
 - **TDD**: 新场景/规则先写失败测试再写实现,见每个 `*_test.go`。
 - **回应中文**: 仓库内交互、commit 信息可中英混合,但解释/讨论默认中文。
-- **Commit 信息格式**: `type(scope): subject` —— `feat(scenario):`、`feat(output):`、`fix(model):`、`test(e2e):`、`docs(skill):`、`ci:`、`style:` 等。每个 commit 末尾带 `Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>`(更早的 commit 可能是 Sonnet 4.6,新 commit 用当前模型即可)。
+- **Commit 信息格式**: `type(scope): subject` —— `feat(scenario):`、`feat(output):`、`fix(model):`、`test(e2e):`、`docs(skill):`、`ci:`、`style:` 等。每个 commit 末尾带 `Co-Authored-By: Codex Opus 4.7 <noreply@anthropic.com>`(更早的 commit 可能是 Sonnet 4.6,新 commit 用当前模型即可)。
 - **main 分支直改规则**: 默认仍按任务需要保持工作区清晰;但用户明确要求"直接在 main 上改 / 改完 push 到 main"时,可以在 `main` 分支完成修改、验证、提交并 push 到 `origin/main`,不要强制创建 feature branch。
 - **Envelope 改动需同步**: 改 `scenario.Envelope` JSON tag 或字段时,务必跑 `tests/e2e` + 更新 `.agents/skills/spark/SKILL.md` / `.claude/skills/spark/SKILL.md` 的 envelope 文档 + `README.md` / `CHANGELOG.md`。
-- **CLAUDE.md 同步规则**: 每次新增/修改用户可见功能(CLI flag、环境变量、配置项、命令行为、输出契约、依赖发现路径)或调整开发流程时,**必须**同步更新本文件相关章节(常见入口:开发约定、HDFS 连接、添加新场景/规则、已知踩坑),并在同一 commit 中带上 README/CHANGELOG 的对应变更。原因:本仓库的 AI agent 工作流强依赖 CLAUDE.md 作为唯一权威上下文,文档漂移会让后续会话直接做错事。
+- **AGENTS.md 同步规则**: 每次新增/修改用户可见功能(CLI flag、环境变量、配置项、命令行为、输出契约、依赖发现路径)或调整开发流程时,**必须**同步更新本文件相关章节(常见入口:开发约定、HDFS 连接、添加新场景/规则、已知踩坑),并在同一 commit 中带上 README/CHANGELOG 的对应变更。原因:本仓库的 AI agent 工作流强依赖 AGENTS.md 作为唯一权威上下文,文档漂移会让后续会话直接做错事。
 - **首页 / 博客同步规则**: 对较大的用户可见需求或完整诊断方案,交付时必须同步评估项目首页入口和博客/文章。博客至少覆盖场景、痛点、方案、命令示例、JSON 输出契约、AI agent 消费方式、排障路径和限制。若没有独立官网,以 `README.md` / `README.zh.md` 作为首页入口,必要时新增 `docs/` 示例文档并在 CHANGELOG 中标注。只改 CLI 不补首页/博客说明,视为交付不完整。
 
 ## 常用命令
@@ -239,7 +231,7 @@ HDFS 用户名优先级 (高 → 低): `--hdfs-user` flag → `SPARK_CLI_HDFS_US
 - **sql_description 对 DataFrame 作业默认是 callsite**: `SparkListenerSQLExecutionStart.description` 在 DataFrame API 提交时通常是两种 callsite 形态:`getCallSite at SQLExecution.scala:74`(SparkSQL 早期默认)或 `org.apache.spark.SparkContext.getCallSite(SparkContext.scala:2205)`(Spark 现代版本 SparkContext 自反射)。`stageSQL` 在 `internal/scenario/result.go` 已实现 fallback:description 命中 `isCallSiteDescription` 或为空时,改取 `SQLExecution.Details` 的首行(通常是用户实际调用位置)。**重要**:`BuildSQLExecutionMap` 在 fallback **之后**还会再跑一次 `isCallSiteDescription` 过滤 —— 当 description 与 details **都**是 callsite 占位(真实生产 ETL 经常如此)时,该条目从 envelope `sql_executions` 中剔除;所有条目都被剔除时整段 map 走 `omitempty` 缺失。**不要**只判 description / 不做最终 noise 过滤,否则一次 ETL 可能给信封塞 80+ 行重复 callsite。判定窗口包含两种前缀 + `SparkContext.getCallSite(` 包含子串,不做更激进的模糊匹配以免误判真 SQL。
 - **SQL description 默认截断**: `BuildSQLExecutionMap` 第二参数 `detail` 取 `truncate`(默认) / `full` / `none`,由 `cmd/scenarios.Options.SQLDetail` 注入(`--sql-detail` flag → `SPARK_CLI_SQL_DETAIL` → yaml `sql.detail`,空 / 非法值 normalize 落到 truncate)。truncate 用 `truncateSQL` 按 **rune** 切前 500 个字符,过长追加 `...(truncated, total <N> chars)` 让 agent 知道被截断。**用 rune 而非 byte 是关键** —— 真实生产 ETL 里 SQL 含中文字段名,按 byte 切会破坏 UTF-8 多字节字符。`none` 模式直接返回 nil 让整段 sql_executions 走 omitempty。改阈值 `sqlTruncateRunes` 前先看 e2e 是否有依赖完整 SQL 的断言。
 - **SkewRule 选 primary stage 用 wall_share**: `SkewRule.Eval` 用 wall_share 倒序选 primary,平局回退 skew_factor;wall_share 全 0 时(`app.DurationMs == 0`)按 skew_factor 排。**这是 2026-05-02 的修复** —— 历史实现按 skew_factor 排,导致 wall_share 92% 的 stage 14 被 wall_share 26% 但 ratio 极端的 stage 7 盖过。其他过 4 道闸门的候选按 wall_share 倒序进 evidence.`similar_stages: [{stage_id, wall_share, skew_factor}]`(只收 wall_share > 0 的,最多 4 条);`diagnose.collectTopFindingsByImpact` 与 `computeFindingsWallCoverage` 都跨 primary + similar_stages 聚合 —— 改这两段时**必须**用 `evidenceStageIDs` helper,不要直接读 `evidence["stage_id"]`。
-- **SkewRule isIdleStage 的 NumTasks 守门**: SkewRule 共享的 `isIdleStage` 在 `wall ≥ 30s + busy_ratio < 0.2` 之外多了一道 **NumTasks > 2*MaxConcurrentExecutors → 不算 idle** —— 任务多但因 IO/spill/shuffle 阻塞导致 busy_ratio 低的 stage(实测 stage 14:1000 task / 6 executor / busy_ratio 0.07)不再被误当 driver-side idle 排除。CLAUDE.md 历史早就写了"两条规则可独立演进";IdleStageRule 自己的判定**没**加这道守门(driver-side stage 通常 NumTasks 很少,直接命中原阈值即可)。改 SkewRule 的 isIdleStage 不要顺手抽 helper 共用 IdleStageRule。
+- **SkewRule isIdleStage 的 NumTasks 守门**: SkewRule 共享的 `isIdleStage` 在 `wall ≥ 30s + busy_ratio < 0.2` 之外多了一道 **NumTasks > 2*MaxConcurrentExecutors → 不算 idle** —— 任务多但因 IO/spill/shuffle 阻塞导致 busy_ratio 低的 stage(实测 stage 14:1000 task / 6 executor / busy_ratio 0.07)不再被误当 driver-side idle 排除。AGENTS.md 历史早就写了"两条规则可独立演进";IdleStageRule 自己的判定**没**加这道守门(driver-side stage 通常 NumTasks 很少,直接命中原阈值即可)。改 SkewRule 的 isIdleStage 不要顺手抽 helper 共用 IdleStageRule。
 - **findings_wall_coverage cap 1.0**: stage 在 wall 上并行,几个大 stage(skew + spill 同时命中)的 wall_share max-per-stage sum 可能 > 1.0(实测 ~4.3)。`computeFindingsWallCoverage` cap 到 1.0;1.0 等价于"几乎全部 wall 都在 finding 触及范围内"。改算法时不要把 cap 去掉。
 - **app-summary 的 top_io_bound_stages 切面**: `AppSummaryRow.TopIOBoundStages` 与 `TopBusyStages` 互补,过滤 `busy_ratio < 0.8` **且**(`spill_disk_gb >= 0.5` 或 `shuffle_read_gb >= 1.0`)的 stage,按 wall_share 倒序 limit 3。这是给"executor 都在等盘 / 等 shuffle"的 IO-bound stage 的专门切面 —— `top_busy_stages` 用 0.8 阈值会把 spill 9 GB / busy 0.05 的 stage 全过滤掉,agent 只看 top_busy_stages 会错过最大瓶颈。新加的字段也走反射测试 `TestAppSummaryColumnsMatchRowFields` 守门,`AppSummaryColumns()` 末尾必须同步追加 `"top_io_bound_stages"`。改阈值前注意它与 `top_busy_stages` 的 0.8 刚好互补、不会双面命中。
 - **data_skew 四道闸门**: `SkewRule` / `DataSkew.skewVerdict` 共有四道降级闸门,顺序应用:
@@ -247,7 +239,7 @@ HDFS 用户名优先级 (高 → 低): `--hdfs-user` flag → `SPARK_CLI_HDFS_US
   2. **均匀输入闸门**:`input_skew_factor < 1.2` 且 `p99/p50 < 20` 时降级 → 数据均匀的长尾多半是抖动
   3. **wall_share 闸门**:`stage.duration / app.duration < 1%` 且 `p99/p50 < 20` 时降级(SkewRule → warn,DataSkew → mild)→ 短 stage 长尾即使指标很差也几乎没优化收益。`app.DurationMs <= 0`(没 ApplicationEnd 事件)时 wall_share 算 0,被视作"未知",**不**触发闸门
   4. **idle_stage 跳过**:候选 stage 命中 `IdleStageRule` 条件(wall ≥ 30s + busy_ratio < 0.2)时整个跳过,选下一个 hot stage
-  
+
   极端 ratio (≥ 20) 跨越闸门 2/3/4(但**不**跨越闸门 1 —— 紧致时长根本就不是倾斜)。**改任一闸门阈值时**:`wall_share` helper 在 `internal/rules/rule.go`(`wallShare` + `wallShareNegligible` + `tightTaskTimeRatio`),DataSkew 镜像在 `internal/scenario/data_skew.go`(`dataSkewWallShare` + `dataSkewNegligibleWallShare` + `dataSkewTightTaskTimeRatio`),idle 闸门两边各保一份内联(`SkewRule.isIdleStage`)—— 故意不抽 helper 让两条规则可独立演进。SkewRule 的 evidence 在 wall_share > 0 时输出 `wall_share` 字段,DataSkew row 总是带 `wall_share` 字段(未知则为 0)。
 - **三层 gc_ratio 口径**: `Envelope.gc_ratio`(`app-summary` 顶层)= `app.TotalGCMs / app.TotalRunMs`;`SlowStageRow.gc_ratio` = `stage.TotalGCMs / stage.TotalRunMs`;`GCExecRow.gc_ratio` = `executor.TotalGCMs / executor.TotalRunMs`。**三层分母都是 task 累加**,**不要**用 wall(`duration_ms`)做分母,否则多 executor 并发场景下会出现 >100% 的诡异值。SKILL.md 已显式列出三层口径表,改任何一层时记得同步。
 - **app-summary top stages 的 busy_ratio + slow-stages busy_ratio**: `TopStage.BusyRatio` 与 `SlowStageRow.BusyRatio` 共用 `internal/scenario/app_summary.go:stageBusyRatio` —— `TotalRunMs / (wall * effective_slots)`,clamp 到 [0,1],`effective_slots = min(NumTasks, MaxConcurrentExecutors)`(与 `IdleStageRule` 同口径)。接近 0 的 stage 是 driver-side idle stage(broadcast/planning/listing 等),按 wall 排序会把它们推到前面但优化方向完全不同 —— agent / 用户读 `slow-stages` 或 `app-summary.top_stages` 的列表时**必须**先看 `busy_ratio` 再决定是否值得动 stage 本身。
