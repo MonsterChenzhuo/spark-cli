@@ -1,6 +1,7 @@
 package rules
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/opay-bigdata/spark-cli/internal/model"
@@ -55,5 +56,41 @@ func TestIdleStageIgnoresShortStages(t *testing.T) {
 
 	if f := (IdleStageRule{}).Eval(app); f.Severity != "ok" {
 		t.Errorf("short stage should be ok, got %s", f.Severity)
+	}
+}
+
+func TestIdleStageIncludesDriverAndBroadcastConfig(t *testing.T) {
+	app := model.NewApplication()
+	app.MaxConcurrentExecutors = 7
+	app.SparkConf["spark.driver.memory"] = "4G"
+	app.SparkConf["spark.driver.memoryOverhead"] = "1024"
+	app.SparkConf["spark.sql.autoBroadcastJoinThreshold"] = "10485760"
+	app.SparkConf["spark.sql.broadcastTimeout"] = "-1"
+
+	s := model.NewStage(12, 0, "broadcast wait", 1, 0)
+	s.SubmitMs = 0
+	s.CompleteMs = 546_350
+	s.TotalRunMs = 224
+	s.Status = "succeeded"
+	app.Stages[model.StageKey{ID: 12}] = s
+
+	f := IdleStageRule{}.Eval(app)
+	if f.Severity != "critical" {
+		t.Fatalf("severity=%s want critical", f.Severity)
+	}
+	if f.Evidence["spark_driver_memory"] != "4G" {
+		t.Fatalf("spark_driver_memory evidence=%v want 4G", f.Evidence["spark_driver_memory"])
+	}
+	if f.Evidence["spark_sql_auto_broadcast_join_threshold"] != "10485760" {
+		t.Fatalf("auto broadcast threshold evidence=%v", f.Evidence["spark_sql_auto_broadcast_join_threshold"])
+	}
+	if f.Evidence["spark_sql_broadcast_timeout"] != "-1" {
+		t.Fatalf("broadcast timeout evidence=%v want -1", f.Evidence["spark_sql_broadcast_timeout"])
+	}
+	if !strings.Contains(f.Suggestion, "spark.driver.memory=4G") {
+		t.Fatalf("suggestion should mention current driver memory, got %q", f.Suggestion)
+	}
+	if !strings.Contains(f.Suggestion, "spark.sql.broadcastTimeout=-1") {
+		t.Fatalf("suggestion should mention infinite broadcast timeout, got %q", f.Suggestion)
 	}
 }

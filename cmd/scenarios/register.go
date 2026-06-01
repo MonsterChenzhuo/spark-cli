@@ -9,6 +9,7 @@ func Register(root *cobra.Command) {
 	RegisterFlags(root)
 	root.AddCommand(
 		newScenarioCmd("app-summary", "Application-level overview"),
+		newScenarioCmd("spark-conf", "Spark configuration captured in the EventLog"),
 		newScenarioCmd("slow-stages", "Stages ranked by wall time"),
 		newScenarioCmd("data-skew", "Stages with task long-tail / input skew"),
 		newScenarioCmd("gc-pressure", "Executors ranked by GC ratio"),

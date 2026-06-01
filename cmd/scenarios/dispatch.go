@@ -21,6 +21,11 @@ func buildScenarioBody(opts Options, app *model.Application, env *scenario.Envel
 	case "app-summary":
 		env.Columns = scenario.AppSummaryColumns()
 		env.Data = []any{scenario.AppSummary(app)}
+	case "spark-conf":
+		rows, sum := scenario.SparkConf(app)
+		env.Columns = scenario.SparkConfColumns()
+		env.Data = rowsToAny(rows)
+		env.Summary = sum
 	case "slow-stages":
 		rows := scenario.SlowStages(app, opts.Top)
 		env.Columns = scenario.SlowStagesColumns()

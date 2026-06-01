@@ -238,6 +238,7 @@ spark-cli paimon-diagnostics application_1772605260987_20765 \
 |---|---|
 | `spark-cli diagnose <appId>` | 一次跑全部规则; agent 首选入口 |
 | `spark-cli app-summary <appId>` | 应用级总览 |
+| `spark-cli spark-conf <appId>` | 从 EventLog 输出 Spark 配置,按诊断相关度标注分类和调参提示 |
 | `spark-cli slow-stages <appId>` | 按耗时排序的 Stage |
 | `spark-cli data-skew <appId>` | 倾斜 Stage |
 | `spark-cli gc-pressure <appId>` | 每 Stage / Executor 的 GC 占比 |
@@ -286,6 +287,8 @@ spark-cli paimon-diagnostics application_1772605260987_20765 \
 - `native-io` 解析 Paimon 写入 EventLog 的 `SparkListenerNativeIOEvent`,同时支持新的顶层 `native_io_*` 字段和旧版内嵌 `eventJson`。`summary` 给 event/operation 数、reader/export/error 数、总 rows/bytes/duration、`top_phases`、`top_operations`;`data` 按 `duration_ms` 倒序输出 `--top` 条 native IO 事件,包含 Spark 上下文(`sql_execution_id`、`stage_id`、`task_attempt_id`、executor/host)、文件/object 字段、吞吐、native memory、原始数值 `metrics` 和 `verdict`。示例见 [`docs/examples/native-io-eventlog.md`](docs/examples/native-io-eventlog.md)。
 - `diagnose` 顶层带 `summary: {critical, warn, ok, top_findings_by_impact?, findings_wall_coverage?}`。`top_findings_by_impact` 按 `wall_share` 倒序(单条 finding 取 primary + similar_stages 的 max);`findings_wall_coverage` 是这些 wall_share 按 stage 去重后加和,**cap 到 1.0**(stage 在 wall 上并行时 naive sum 可能 > 1)。两者在 `app.DurationMs == 0` 时整段 omitempty。**coverage < 0.05 ⇒ 瓶颈在作业结构层,跳到 `app-summary.top_busy_stages` / `top_io_bound_stages` 看真热点,别继续下钻 finding**。**`severity` 是诊断置信度,不是 ROI** —— 永远以 `top_findings_by_impact` 排序为准。
 - `diagnose` 新增 `executor_supply` 规则。静态分配时会比较 `spark.executor.instances` 与 EventLog 观察到的 `executors_added` / `max_concurrent_executors`;命中只能证明 EventLog 里 executor 供给不足,**不能**证明 YARN ResourceManager 为什么没继续分配。根因仍需查 RM/AM 的 pending containers、user limit、队列容量、节点标签、reserved containers、资源碎片等诊断。
+- `spark-conf` 读取 `SparkListenerEnvironmentUpdate.Spark Properties`,输出 `{key,value,category,importance,tuning_hint}` 行。`summary.parameter_hints` 把常见问题(driver/broadcast wait、shuffle spill、data skew、GC pressure)映射到应优先查看的 Spark 参数,方便 agent 基于当前配置给出建议。
+- `idle_stage` finding 的 evidence 会附带可用的 driver/broadcast 配置(`spark_driver_memory`、`spark_driver_memory_overhead`、`spark_sql_auto_broadcast_join_threshold`、`spark_sql_broadcast_timeout`),遇到 broadcast/collect 等待时无需再手动查 SHS environment。
 - `paimon-diagnostics` 是实时 Spark UI 命令,不是 EventLog 解析器。它返回一行,包含来自 Paimon tab JSON 端点的 `overview`、`thread_dump`、`profiler`。当 Spark UI jobs/stages 看不出进度,但 Paimon 读写疑似卡住时使用: `thread_dump.facts.top_stacks` 是 thread dump 聚合火焰图来源;`profiler.facts.artifacts` 列出 async-profiler CPU/wall-clock 输出和打开 URL。
 - `data_skew` finding 在多 stage 命中时,evidence 含 `similar_stages: [{stage_id, wall_share, skew_factor}]`(按 wall_share 倒序最多 4 条);primary `stage_id` 选 wall_share 最大的(平局回退 skew_factor)。`top_findings_by_impact` 与 `findings_wall_coverage` 都跨 primary + similar_stages 聚合 —— agent 直接读 evidence 就能看到完整列表,不必再回头跑 `data-skew`。
 - `app-summary` 在实际 executor 计数旁输出 executor 请求配置(`dynamic_allocation_enabled`、`configured_executor_instances`、`executor_cores`、`executor_memory`、`executor_memory_overhead`),并同时输出三个互补 stage 切面:`top_stages_by_duration`(按 wall 倒序,含 driver-side 等待)、`top_busy_stages`(`busy_ratio > 0.8` 真 CPU 热点)、**`top_io_bound_stages`**(`busy_ratio < 0.8` 但 `spill >= 0.5 GB` 或 `shuffle_read >= 1 GB`,IO 阻塞但 wall 大的 stage)。**只看 `top_busy_stages` 会错过 spill 主导的最大瓶颈**,三个切面合起来才不漏。

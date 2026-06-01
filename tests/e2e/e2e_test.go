@@ -29,6 +29,7 @@ func TestE2E_AllScenarios_TinyApp(t *testing.T) {
 		wantKeys []string
 	}{
 		{"app-summary", []string{"app-summary", "application_1_1"}, []string{"scenario", "app_id", "data"}},
+		{"spark-conf", []string{"spark-conf", "application_1_1"}, []string{"scenario", "data", "summary"}},
 		{"slow-stages", []string{"slow-stages", "application_1_1", "--top", "5"}, []string{"scenario", "data"}},
 		{"data-skew", []string{"data-skew", "application_1_1"}, []string{"scenario", "data"}},
 		{"gc-pressure", []string{"gc-pressure", "application_1_1"}, []string{"scenario", "data"}},
@@ -54,6 +55,55 @@ func TestE2E_AllScenarios_TinyApp(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestE2E_SparkConfScenarioReturnsEnvironmentProperties(t *testing.T) {
+	dir := t.TempDir()
+	body := strings.Join([]string{
+		`{"Event":"SparkListenerApplicationStart","App Name":"conf-app","App ID":"application_conf_1","Timestamp":1000,"User":"alice"}`,
+		`{"Event":"SparkListenerEnvironmentUpdate","Spark Properties":{"spark.driver.memory":"4G","spark.sql.broadcastTimeout":"-1","spark.sql.autoBroadcastJoinThreshold":"10485760","spark.app.name":"conf-app"}}`,
+		`{"Event":"SparkListenerApplicationEnd","Timestamp":2000}`,
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "application_conf_1"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd.ResetForTest()
+	var stdout, stderr bytes.Buffer
+	rc := cmd.RunWith(context.Background(),
+		[]string{"spark-conf", "application_conf_1", "--log-dirs", "file://" + dir, "--format", "json"},
+		&stdout, &stderr)
+	if rc != 0 {
+		t.Fatalf("rc=%d stderr=%s", rc, stderr.String())
+	}
+	var env map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("not json: %v\n%s", err, stdout.String())
+	}
+	if env["scenario"] != "spark-conf" {
+		t.Fatalf("scenario=%v want spark-conf", env["scenario"])
+	}
+	summary := env["summary"].(map[string]any)
+	if summary["total"].(float64) != 4 {
+		t.Fatalf("summary.total=%v want 4", summary["total"])
+	}
+	rows := env["data"].([]any)
+	if len(rows) != 4 {
+		t.Fatalf("data rows=%d want 4", len(rows))
+	}
+	foundDriver := false
+	for _, raw := range rows {
+		row := raw.(map[string]any)
+		if row["key"] == "spark.driver.memory" {
+			foundDriver = true
+			if row["category"] != "driver" || row["importance"] != "important" || row["tuning_hint"] == "" {
+				t.Fatalf("bad driver memory row: %+v", row)
+			}
+		}
+	}
+	if !foundDriver {
+		t.Fatalf("missing spark.driver.memory row: %+v", rows)
 	}
 }
 
@@ -113,7 +163,7 @@ func TestE2E_FormatTableAndMarkdownSmoke(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "application_1_1"), src, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	for _, sc := range []string{"app-summary", "slow-stages", "data-skew", "gc-pressure", "native-io", "diagnose"} {
+	for _, sc := range []string{"app-summary", "spark-conf", "slow-stages", "data-skew", "gc-pressure", "native-io", "diagnose"} {
 		for _, format := range []string{"table", "markdown"} {
 			t.Run(sc+"/"+format, func(t *testing.T) {
 				cmd.ResetForTest()
@@ -151,7 +201,7 @@ func TestE2E_AllScenariosEmitAppDurationMs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, sc := range []string{"app-summary", "slow-stages", "data-skew", "gc-pressure", "native-io", "diagnose"} {
+	for _, sc := range []string{"app-summary", "spark-conf", "slow-stages", "data-skew", "gc-pressure", "native-io", "diagnose"} {
 		t.Run(sc, func(t *testing.T) {
 			cmd.ResetForTest()
 			var stdout, stderr bytes.Buffer
