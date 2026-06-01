@@ -110,13 +110,13 @@ func TestTableRendersSQLExecutionsSection(t *testing.T) {
 	}
 }
 
-func TestTableRendersGCDoubleSegment(t *testing.T) {
+func TestTableRendersFlatGCPressureRows(t *testing.T) {
 	env := scenario.Envelope{
 		Scenario: "gc-pressure",
-		Columns:  map[string]any{"by_stage": []any{"stage_id", "gc_ratio"}, "by_executor": []any{"executor_id", "gc_ratio"}},
-		Data: map[string]any{
-			"by_stage":    []any{map[string]any{"stage_id": 7, "gc_ratio": 0.4}},
-			"by_executor": []any{map[string]any{"executor_id": "12", "gc_ratio": 0.3}},
+		Columns:  []string{"executor_id", "host", "gc_ratio", "verdict"},
+		Data: []any{
+			map[string]any{"executor_id": "12", "host": "worker-1", "gc_ratio": 0.3, "verdict": "severe"},
+			map[string]any{"executor_id": "13", "host": "worker-2", "gc_ratio": 0.15, "verdict": "warn"},
 		},
 	}
 	var buf bytes.Buffer
@@ -124,7 +124,12 @@ func TestTableRendersGCDoubleSegment(t *testing.T) {
 		t.Fatalf("WriteTable: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "by_stage") || !strings.Contains(out, "by_executor") {
-		t.Errorf("missing segment headers:\n%s", out)
+	for _, want := range []string{"executor_id", "worker-1", "0.300", "severe", "worker-2", "0.150", "warn"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "by_stage") || strings.Contains(out, "by_executor") {
+		t.Errorf("gc-pressure should render flat rows, got legacy segments:\n%s", out)
 	}
 }

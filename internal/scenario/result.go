@@ -51,8 +51,8 @@ func truncateSQL(s, mode string) string {
 }
 
 // Envelope is the canonical JSON shape returned by every scenario.
-// Data is `any` because gc-pressure returns an object, others return arrays.
-// Columns mirrors data: []string for arrays, map[string][]string for gc-pressure.
+// Data is `any` so scenarios can return typed row slices or single-row
+// envelopes while renderers keep one shared contract.
 //
 // SQLExecutions is populated only by scenarios whose rows reference a
 // `sql_execution_id` (slow-stages, data-skew). Rows store just the id; this

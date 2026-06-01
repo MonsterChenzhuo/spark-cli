@@ -48,7 +48,7 @@ Agent gets the full skewed-stage list with `verdict: "severe"` for stage 7 and s
 ```bash
 $ spark-cli gc-pressure application_1735000000_0001
 ```
-Agent reads `by_executor` and notes only one executor (12) is hot — confirms it's localized, not cluster-wide.
+Agent reads `data[]` and notes only one executor (12) is hot — confirms it's localized, not cluster-wide.
 
 ## 4. Suggest next steps
 

@@ -226,3 +226,27 @@ func TestMarkdownProducesPipedTable(t *testing.T) {
 		}
 	}
 }
+
+func TestMarkdownRendersFlatGCPressureRows(t *testing.T) {
+	env := scenario.Envelope{
+		Scenario: "gc-pressure",
+		Columns:  []string{"executor_id", "host", "gc_ratio", "verdict"},
+		Data: []any{
+			map[string]any{"executor_id": "12", "host": "worker-1", "gc_ratio": 0.3, "verdict": "severe"},
+			map[string]any{"executor_id": "13", "host": "worker-2", "gc_ratio": 0.15, "verdict": "warn"},
+		},
+	}
+	var buf bytes.Buffer
+	if err := WriteMarkdown(&buf, env); err != nil {
+		t.Fatalf("WriteMarkdown: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"| executor_id | host | gc_ratio | verdict |", "| 12 | worker-1 | 0.300 | severe |", "| 13 | worker-2 | 0.150 | warn |"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("markdown missing %q\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "by_stage") || strings.Contains(out, "by_executor") {
+		t.Errorf("gc-pressure should render flat rows, got legacy segments:\n%s", out)
+	}
+}

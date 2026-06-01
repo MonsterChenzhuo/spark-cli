@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Spark configuration diagnostics
+
+- **New `spark-cli spark-conf <appId>` scenario** reads Spark Properties from `SparkListenerEnvironmentUpdate` and returns `key/value/category/importance/tuning_hint` rows, plus `summary.parameter_hints` for common tuning paths such as driver broadcast waits, shuffle spill, data skew, and GC pressure.
+- **`idle_stage` findings now include driver/broadcast config evidence** (`spark_driver_memory`, `spark_driver_memory_overhead`, `spark_sql_auto_broadcast_join_threshold`, `spark_sql_broadcast_timeout`) when available, so broadcast/collect waits can be interpreted without a separate Spark UI environment lookup.
+- **`gc-pressure --format table|markdown` now renders the current flat executor-row shape** instead of the old `{by_stage, by_executor}` segments that were removed from JSON output earlier.
+
 ### Paimon native IO EventLog diagnostics
 
 - **New `spark-cli native-io <appId>` scenario** parses Paimon `SparkListenerNativeIOEvent` records from Spark EventLog and emits AI-readable native IO metrics. It supports both the new top-level `native_io_*` fields and legacy embedded `eventJson`.

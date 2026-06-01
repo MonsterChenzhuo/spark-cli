@@ -13,9 +13,6 @@ import (
 func WriteTable(w io.Writer, env scenario.Envelope) error {
 	fmt.Fprintf(w, "# %s  app=%s  events=%d  elapsed=%dms%s\n",
 		env.Scenario, env.AppID, env.ParsedEvents, env.ElapsedMs, formatAppDuration(env.AppDurationMs))
-	if env.Scenario == "gc-pressure" {
-		return writeGCSegments(w, env)
-	}
 	cols := toStringSlice(env.Columns)
 	rows := toRowSlice(env.Data)
 	// app-summary 是 single-row 多列(含 nested 数组)场景:横向布局会变成
@@ -65,20 +62,6 @@ func renderKeyValue(w io.Writer, cols []string, row map[string]any) {
 	for _, c := range cols {
 		fmt.Fprintf(w, "%s  %s\n", padRight(c, keyWidth), stringify(row[c]))
 	}
-}
-
-func writeGCSegments(w io.Writer, env scenario.Envelope) error {
-	colMap := toMap(env.Columns)
-	dataMap := toMap(env.Data)
-	for _, seg := range []string{"by_stage", "by_executor"} {
-		fmt.Fprintf(w, "\n## %s\n", seg)
-		cols := toStringSlice(colMap[seg])
-		rows := toRowSlice(dataMap[seg])
-		if err := renderTable(w, cols, rows); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func renderTable(w io.Writer, cols []string, rows []map[string]any) error {
@@ -205,11 +188,4 @@ func structToMap(v any) (map[string]any, bool) {
 		return nil, false
 	}
 	return m, true
-}
-
-func toMap(v any) map[string]any {
-	if m, ok := v.(map[string]any); ok {
-		return m
-	}
-	return nil
 }

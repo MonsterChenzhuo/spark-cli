@@ -13,16 +13,6 @@ func WriteMarkdown(w io.Writer, env scenario.Envelope) error {
 	fmt.Fprintf(w, "## %s — `%s`\n\n", env.Scenario, env.AppID)
 	fmt.Fprintf(w, "_log: `%s` · format: %s · compression: %s · events: %d · elapsed: %dms%s_\n\n",
 		env.LogPath, env.LogFormat, env.Compression, env.ParsedEvents, env.ElapsedMs, formatAppDuration(env.AppDurationMs))
-	if env.Scenario == "gc-pressure" {
-		colMap := toMap(env.Columns)
-		dataMap := toMap(env.Data)
-		for _, seg := range []string{"by_stage", "by_executor"} {
-			fmt.Fprintf(w, "### %s\n\n", seg)
-			renderMD(w, toStringSlice(colMap[seg]), toRowSlice(dataMap[seg]))
-			fmt.Fprintln(w)
-		}
-		return nil
-	}
 	cols := toStringSlice(env.Columns)
 	rows := toRowSlice(env.Data)
 	// app-summary 是 single-row 多列(含 nested 数组)场景,横向表格 25 列 +

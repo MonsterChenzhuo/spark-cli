@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Spark 配置诊断
+
+- **新增 `spark-cli spark-conf <appId>` 场景命令**:读取 `SparkListenerEnvironmentUpdate` 里的 Spark Properties,输出 `key/value/category/importance/tuning_hint` 行,并在 `summary.parameter_hints` 中把 driver broadcast wait、shuffle spill、data skew、GC pressure 等常见问题映射到应优先查看的参数。
+- **`idle_stage` finding 现在会附带 driver/broadcast 配置证据**:可用时输出 `spark_driver_memory`、`spark_driver_memory_overhead`、`spark_sql_auto_broadcast_join_threshold`、`spark_sql_broadcast_timeout`,排查 broadcast/collect 等待时不必再单独打开 Spark UI environment。
+- **`gc-pressure --format table|markdown` 现在按当前扁平 executor 行渲染**:不再输出早已从 JSON 形态移除的旧 `{by_stage, by_executor}` 双段。
+
 ### Paimon native IO EventLog 诊断
 
 - **新增 `spark-cli native-io <appId>` 场景命令**:解析 Spark EventLog 中的 Paimon `SparkListenerNativeIOEvent`,输出 AI 友好的 native IO 指标。兼容新的顶层 `native_io_*` 字段和旧版内嵌 `eventJson`。
