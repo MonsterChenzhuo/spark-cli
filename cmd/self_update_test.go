@@ -2,7 +2,7 @@ package cmd
 
 import (
 	"bytes"
-	"strings"
+	"encoding/json"
 	"testing"
 )
 
@@ -17,8 +17,16 @@ func TestSelfUpdateDryRunPrintsTargetAsset(t *testing.T) {
 	if err := root.Execute(); err != nil {
 		t.Fatalf("execute: %v\n%s", err, buf.String())
 	}
-	out := buf.String()
-	if !strings.Contains(out, "spark-cli_0.2.0_linux_amd64.tar.gz") || !strings.Contains(out, "dry-run") {
-		t.Fatalf("unexpected output: %q", out)
+	var got struct {
+		Command string `json:"command"`
+		DryRun  bool   `json:"dry_run"`
+		Asset   string `json:"asset"`
+		Target  string `json:"target"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("stdout should be json: %v\n%s", err, buf.String())
+	}
+	if got.Command != "self-update" || !got.DryRun || got.Asset != "spark-cli_0.2.0_linux_amd64.tar.gz" || got.Target == "" {
+		t.Fatalf("unexpected output: %+v", got)
 	}
 }

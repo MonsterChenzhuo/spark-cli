@@ -2,6 +2,8 @@ package cachecmd
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,6 +81,43 @@ func TestScanCacheClassifiesAndSorts(t *testing.T) {
 	}
 }
 
+func TestCacheListDefaultsToJSON(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SPARK_CLI_CACHE_DIR", dir)
+	writeTmp(t, dir, "application_1.gob.zst", 100)
+
+	cmd := New()
+	cmd.SetArgs([]string{"list"})
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stdout)
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("cache list: %v\n%s", err, stdout.String())
+	}
+	var got listOutput
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("default output should be json: %v\n%s", err, stdout.String())
+	}
+	if got.Dir != dir || got.Total != 1 {
+		t.Fatalf("unexpected output: %+v", got)
+	}
+}
+
+func TestCacheListRejectsTextFormat(t *testing.T) {
+	cmd := New()
+	cmd.SetArgs([]string{"list", "--format", "text"})
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stdout)
+	err := cmd.ExecuteContext(context.Background())
+	if err == nil {
+		t.Fatalf("cache list --format text should fail, stdout=%s", stdout.String())
+	}
+	if !strings.Contains(err.Error(), `unknown --format "text"`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // clearCache --app 应当只删名字含 appId substring 的文件,其他保留。
 func TestClearCacheAppFilter(t *testing.T) {
 	dir := t.TempDir()
@@ -86,13 +125,12 @@ func TestClearCacheAppFilter(t *testing.T) {
 	rm := writeTmp(t, dir, "application_Y.gob.zst", 200)
 	rmShs := writeTmp(t, dir, "shs/host/application_Y_999.zip", 300)
 
-	var buf bytes.Buffer
-	count, _, err := clearCache(dir, "Y", false, &buf)
+	out, err := clearCache(dir, "Y", false)
 	if err != nil {
 		t.Fatalf("clearCache: %v", err)
 	}
-	if count != 2 {
-		t.Errorf("removed=%d want 2 (both Y entries)", count)
+	if out.Removed != 2 {
+		t.Errorf("removed=%d want 2 (both Y entries)", out.Removed)
 	}
 	if _, err := os.Stat(keep); err != nil {
 		t.Errorf("keep entry %s removed: %v", keep, err)
@@ -110,16 +148,40 @@ func TestClearCacheDryRun(t *testing.T) {
 	dir := t.TempDir()
 	writeTmp(t, dir, "application_X.gob.zst", 100)
 
-	var buf bytes.Buffer
-	count, _, err := clearCache(dir, "", true, &buf)
+	out, err := clearCache(dir, "", true)
 	if err != nil {
 		t.Fatalf("clearCache: %v", err)
 	}
-	if count != 1 {
-		t.Errorf("would-remove count=%d want 1", count)
+	if out.Removed != 1 {
+		t.Errorf("would-remove count=%d want 1", out.Removed)
 	}
 	// dry-run 文件不应被删除
 	if _, err := os.Stat(filepath.Join(dir, "application_X.gob.zst")); err != nil {
 		t.Errorf("dry-run should not delete: %v", err)
+	}
+}
+
+func TestCacheClearCommandEmitsJSON(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SPARK_CLI_CACHE_DIR", dir)
+	writeTmp(t, dir, "application_Y.gob.zst", 200)
+
+	cmd := New()
+	cmd.SetArgs([]string{"clear", "--app", "Y"})
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stdout)
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("cache clear: %v\n%s", err, stdout.String())
+	}
+	var got clearOutput
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout should be json: %v\n%s", err, stdout.String())
+	}
+	if got.Command != "cache clear" || got.CacheDir != dir || got.AppID != "Y" || got.Removed != 1 {
+		t.Fatalf("unexpected output: %+v", got)
+	}
+	if len(got.Entries) != 1 || !got.Entries[0].Removed {
+		t.Fatalf("unexpected entries: %+v", got.Entries)
 	}
 }

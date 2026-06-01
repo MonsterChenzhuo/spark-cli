@@ -2,11 +2,18 @@
 
 ## Unreleased
 
+### AI-only JSON contract
+
+- **BREAKING — successful stdout is JSON-only.** EventLog scenarios and live diagnostics only accept `--format json`; `table`, `markdown`, and text output paths now return `FLAG_INVALID`. Utility commands (`config`, `cache`, `self-update`, `version`) also emit command-specific JSON by default.
+- **Scenario envelopes now include `contract_version: 1`** so downstream agents can pin parsing logic before future incompatible JSON changes.
+- **`spark-cli --help` and `spark-cli help <command>` now emit JSON command metadata**, and the Cobra shell `completion` command is disabled to keep successful stdout machine-readable.
+- **`config init` is non-interactive** and returns JSON metadata after writing the config, removing stdin prompts from agent workflows.
+- **Release/install now covers both bundled agent skills.** Archives include `.agents/skills/spark/SKILL.md` and `.claude/skills/spark/SKILL.md`; `scripts/install.sh` mirrors both by default via `AGENTS_SKILL_DIR` and `CLAUDE_SKILL_DIR` (`SKILL_DIR` remains a legacy Claude alias).
+
 ### Spark configuration diagnostics
 
 - **New `spark-cli spark-conf <appId>` scenario** reads Spark Properties from `SparkListenerEnvironmentUpdate` and returns `key/value/category/importance/tuning_hint` rows, plus `summary.parameter_hints` for common tuning paths such as driver broadcast waits, shuffle spill, data skew, and GC pressure.
 - **`idle_stage` findings now include driver/broadcast config evidence** (`spark_driver_memory`, `spark_driver_memory_overhead`, `spark_sql_auto_broadcast_join_threshold`, `spark_sql_broadcast_timeout`) when available, so broadcast/collect waits can be interpreted without a separate Spark UI environment lookup.
-- **`gc-pressure --format table|markdown` now renders the current flat executor-row shape** instead of the old `{by_stage, by_executor}` segments that were removed from JSON output earlier.
 
 ### Paimon native IO EventLog diagnostics
 
@@ -19,7 +26,8 @@
 - **Named cluster profiles** let users persist Spark History Server EventLog sources and YARN RM/gateway URLs as one local cluster unit via `active_cluster` and `clusters` in `config.yaml`. This prevents accidentally pairing SHS from one cluster with YARN from another.
 - **New `--cluster <name>` root flag** selects a configured cluster for one invocation. `active_cluster` is applied by default; explicit `--log-dirs`, `--yarn-base-urls`, and `--shs-timeout` flags still override after cluster selection.
 - **New `spark-cli config cluster add|list` commands** write and inspect local cluster profiles. `config cluster add prod --log-dirs shs://... --yarn-base-urls http://... --activate` creates or updates a profile and can make it the default.
-- **`spark-cli config show` now reports `active_cluster`, `selected_cluster`, and `clusters`** in both text and JSON formats, so agent workflows can see which profile produced the effective `log_dirs` / `yarn.base_urls`.
+- **HTTPS gateway support for SHS/YARN profiles**: `--log-dirs` now accepts `shs+https://host[:port][/path]`, and `tls.insecure_skip_verify`, `SPARK_CLI_TLS_INSECURE_SKIP_VERIFY`, `--tls-insecure-skip-verify`, plus `config cluster add --tls-insecure-skip-verify` cover self-signed internal gateways.
+- **`spark-cli config show` now reports `active_cluster`, `selected_cluster`, and `clusters`** in JSON, so agent workflows can see which profile produced the effective `log_dirs` / `yarn.base_urls`.
 - **New `spark-cli self-update` command** downloads the latest GitHub release archive for the current OS/arch, verifies `checksums.txt`, and replaces the local binary. It also supports `update` / `upgrade` aliases, `--dry-run`, `--version`, and `--install-dir`.
 
 ### YARN / Spark UI diagnostics
@@ -50,7 +58,7 @@ Errors / hints:
 - **`--version` flag now works** (alongside the existing `version` subcommand) with identical "spark-cli <ver>" output.
 
 CLI / surface:
-- **`--log-dirs` / `--no-progress` / `--shs-timeout` help text rewritten** to match current behavior — `--log-dirs` now lists all three schemes (`file://` / `hdfs://` / `shs://`); `--no-progress` mentions TTY auto-detect; `--shs-timeout` calls out the 5-minute default.
+- **`--log-dirs` / `--no-progress` / `--shs-timeout` help text rewritten** to match current behavior — `--log-dirs` lists supported schemes (`file://` / `hdfs://` / `shs://` / `shs+https://`); `--no-progress` mentions TTY auto-detect; `--shs-timeout` calls out the 5-minute default.
 - **SHS HTTP requests now send `User-Agent: spark-cli/<version>`** so SHS operators can identify spark-cli traffic in their access logs.
 
 Code-quality:
@@ -126,7 +134,7 @@ Code-quality:
 - New `shs://host:port` scheme for `--log-dirs`. spark-cli pulls `GET /api/v1/applications/<id>/<attempt>/logs` (a zip body) and exposes its entries through the existing `fs.FS` abstraction, so the locator, decoder, rules, and parsed-application cache all work transparently against a Spark History Server.
 - The largest numeric `attemptId` reported by `/api/v1/applications/<id>` is auto-selected. When SHS reports an attempt with no `attemptId` field (Spark 3.4+ single-attempt default), spark-cli now drops the attempt segment and fetches `/api/v1/applications/<id>/logs` directly — fixes APP_NOT_FOUND against attempt-less apps.
 - New flag `--shs-timeout`, env var `SPARK_CLI_SHS_TIMEOUT`, and YAML key `shs.timeout` (default `5m` since the unreleased 60s→5m bump above; original release shipped `60s`). `spark-cli config show` reports the resolved value and its source.
-- HTTP only — TLS, Basic Auth, Bearer Token, and Kerberos are out of scope for v1.
+- `shs://` uses HTTP; `shs+https://` uses HTTPS. Basic Auth, Bearer Token, and Kerberos are still out of scope.
 - Zip bodies up to 256 MiB are decoded in memory; larger or unknown-length responses spill to a `os.CreateTemp` file that is removed when the process exits.
 - **Known caveat**: even when the parsed-application cache hits, every invocation still downloads the zip — `Locator.Resolve` must read zip contents to decide V1 vs V2 layout. A persistent on-disk zip cache is on the roadmap.
 

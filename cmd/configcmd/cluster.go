@@ -23,6 +23,7 @@ type clusterFile struct {
 	HDFS          config.HDFSConfig             `yaml:"hdfs,omitempty"`
 	Cache         config.CacheConfig            `yaml:"cache,omitempty"`
 	SHS           timeoutFileConfig             `yaml:"shs,omitempty"`
+	TLS           config.TLSConfig              `yaml:"tls,omitempty"`
 	YARN          config.YARNConfig             `yaml:"yarn,omitempty"`
 	SQL           config.SQLConfig              `yaml:"sql,omitempty"`
 	Timeout       string                        `yaml:"timeout,omitempty"`
@@ -32,6 +33,7 @@ type clusterFileProfile struct {
 	LogDirs []string          `yaml:"log_dirs,omitempty"`
 	YARN    config.YARNConfig `yaml:"yarn,omitempty"`
 	SHS     timeoutFileConfig `yaml:"shs,omitempty"`
+	TLS     config.TLSConfig  `yaml:"tls,omitempty"`
 }
 
 type timeoutFileConfig struct {
@@ -50,7 +52,7 @@ func newClusterCmd() *cobra.Command {
 
 func newClusterAddCmd() *cobra.Command {
 	var logDirs, yarnBaseURLs, shsTimeout string
-	var activate bool
+	var activate, tlsInsecureSkipVerify bool
 	c := &cobra.Command{
 		Use:   "add <name>",
 		Short: "Add or update a named cluster profile",
@@ -79,6 +81,7 @@ func newClusterAddCmd() *cobra.Command {
 				LogDirs: splitCSV(logDirs),
 				YARN:    config.YARNConfig{BaseURLs: splitCSV(yarnBaseURLs)},
 				SHS:     timeoutFileConfig{Timeout: shsTimeout},
+				TLS:     config.TLSConfig{InsecureSkipVerify: tlsInsecureSkipVerify},
 			}
 			if activate || file.ActiveCluster == "" {
 				file.ActiveCluster = name
@@ -86,15 +89,31 @@ func newClusterAddCmd() *cobra.Command {
 			if err := writeClusterFile(path, file); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Wrote cluster %q to %s\n", name, path)
-			return nil
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			enc.SetEscapeHTML(false)
+			return enc.Encode(clusterAddResponse{
+				Command:   "config cluster add",
+				Cluster:   name,
+				Path:      path,
+				Activated: file.ActiveCluster == name,
+				Written:   true,
+			})
 		},
 	}
 	c.Flags().StringVar(&logDirs, "log-dirs", "", "Comma-separated EventLog sources for this cluster")
 	c.Flags().StringVar(&yarnBaseURLs, "yarn-base-urls", "", "Comma-separated YARN RM/gateway URLs for this cluster")
 	c.Flags().StringVar(&shsTimeout, "shs-timeout", "", "Optional SHS HTTP timeout for this cluster, e.g. 5m")
+	c.Flags().BoolVar(&tlsInsecureSkipVerify, "tls-insecure-skip-verify", false, "Skip HTTPS certificate verification for this cluster's SHS/YARN gateways")
 	c.Flags().BoolVar(&activate, "activate", false, "Set this cluster as active_cluster")
 	return c
+}
+
+type clusterAddResponse struct {
+	Command   string `json:"command"`
+	Cluster   string `json:"cluster"`
+	Path      string `json:"path"`
+	Activated bool   `json:"activated"`
+	Written   bool   `json:"written"`
 }
 
 func newClusterListCmd() *cobra.Command {
@@ -108,17 +127,14 @@ func newClusterListCmd() *cobra.Command {
 				return err
 			}
 			switch format {
-			case "json":
+			case "", "json":
 				return renderClusterListJSON(cmd.OutOrStdout(), file)
-			case "", "text":
-				renderClusterListText(cmd.OutOrStdout(), file)
-				return nil
 			default:
-				return fmt.Errorf("unknown --format %q (use text|json)", format)
+				return fmt.Errorf("unknown --format %q (use json)", format)
 			}
 		},
 	}
-	c.Flags().StringVar(&format, "format", "", "Output format: text (default) | json")
+	c.Flags().StringVar(&format, "format", "", "Output format: json")
 	return c
 }
 
@@ -170,6 +186,7 @@ type clusterListRow struct {
 	LogDirs      []string `json:"log_dirs,omitempty"`
 	YARNBaseURLs []string `json:"yarn_base_urls,omitempty"`
 	SHSTimeout   string   `json:"shs_timeout,omitempty"`
+	TLSInsecure  bool     `json:"tls_insecure_skip_verify,omitempty"`
 }
 
 func clusterRows(file clusterFile) []clusterListRow {
@@ -187,6 +204,7 @@ func clusterRows(file clusterFile) []clusterListRow {
 			LogDirs:      cluster.LogDirs,
 			YARNBaseURLs: cluster.YARN.BaseURLs,
 			SHSTimeout:   cluster.SHS.Timeout,
+			TLSInsecure:  cluster.TLS.InsecureSkipVerify,
 		})
 	}
 	return rows
@@ -203,30 +221,4 @@ func renderClusterListJSON(w io.Writer, file clusterFile) error {
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	return enc.Encode(out)
-}
-
-func renderClusterListText(w io.Writer, file clusterFile) {
-	fmt.Fprintf(w, "active_cluster: %s\n", file.ActiveCluster)
-	rows := clusterRows(file)
-	if len(rows) == 0 {
-		fmt.Fprintln(w, "clusters: (none)")
-		return
-	}
-	fmt.Fprintln(w, "clusters:")
-	for _, row := range rows {
-		marker := " "
-		if row.Active {
-			marker = "*"
-		}
-		fmt.Fprintf(w, "%s %s\n", marker, row.Name)
-		for _, d := range row.LogDirs {
-			fmt.Fprintf(w, "    log_dir: %s\n", d)
-		}
-		for _, u := range row.YARNBaseURLs {
-			fmt.Fprintf(w, "    yarn: %s\n", u)
-		}
-		if row.SHSTimeout != "" {
-			fmt.Fprintf(w, "    shs.timeout: %s\n", row.SHSTimeout)
-		}
-	}
 }

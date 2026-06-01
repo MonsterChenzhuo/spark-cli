@@ -25,6 +25,7 @@ archives:
       - CHANGELOG.md
       - CHANGELOG.zh.md
       - LICENSE
+      - .agents/skills/spark/SKILL.md
       - .claude/skills/spark/SKILL.md
 checksum:
   name_template: "checksums.txt"

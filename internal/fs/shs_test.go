@@ -137,6 +137,42 @@ func shsBase(srv *httptest.Server) string {
 	return "shs://" + u.Host
 }
 
+func shsHTTPSBase(srv *httptest.Server) string {
+	u, _ := url.Parse(srv.URL)
+	return "shs+https://" + u.Host
+}
+
+func TestSHSHTTPSWithInsecureSkipVerify(t *testing.T) {
+	appID := "application_https_1"
+	apps := map[string]*shsApp{
+		appID: {
+			ID:       appID,
+			Attempts: []shsAttempt{{AttemptID: "1", LastUpdatedEpoch: 100}},
+			zips: map[string][]byte{
+				"1": buildZip(t, map[string][]byte{appID: []byte("{}\n")}),
+			},
+		},
+	}
+	srv := newSHSTestServer(t, apps, nil, 0, false)
+	tlsSrv := httptest.NewTLSServer(srv.Config.Handler)
+	defer tlsSrv.Close()
+
+	base := shsHTTPSBase(tlsSrv)
+	s := NewSHS(base, 5*time.Second, SHSOptions{Quiet: true, InsecureSkipVerify: true})
+	defer func() { _ = s.Close() }()
+
+	uris, err := s.List(base, appID)
+	if err != nil {
+		t.Fatalf("List via HTTPS SHS: %v", err)
+	}
+	if len(uris) != 1 || !strings.HasPrefix(uris[0], base+"/"+appID+"/") {
+		t.Fatalf("uris=%v should preserve shs+https base", uris)
+	}
+	if _, err := s.Open(uris[0]); err != nil {
+		t.Fatalf("Open HTTPS SHS URI: %v", err)
+	}
+}
+
 func TestSHSPreservesGatewayPathPrefix(t *testing.T) {
 	appID := "application_gateway_1"
 	apps := map[string]*shsApp{

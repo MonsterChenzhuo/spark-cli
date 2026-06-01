@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
@@ -34,10 +35,13 @@ var _ FS = (*SHS)(nil)
 //     则保持原行为(下载 zip → CreateTemp → Close 时删除)。
 //   - UserAgent: HTTP User-Agent 头,默认空(走 Go 默认 "Go-http-client/1.1")。
 //     生产场景设成 "spark-cli/<version>" 让 SHS 运维能从访问日志识别流量来源。
+//   - InsecureSkipVerify: true → 跳过 HTTPS 证书校验,仅用于用户明确配置的
+//     内网自签证书 gateway。
 type SHSOptions struct {
-	CacheDir  string
-	Quiet     bool
-	UserAgent string
+	CacheDir           string
+	Quiet              bool
+	UserAgent          string
+	InsecureSkipVerify bool
 }
 
 // SHS implements FS over the Spark History Server REST API
@@ -45,8 +49,8 @@ type SHSOptions struct {
 // fetched once per appID per process and exposed as a virtual filesystem so
 // the existing eventlog Locator and reader work unchanged.
 type SHS struct {
-	base       string // e.g. "shs://host:port"
-	httpURL    string // e.g. "http://host:port"
+	base       string // e.g. "shs://host:port" or "shs+https://host:port/path"
+	httpURL    string // e.g. "http://host:port" or "https://host:port/path"
 	basePath   string // optional gateway prefix from base, e.g. /gateway/prod/sparkhistory
 	httpClient *http.Client
 	threshold  int64         // bytes; zips larger than this spill to tempfile
@@ -71,8 +75,8 @@ type shsBundle struct {
 }
 
 // NewSHS constructs a Spark History Server FS bound to base of the form
-// "shs://host:port". TLS is not supported in v1 — the transport always uses
-// "http://". A non-positive timeout defaults to 5 min (生产 zip 几 GB 是常态)。
+// "shs://host:port" or "shs+https://host:port[/gateway/path]". A non-positive
+// timeout defaults to 5 min (生产 zip 几 GB 是常态)。
 //
 // opts.Quiet 决定首次拉 zip 时的进度提示是否走 io.Discard;runner 已经把
 // --no-progress flag、SPARK_CLI_QUIET、TTY 检测合并好,SHS 不再自己读 env。
@@ -85,16 +89,23 @@ func NewSHS(base string, timeout time.Duration, opts SHSOptions) *SHS {
 	if opts.Quiet {
 		w = io.Discard
 	}
-	httpURL := strings.Replace(base, "shs://", "http://", 1)
+	httpURL := shsHTTPURL(base)
 	basePath := ""
 	if u, err := url.Parse(base); err == nil {
 		basePath = strings.TrimRight(u.EscapedPath(), "/")
+	}
+	httpClient := &http.Client{Timeout: timeout}
+	if opts.InsecureSkipVerify {
+		httpClient.Transport = &http.Transport{
+			//nolint:gosec // 用户通过配置显式允许内网 HTTPS gateway 使用自签证书。
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
 	}
 	return &SHS{
 		base:       base,
 		httpURL:    httpURL,
 		basePath:   basePath,
-		httpClient: &http.Client{Timeout: timeout},
+		httpClient: httpClient,
 		threshold:  256 << 20,
 		bundles:    map[string]*shsBundle{},
 		stderr:     w,
@@ -102,6 +113,20 @@ func NewSHS(base string, timeout time.Duration, opts SHSOptions) *SHS {
 		cacheDir:   opts.CacheDir,
 		userAgent:  opts.UserAgent,
 	}
+}
+
+func shsHTTPURL(base string) string {
+	u, err := url.Parse(base)
+	if err != nil {
+		return strings.Replace(base, "shs://", "http://", 1)
+	}
+	switch u.Scheme {
+	case "shs":
+		u.Scheme = "http"
+	case "shs+https":
+		u.Scheme = "https"
+	}
+	return u.String()
 }
 
 // httpGet 包一层 http.Client.Get,统一加 User-Agent 头(若设置)。这样 fetchAttempt
@@ -305,14 +330,16 @@ func appIDFromListPrefix(prefix string) string {
 	return id
 }
 
-// splitSHSURI parses a URI of shape `shs://host[:port][/appID[/inner...]]`
+// splitSHSURI parses a URI of shape
+// `shs://host[:port][/appID[/inner...]]` or
+// `shs+https://host[:port][/appID[/inner...]]`
 // into (host, appID, inner). inner preserves embedded slashes.
 func splitSHSURI(uri string) (host, appID, inner string, err error) {
 	u, err := url.Parse(uri)
 	if err != nil {
 		return "", "", "", fmt.Errorf("shs: bad URI %q: %w", uri, err)
 	}
-	if u.Scheme != "shs" {
+	if u.Scheme != "shs" && u.Scheme != "shs+https" {
 		return "", "", "", fmt.Errorf("shs: unsupported scheme %q", u.Scheme)
 	}
 	host = u.Host
@@ -711,7 +738,7 @@ func (s *SHS) wrapStatusErr(url string, status int) error {
 			"SHS 拒绝访问;v1 仅支持匿名 HTTP,Bearer / Basic / Kerberos 未实现 —— 检查后端是否需要鉴权")
 	case status >= 400:
 		return cerrors.New(cerrors.CodeLogUnreadable, msg,
-			"SHS 拒绝请求;检查 --log-dirs shs://host:port 拼写,或 curl 同 URL 看完整响应体")
+			"SHS 拒绝请求;检查 --log-dirs shs://host:port 或 shs+https://host:port 拼写,或 curl 同 URL 看完整响应体")
 	}
 	return cerrors.New(cerrors.CodeLogUnreadable, msg, "")
 }
@@ -731,7 +758,7 @@ func (s *SHS) wrapTimeout(op string, err error) error {
 		return cerrors.New(cerrors.CodeLogUnreadable, msg, hint)
 	}
 	if isDNSOrConnectError(err) {
-		hint := "检查 --log-dirs 里的 shs://host:port 是否拼写正确、SHS 服务可达;curl `" + s.httpURL + "/api/v1/applications` 验证一下"
+		hint := "检查 --log-dirs 里的 shs://host:port 或 shs+https://host:port 是否拼写正确、SHS 服务可达;curl `" + s.httpURL + "/api/v1/applications` 验证一下"
 		return cerrors.New(cerrors.CodeLogUnreadable, msg, hint)
 	}
 	return cerrors.New(cerrors.CodeLogUnreadable, msg, "Spark History Server 请求失败,检查 --shs-timeout 与端点可达性")

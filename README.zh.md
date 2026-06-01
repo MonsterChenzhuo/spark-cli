@@ -1,6 +1,6 @@
 # spark-cli
 
-用于解析 Apache Spark EventLog、定位性能问题的单二进制 CLI。面向 AI agent (Claude Code) 与运维人员双场景设计 —— 每条命令在 stdout 输出统一的 JSON 信封。
+用于解析 Apache Spark EventLog、定位性能问题的单二进制 CLI。完全面向自主 AI agent:成功 stdout 只输出 JSON,错误统一走结构化 stderr,方便 agent 自动恢复。
 
 ## 快速开始
 
@@ -20,7 +20,8 @@ spark-cli data-skew application_1735000000_0001 --top 10
 
 ### 一键脚本（推荐）
 
-将最新 release 二进制安装到 `/usr/local/bin`，并把内置 Claude Code skill 安装到 `~/.claude/skills/spark/`。重复执行该命令即可升级。
+将最新 release 二进制安装到 `/usr/local/bin`，并把内置 agent skill 安装到
+`~/.claude/skills/spark/` 与 `~/.agents/skills/spark/`。重复执行该命令即可升级。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/MonsterChenzhuo/spark-cli/main/scripts/install.sh | bash
@@ -36,7 +37,9 @@ curl -fsSL https://raw.githubusercontent.com/MonsterChenzhuo/spark-cli/main/scri
 curl -fsSL https://raw.githubusercontent.com/MonsterChenzhuo/spark-cli/main/scripts/install.sh | PREFIX="$HOME/.local/bin" NO_SKILL=1 bash
 ```
 
-支持的环境变量：`VERSION`、`PREFIX`、`SKILL_DIR`、`NO_SUDO`、`NO_SKILL`、`REPO`，详见 `scripts/install.sh` 头部注释。
+支持的环境变量：`VERSION`、`PREFIX`、`CLAUDE_SKILL_DIR`、`AGENTS_SKILL_DIR`、
+`SKILL_DIR`(兼容旧用法,等价于 `CLAUDE_SKILL_DIR`)、`NO_SUDO`、`NO_SKILL`、
+`REPO`，详见 `scripts/install.sh` 头部注释。
 
 已安装后,可以直接用 CLI 更新本机二进制:
 
@@ -62,8 +65,7 @@ go install github.com/opay-bigdata/spark-cli@latest
 ## 配置
 
 ```bash
-spark-cli config init       # 写入 ~/.config/spark-cli/config.yaml
-$EDITOR ~/.config/spark-cli/config.yaml
+spark-cli config init       # 非交互;写入 ~/.config/spark-cli/config.yaml 并返回 JSON
 ```
 
 ```yaml
@@ -72,19 +74,23 @@ log_dirs:
   - hdfs://mycluster/spark-history     # 写 HA NameService 逻辑名 (推荐)
   # - hdfs://nn:8020/spark-history     # 或写具体 host:port
   # - shs://history.example.com:18081  # Spark History Server REST API
+  # - shs+https://gateway.example.com/sparkhistory # HTTPS SHS gateway
 hdfs:
   user: hadoop
   conf_dir: /etc/hadoop/conf           # 可选; 留空则按 HADOOP_CONF_DIR / HADOOP_HOME 自动发现
 shs:
   timeout: 5m   # 默认值;生产 EventLog zip 几个 GB 是常态,首次下载会在 stderr 打进度提示(SPARK_CLI_QUIET=1 静默)
+tls:
+  insecure_skip_verify: false # HTTPS SHS/YARN gateway 使用自签证书时才改 true
 yarn:
   base_urls:
     - http://203.123.81.20:7765/gateway/hadoop-prod/yarn  # 可选;RM/gateway 前缀
 timeout: 30s
 ```
 
-也可通过 `--log-dirs` / `--yarn-base-urls` 标志或 `SPARK_CLI_LOG_DIRS` /
-`SPARK_CLI_YARN_BASE_URLS` 环境变量逐次覆盖。
+也可通过 `--log-dirs` / `--yarn-base-urls` / `--tls-insecure-skip-verify`
+标志或 `SPARK_CLI_LOG_DIRS` / `SPARK_CLI_YARN_BASE_URLS` /
+`SPARK_CLI_TLS_INSECURE_SKIP_VERIFY` 环境变量逐次覆盖。
 
 生产环境建议使用命名集群,把同一个物理集群的 Spark History Server 与
 YARN gateway 绑定在一起,避免临时手填两个 URL 时串集群:
@@ -100,6 +106,8 @@ clusters:
         - http://203.123.81.20:7765/gateway/hadoop-prod/yarn
     shs:
       timeout: 5m
+    tls:
+      insecure_skip_verify: false
 ```
 
 ```bash
@@ -107,7 +115,12 @@ spark-cli config cluster add prod \
   --log-dirs shs://history.example.com:18081 \
   --yarn-base-urls http://203.123.81.20:7765/gateway/hadoop-prod/yarn \
   --activate
-spark-cli config cluster list --format json
+# 自签证书 HTTPS gateway:
+spark-cli config cluster add id \
+  --log-dirs shs+https://gateway.example.com/component/Spark2x/JobHistory2x/89 \
+  --yarn-base-urls https://gateway.example.com/component/Yarn/ResourceManager/25 \
+  --tls-insecure-skip-verify
+spark-cli config cluster list
 spark-cli --cluster prod diagnose application_1772605260987_35693
 ```
 
@@ -126,7 +139,7 @@ spark-cli --cluster prod diagnose application_1772605260987_35693
   5. `HADOOP_HOME/etc/hadoop` 或 `HADOOP_HOME/conf`
   6. 都没拿到 conf 时,退回 `--log-dirs` 里 `hdfs://host:port/...` 的字面 `host:port` (此时不支持 HA 逻辑名)
 - HDFS 用户名优先级 (高 → 低): `--hdfs-user` → `SPARK_CLI_HDFS_USER` → `hdfs.user` → `$USER`。注意是 `$USER`,**不是** Hadoop 原生的 `$HADOOP_USER_NAME`。
-- **暂不支持** Kerberos / SASL / TLS,仅适用于 simple-auth 集群。
+- HDFS **暂不支持** Kerberos / SASL / TLS,仅适用于 simple-auth HDFS 集群。
 
 ### Spark History Server
 
@@ -141,13 +154,14 @@ spark-cli diagnose application_1771556836054_861265 \
 ```
 
 - 自动选择数值最大的 `attemptId`。
-- 仅 HTTP;**不支持** TLS、Basic Auth、Bearer Token、Kerberos。
+- `shs://` 走 HTTP,`shs+https://` 走 HTTPS;仍**不支持** Basic Auth、Bearer Token、Kerberos。
+- 私有 HTTPS gateway 使用自签证书时,必须显式配置 `tls.insecure_skip_verify: true`、`SPARK_CLI_TLS_INSECURE_SKIP_VERIFY=true` 或 `--tls-insecure-skip-verify`。该开关同时作用于 SHS 与 YARN gateway client。
 - 超时优先级(高 → 低):`--shs-timeout` flag → `SPARK_CLI_SHS_TIMEOUT` 环境变量
   → `config.yaml` 的 `shs.timeout` → 默认 `5m`。timeout 失败会返回结构化 `LOG_UNREADABLE`,`hint` 直接告诉用户去调这个 flag —— 首次失败后无需翻文档。
 - 进度提示优先级:`--no-progress` flag → `SPARK_CLI_QUIET`(`1/true` 静默 / `0/false` 强制显示) → stdout TTY 检测;**agent 重定向 stdout 时默认静默,交互终端默认显示**。
 - **持久化磁盘 zip 缓存**(自 v0.x):下载的 zip 落到 `<cache_dir>/shs/<host>/<appID>_<lastUpdated>.zip`(原子 tmp+rename),后续 CLI 调用同一 appID 时只发 metadata JSON 比 lastUpdated,命中即直接读盘。同 appID 的旧 attempt zip 在每次成功下载后自动 sweep。`--no-cache` 退化为一次性 system temp。
 - 不开磁盘缓存时:`Content-Length` ≤ 256 MiB 整包读到内存,更大或长度未知时落 `os.CreateTemp` 进程退出清理;开磁盘缓存时一律走 tmp+rename 落盘。
-- `shs://` 支持 gateway path,例如 `shs://host:7765/gateway/prod/sparkhistory`;
+- `shs://` / `shs+https://` 支持 gateway path,例如 `shs+https://host:7765/gateway/prod/sparkhistory`;
   CLI 会保留 path 前缀拼接 `/api/v1/applications/...`。
 
 ### YARN 日志
@@ -246,27 +260,34 @@ spark-cli paimon-diagnostics application_1772605260987_20765 \
 | `spark-cli yarn-logs <appId>` | 通过 YARN RM/NM 获取应用 diagnostics 与 container 日志摘要 |
 | `spark-cli driver-thread-dump <appId>` | 通过 YARN tracking/proxy URL 获取 Spark UI driver/executor thread dump |
 | `spark-cli paimon-diagnostics <appId>` | 通过 Spark UI 获取 Paimon diagnostics thread-dump/profiler JSON |
-| `spark-cli config show [--format json]` | 打印当前生效配置(yaml / env / default 来源标注) |
+| `spark-cli config show` | 输出当前生效配置 JSON(yaml / env / default 来源标注) |
 | `spark-cli config cluster add <name>` / `config cluster list` | 录入 / 查看本地命名集群配置 |
 | `spark-cli cache list` / `cache clear [--app <id>] [--dry-run]` | 查看 / 清理本地的应用 + SHS zip 缓存 |
 | `spark-cli self-update` (别名 `update`、`upgrade`) | 下载最新 release 二进制、校验 checksum 并替换本机可执行文件 |
-| `spark-cli version` (与 `--version`) | 打印 spark-cli 版本 |
+| `spark-cli version` (与 `--version`) | 输出 spark-cli 版本 JSON |
+| `spark-cli --help` / `spark-cli help <command>` | 输出命令元数据 JSON |
 
-均支持 `--top N`、`--format json|table|markdown`、`--dry-run`、`--log-dirs`、
-`--cluster`、`--cache-dir`、`--no-cache`、`--shs-timeout`、`--no-progress`、
-`--yarn-base-urls`、`--yarn-log-bytes`、`--yarn-log-types`、`--executor-id`、`--sql-detail truncate|full|none`(默认 `truncate` 把 SQL description 截到前
+场景命令和 live 诊断命令只支持 `--format json`。非 JSON 格式会返回
+`FLAG_INVALID`;工具类命令也默认输出 JSON。常用诊断参数包括 `--top N`、
+`--dry-run`、`--log-dirs`、`--cluster`、`--cache-dir`、`--no-cache`、
+`--shs-timeout`、`--no-progress`、`--tls-insecure-skip-verify`、
+`--yarn-base-urls`、`--yarn-log-bytes`、`--yarn-log-types`、`--executor-id`、
+`--sql-detail truncate|full|none`(默认 `truncate` 把 SQL description 截到前
 500 个 rune 加 `...(truncated, total <N> chars)`;`full` 还原原始 SQL,`none`
-让整段 `sql_executions` 缺失)。
+让整段 `sql_executions` 缺失)。Shell completion 输出已禁用,保证成功 stdout
+只保留 JSON。
 
 ## 给 AI agent
 
-仓库内置 `.claude/skills/spark/SKILL.md`。Claude Code 检测到即自动加载,告知 agent 「先 diagnose 再下钻」的标准流程。
+仓库内置 `.agents/skills/spark/SKILL.md` 与 `.claude/skills/spark/SKILL.md`。
+Agent 客户端加载对应 skill 后会遵循「先 diagnose 再下钻」的标准流程。
 
 ## 输出契约
 
 ```json
 {
   "scenario": "data-skew",
+  "contract_version": 1,
   "app_id": "...",
   "log_path": "hdfs://...",
   "log_format": "v1",

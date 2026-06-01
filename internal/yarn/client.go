@@ -4,6 +4,7 @@ package yarn
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -111,7 +112,15 @@ type Client struct {
 	httpClient *http.Client
 }
 
+type ClientOptions struct {
+	InsecureSkipVerify bool
+}
+
 func NewClient(baseURLs []string, timeout time.Duration) *Client {
+	return NewClientWithOptions(baseURLs, timeout, ClientOptions{})
+}
+
+func NewClientWithOptions(baseURLs []string, timeout time.Duration, opts ClientOptions) *Client {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
@@ -121,7 +130,14 @@ func NewClient(baseURLs []string, timeout time.Duration) *Client {
 			out = append(out, t)
 		}
 	}
-	return &Client{baseURLs: out, httpClient: &http.Client{Timeout: timeout}}
+	httpClient := &http.Client{Timeout: timeout}
+	if opts.InsecureSkipVerify {
+		httpClient.Transport = &http.Transport{
+			//nolint:gosec // 用户通过配置显式允许内网 HTTPS gateway 使用自签证书。
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+	}
+	return &Client{baseURLs: out, httpClient: httpClient}
 }
 
 func (c *Client) FetchApplicationLogs(ctx context.Context, appID string, opts Options) (*Report, error) {

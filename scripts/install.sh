@@ -5,16 +5,21 @@
 # Env overrides:
 #   VERSION=v0.1.2                       pin a specific release (default: latest)
 #   PREFIX=/usr/local/bin                install directory for the binary
-#   SKILL_DIR=~/.claude/skills/spark     install directory for the bundled Claude Code skill
+#   CLAUDE_SKILL_DIR=~/.claude/skills/spark
+#                                           install directory for the bundled Claude Code skill
+#   AGENTS_SKILL_DIR=~/.agents/skills/spark
+#                                           install directory for the bundled Agents/Codex skill
+#   SKILL_DIR=~/.claude/skills/spark     legacy alias for CLAUDE_SKILL_DIR
 #   NO_SUDO=1                            never use sudo; fail if PREFIX is not writable
-#   NO_SKILL=1                           skip installing the bundled skill
+#   NO_SKILL=1                           skip installing bundled skills
 #   REPO=MonsterChenzhuo/spark-cli       override repo slug
 
 set -euo pipefail
 
 REPO="${REPO:-MonsterChenzhuo/spark-cli}"
 PREFIX="${PREFIX:-/usr/local/bin}"
-SKILL_DIR="${SKILL_DIR:-$HOME/.claude/skills/spark}"
+CLAUDE_SKILL_DIR="${CLAUDE_SKILL_DIR:-${SKILL_DIR:-$HOME/.claude/skills/spark}}"
+AGENTS_SKILL_DIR="${AGENTS_SKILL_DIR:-$HOME/.agents/skills/spark}"
 VERSION="${VERSION:-}"
 
 info()  { printf '\033[1;34m==>\033[0m %s\n' "$*" >&2; }
@@ -94,12 +99,20 @@ info "installing binary to ${PREFIX}/spark-cli"
 $sudo_cmd install -d "$PREFIX"
 $sudo_cmd install -m 0755 "${tmpdir}/spark-cli" "${PREFIX}/spark-cli"
 
-skill_src="${tmpdir}/.claude/skills/spark"
-if [ "${NO_SKILL:-0}" != "1" ] && [ -d "$skill_src" ]; then
-  info "installing Claude Code skill to ${SKILL_DIR}"
-  mkdir -p "$SKILL_DIR"
+install_skill_tree() {
+  local src="$1"
+  local dest="$2"
+  local label="$3"
+  [ -d "$src" ] || return 0
+  info "installing ${label} skill to ${dest}"
+  mkdir -p "$dest"
   # mirror the skill tree, overwriting existing files
-  (cd "$skill_src" && tar -cf - .) | (cd "$SKILL_DIR" && tar -xf -)
+  (cd "$src" && tar -cf - .) | (cd "$dest" && tar -xf -)
+}
+
+if [ "${NO_SKILL:-0}" != "1" ]; then
+  install_skill_tree "${tmpdir}/.claude/skills/spark" "$CLAUDE_SKILL_DIR" "Claude Code"
+  install_skill_tree "${tmpdir}/.agents/skills/spark" "$AGENTS_SKILL_DIR" "Agents/Codex"
 fi
 
 installed_version=$("${PREFIX}/spark-cli" version 2>/dev/null || echo "$VERSION")
