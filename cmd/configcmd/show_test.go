@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/opay-bigdata/spark-cli/internal/config"
+	cerrors "github.com/opay-bigdata/spark-cli/internal/errors"
 )
 
 func TestDetectSourcesFromConfigDir(t *testing.T) {
@@ -195,6 +197,10 @@ func TestShowRejectsTextFormat(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `unknown --format "text"`) {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	var ce *cerrors.Error
+	if !errors.As(err, &ce) || ce.Code != cerrors.CodeFlagInvalid {
+		t.Fatalf("error should be FLAG_INVALID, got %#v", err)
 	}
 }
 

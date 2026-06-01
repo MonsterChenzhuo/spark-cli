@@ -2,7 +2,6 @@ package configcmd
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/opay-bigdata/spark-cli/internal/cache"
 	"github.com/opay-bigdata/spark-cli/internal/config"
+	cerrors "github.com/opay-bigdata/spark-cli/internal/errors"
 )
 
 type sources struct {
@@ -46,7 +46,7 @@ func newShowCmd() *cobra.Command {
 			case "", "json":
 				return renderJSON(cmd.OutOrStdout(), cfg, src)
 			default:
-				return fmt.Errorf("unknown --format %q (use json)", format)
+				return cerrors.New(cerrors.CodeFlagInvalid, "unknown --format "+strconv.Quote(format), "use json")
 			}
 		},
 	}

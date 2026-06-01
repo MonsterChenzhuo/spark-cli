@@ -89,6 +89,45 @@ func TestCompletionCommandsDisabled(t *testing.T) {
 	}
 }
 
+func TestUtilityInvalidFormatsReturnJSONHints(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("SPARK_CLI_CONFIG_DIR", configDir)
+	cacheDir := t.TempDir()
+	t.Setenv("SPARK_CLI_CACHE_DIR", cacheDir)
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "cache list", args: []string{"cache", "list", "--format", "text"}},
+		{name: "config show", args: []string{"config", "show", "--format", "text"}},
+		{name: "config cluster list", args: []string{"config", "cluster", "list", "--format", "text"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			rc := RunWith(context.Background(), tc.args, &stdout, &stderr)
+			if rc != 2 {
+				t.Fatalf("rc=%d want 2 stdout=%s stderr=%s", rc, stdout.String(), stderr.String())
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout should be empty, got %s", stdout.String())
+			}
+			var got struct {
+				Error struct {
+					Code string `json:"code"`
+					Hint string `json:"hint"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(stderr.Bytes(), &got); err != nil {
+				t.Fatalf("stderr should be JSON error: %v\n%s", err, stderr.String())
+			}
+			if got.Error.Code != "FLAG_INVALID" || got.Error.Hint != "use json" {
+				t.Fatalf("unexpected error response: %s", stderr.String())
+			}
+		})
+	}
+}
+
 func hasNamedCommand(commands []struct {
 	Name string `json:"name"`
 }, name string) bool {

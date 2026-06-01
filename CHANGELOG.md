@@ -9,6 +9,7 @@
 - **`spark-cli --help` and `spark-cli help <command>` now emit JSON command metadata**, and the Cobra shell `completion` command is disabled to keep successful stdout machine-readable.
 - **`config init` is non-interactive** and returns JSON metadata after writing the config, removing stdin prompts from agent workflows.
 - **Non-error stderr is JSON events.** Guided preflight notes, SHS download progress, and cache warnings now emit newline-delimited `{"event":{"code","level","message","fields"}}` records instead of human text; errors remain `{"error":...}`.
+- **Utility `--format` errors now preserve the actionable `use json` hint** through direct package calls and the root CLI wrapper, instead of degrading to the generic help hint.
 - **Release/install now covers both bundled agent skills.** Archives include `.agents/skills/spark/SKILL.md` and `.claude/skills/spark/SKILL.md`; `scripts/install.sh` mirrors both by default via `AGENTS_SKILL_DIR` and `CLAUDE_SKILL_DIR` (`SKILL_DIR` remains a legacy Claude alias).
 
 ### Spark configuration diagnostics

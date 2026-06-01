@@ -2,7 +2,6 @@ package cachecmd
 
 import (
 	"encoding/json"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -12,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/opay-bigdata/spark-cli/internal/cache"
+	cerrors "github.com/opay-bigdata/spark-cli/internal/errors"
 )
 
 type cacheEntry struct {
@@ -42,7 +42,7 @@ func newListCmd() *cobra.Command {
 				enc.SetEscapeHTML(false)
 				return enc.Encode(out)
 			default:
-				return fmt.Errorf("unknown --format %q (use json)", format)
+				return cerrors.New(cerrors.CodeFlagInvalid, "unknown --format "+quote(format), "use json")
 			}
 		},
 	}
@@ -114,4 +114,9 @@ func round3(f float64) float64 {
 		x += 0.5
 	}
 	return float64(int64(x)) / 1000
+}
+
+func quote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }
