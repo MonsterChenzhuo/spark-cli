@@ -1,6 +1,6 @@
 # spark-cli
 
-用于解析 Apache Spark EventLog、定位性能问题的单二进制 CLI。完全面向自主 AI agent:成功 stdout 只输出 JSON,错误统一走结构化 stderr,方便 agent 自动恢复。
+用于解析 Apache Spark EventLog、定位性能问题的单二进制 CLI。完全面向自主 AI agent:成功 stdout 只输出 JSON,stderr 按行输出 JSON(`{"error":...}` 或 `{"event":...}`),方便 agent 自动恢复与跟踪进度。
 
 ## 快速开始
 
@@ -79,7 +79,7 @@ hdfs:
   user: hadoop
   conf_dir: /etc/hadoop/conf           # 可选; 留空则按 HADOOP_CONF_DIR / HADOOP_HOME 自动发现
 shs:
-  timeout: 5m   # 默认值;生产 EventLog zip 几个 GB 是常态,首次下载会在 stderr 打进度提示(SPARK_CLI_QUIET=1 静默)
+  timeout: 5m   # 默认值;生产 EventLog zip 几个 GB 是常态,首次下载会在 stderr 打 JSON 进度事件(SPARK_CLI_QUIET=1 静默)
 tls:
   insecure_skip_verify: false # HTTPS SHS/YARN gateway 使用自签证书时才改 true
 yarn:
@@ -147,7 +147,7 @@ spark-cli config cluster add prod \
   --activate
 ```
 
-`--guided` 不改变 stdout 的 `diagnose` JSON 信封;预检信息写 stderr。它会在只有
+`--guided` 不改变 stdout 的 `diagnose` JSON 信封;预检信息以 `{"event":...}` JSON 行写 stderr。它会在只有
 一个集群时自动选择该集群,在多个集群但未选择时直接失败并提示 `--cluster`,
 并在缺少 `yarn.base_urls` 时提示后续 live YARN / thread dump 需要补 URL。完整
 agent 流程见 [`docs/examples/diagnostic-sop.md`](docs/examples/diagnostic-sop.md)。
@@ -182,7 +182,7 @@ spark-cli diagnose application_1771556836054_861265 \
 - 私有 HTTPS gateway 使用自签证书时,必须显式配置 `tls.insecure_skip_verify: true`、`SPARK_CLI_TLS_INSECURE_SKIP_VERIFY=true` 或 `--tls-insecure-skip-verify`。该开关同时作用于 SHS 与 YARN gateway client。
 - 超时优先级(高 → 低):`--shs-timeout` flag → `SPARK_CLI_SHS_TIMEOUT` 环境变量
   → `config.yaml` 的 `shs.timeout` → 默认 `5m`。timeout 失败会返回结构化 `LOG_UNREADABLE`,`hint` 直接告诉用户去调这个 flag —— 首次失败后无需翻文档。
-- 进度提示优先级:`--no-progress` flag → `SPARK_CLI_QUIET`(`1/true` 静默 / `0/false` 强制显示) → stdout TTY 检测;**agent 重定向 stdout 时默认静默,交互终端默认显示**。
+- 进度事件(`{"event":{"code":"SHS_DOWNLOAD_START",...}}` / `SHS_DOWNLOAD_READY`)优先级:`--no-progress` flag → `SPARK_CLI_QUIET`(`1/true` 静默 / `0/false` 强制显示) → stdout TTY 检测;**agent 重定向 stdout 时默认静默,交互终端默认显示**。
 - **持久化磁盘 zip 缓存**(自 v0.x):下载的 zip 落到 `<cache_dir>/shs/<host>/<appID>_<lastUpdated>.zip`(原子 tmp+rename),后续 CLI 调用同一 appID 时只发 metadata JSON 比 lastUpdated,命中即直接读盘。同 appID 的旧 attempt zip 在每次成功下载后自动 sweep。`--no-cache` 退化为一次性 system temp。
 - 不开磁盘缓存时:`Content-Length` ≤ 256 MiB 整包读到内存,更大或长度未知时落 `os.CreateTemp` 进程退出清理;开磁盘缓存时一律走 tmp+rename 落盘。
 - `shs://` / `shs+https://` 支持 gateway path,例如 `shs+https://host:7765/gateway/prod/sparkhistory`;
@@ -339,7 +339,7 @@ Agent 客户端加载对应 skill 后会遵循「先确认集群,再 guided diag
 - `app-summary` 在实际 executor 计数旁输出 executor 请求配置(`dynamic_allocation_enabled`、`configured_executor_instances`、`executor_cores`、`executor_memory`、`executor_memory_overhead`),并同时输出三个互补 stage 切面:`top_stages_by_duration`(按 wall 倒序,含 driver-side 等待)、`top_busy_stages`(`busy_ratio > 0.8` 真 CPU 热点)、**`top_io_bound_stages`**(`busy_ratio < 0.8` 但 `spill >= 0.5 GB` 或 `shuffle_read >= 1 GB`,IO 阻塞但 wall 大的 stage)。**只看 `top_busy_stages` 会错过 spill 主导的最大瓶颈**,三个切面合起来才不漏。
 - `slow-stages` 与 `data-skew` 顶层带 `sql_executions: {<id>: <description>}`,row 通过 `sql_execution_id` 引用。**description 默认 truncate 到前 500 个 rune**(过长追加 `...(truncated, total <N> chars)`),`--sql-detail=full` 还原原始 SQL,`--sql-detail=none` 整段 omit。DataFrame 作业那种 callsite 占位(`org.apache.spark.SparkContext.getCallSite(...)`)会被过滤,所有条目都是噪音时整段 map 走 `omitempty` 缺失。
 
-错误走 stderr,格式为 `{"error":{"code":..., "message":..., "hint":...}}`。退出码: `0` 成功 · `1` 内部错误 · `2` 用户错误 · `3` IO 不可达。
+错误走 stderr,格式为 `{"error":{"code":..., "message":..., "hint":...}}`;非错误进度/告警走 `{"event":{"code":..., "level":..., "message":..., "fields":...}}`。退出码: `0` 成功 · `1` 内部错误 · `2` 用户错误 · `3` IO 不可达。
 
 ## 支持的 EventLog 格式
 

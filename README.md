@@ -1,6 +1,6 @@
 # spark-cli
 
-A single-binary CLI for diagnosing Apache Spark application performance from EventLogs. Designed for autonomous AI agents: successful stdout is JSON-only, with structured stderr errors for recovery.
+A single-binary CLI for diagnosing Apache Spark application performance from EventLogs. Designed for autonomous AI agents: successful stdout is JSON-only, stderr is newline-delimited JSON (`{"error":...}` or `{"event":...}`) for recovery and progress.
 
 ## Quick start
 
@@ -149,8 +149,8 @@ spark-cli config cluster add prod \
   --activate
 ```
 
-`--guided` keeps stdout as the normal `diagnose` JSON envelope. Preflight notes
-go to stderr: it selects the only configured cluster automatically, fails when
+`--guided` keeps stdout as the normal `diagnose` JSON envelope. Preflight events
+go to stderr as `{"event":...}` JSON lines: it selects the only configured cluster automatically, fails when
 multiple clusters exist and none is selected, and warns when `yarn.base_urls` is
 missing so live YARN/thread probes will need a URL later. See
 [`docs/examples/diagnostic-sop.md`](docs/examples/diagnostic-sop.md) for the
@@ -185,7 +185,7 @@ spark-cli diagnose application_1771556836054_861265 \
 - Use `shs://` for HTTP endpoints and `shs+https://` for HTTPS gateways. Basic Auth, Bearer token, and Kerberos are still unsupported.
 - For private HTTPS gateways with self-signed certificates, explicitly set `tls.insecure_skip_verify: true`, `SPARK_CLI_TLS_INSECURE_SKIP_VERIFY=true`, or pass `--tls-insecure-skip-verify`. This setting applies to SHS and YARN gateway clients.
 - Timeout precedence (highest → lowest): `--shs-timeout` flag → `SPARK_CLI_SHS_TIMEOUT` env → `shs.timeout` in YAML → default `5m`. Timeout errors return `LOG_UNREADABLE` with a `hint` naming the flag — no need to grep docs after the first failure.
-- Progress lines (`spark-cli: downloading EventLog zip from SHS ...` / `ready in <duration>`) follow `--no-progress` flag → `SPARK_CLI_QUIET` env (`1/true` 静默, `0/false` 强制显示) → stdout TTY 检测;**agent 重定向 stdout 时默认静默,交互终端默认显示**。
+- Progress events (`{"event":{"code":"SHS_DOWNLOAD_START",...}}` / `SHS_DOWNLOAD_READY`) follow `--no-progress` flag → `SPARK_CLI_QUIET` env (`1/true` 静默, `0/false` 强制显示) → stdout TTY 检测;**agent 重定向 stdout 时默认静默,交互终端默认显示**。
 - **Persistent on-disk zip cache** (since v0.x): the downloaded zip is written to `<cache_dir>/shs/<host>/<appID>_<lastUpdated>.zip` (atomic tmp+rename) and reused across CLI invocations. Subsequent commands on the same appID only fetch the cheap metadata JSON to compare `lastUpdated`; on a hit the zip is read from disk. Stale attempts (older `lastUpdated` for the same appID) are swept on each successful download. `--no-cache` falls back to a one-shot system tempfile.
 - Zip bodies up to 256 MiB without disk caching are decoded in memory; with disk caching enabled the response always lands on disk via tmp+rename.
 - `shs://` / `shs+https://` support gateway path prefixes, for example
@@ -356,7 +356,7 @@ Per-scenario extras:
 - `app-summary` surfaces executor request config (`dynamic_allocation_enabled`, `configured_executor_instances`, `executor_cores`, `executor_memory`, `executor_memory_overhead`) next to observed executor counts, then returns three orthogonal stage views: `top_stages_by_duration` (raw wall, includes driver-side waits), `top_busy_stages` (`busy_ratio > 0.8` only — true CPU hotspots), and `top_io_bound_stages` (`busy_ratio < 0.8` but `spill >= 0.5 GB` or `shuffle_read >= 1 GB` — IO-stalled stages that `top_busy_stages` filters out). **All three together** prevent missing the real bottleneck.
 - `slow-stages` and `data-skew` return `sql_executions: {<id>: <description>}` at the top level — rows reference it via `sql_execution_id`. Descriptions are **truncated to the first 500 runes by default** (use `--sql-detail=full` to restore the original). Callsite-only entries (DataFrame jobs whose description and details are both `org.apache.spark.SparkContext.getCallSite(...)` placeholders) are filtered; if every entry would be noise the entire map is omitted.
 
-Errors → stderr as `{"error":{"code":..., "message":..., "hint":...}}`. Exit codes: `0` success · `1` internal · `2` user · `3` IO.
+Errors → stderr as `{"error":{"code":..., "message":..., "hint":...}}`; non-error progress/warnings use `{"event":{"code":..., "level":..., "message":..., "fields":...}}`. Exit codes: `0` success · `1` internal · `2` user · `3` IO.
 
 ## Supported EventLog formats
 

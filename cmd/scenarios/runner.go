@@ -185,7 +185,7 @@ func prepareConfig(opts Options) (*config.Config, error) {
 
 func guidedPreflight(cfg *config.Config, opts Options, w io.Writer) error {
 	if len(opts.LogDirs) > 0 {
-		fmt.Fprintln(w, "spark-cli: guided preflight using explicit --log-dirs; named cluster selection is bypassed for this run")
+		writePreflightEvent(w, "GUIDED_PREFLIGHT_EXPLICIT_LOG_DIRS", "info", "guided preflight using explicit --log-dirs; named cluster selection is bypassed for this run", nil)
 		guidedWarnYARN(cfg, w)
 		return nil
 	}
@@ -195,7 +195,7 @@ func guidedPreflight(cfg *config.Config, opts Options, w io.Writer) error {
 		switch len(names) {
 		case 0:
 			if len(cfg.LogDirs) > 0 {
-				fmt.Fprintln(w, "spark-cli: guided preflight using legacy top-level log_dirs; consider recording them as a named cluster")
+				writePreflightEvent(w, "GUIDED_PREFLIGHT_LEGACY_LOG_DIRS", "info", "guided preflight using legacy top-level log_dirs; consider recording them as a named cluster", nil)
 				guidedWarnYARN(cfg, w)
 				return nil
 			}
@@ -208,7 +208,7 @@ func guidedPreflight(cfg *config.Config, opts Options, w io.Writer) error {
 			if err := config.ApplyCluster(cfg, names[0]); err != nil {
 				return cerrors.New(cerrors.CodeFlagInvalid, err.Error(), "run `spark-cli config cluster list` to inspect configured clusters")
 			}
-			fmt.Fprintf(w, "spark-cli: guided preflight selected only configured cluster %q\n", names[0])
+			writePreflightEvent(w, "GUIDED_PREFLIGHT_CLUSTER_SELECTED", "info", fmt.Sprintf("guided preflight selected only configured cluster %q", names[0]), map[string]any{"cluster": names[0]})
 		default:
 			return cerrors.New(
 				cerrors.CodeFlagInvalid,
@@ -217,7 +217,7 @@ func guidedPreflight(cfg *config.Config, opts Options, w io.Writer) error {
 			)
 		}
 	} else {
-		fmt.Fprintf(w, "spark-cli: guided preflight using cluster %q\n", cfg.SelectedCluster)
+		writePreflightEvent(w, "GUIDED_PREFLIGHT_CLUSTER_SELECTED", "info", fmt.Sprintf("guided preflight using cluster %q", cfg.SelectedCluster), map[string]any{"cluster": cfg.SelectedCluster})
 	}
 
 	if len(cfg.LogDirs) == 0 {
@@ -242,10 +242,19 @@ func clusterNames(clusters map[string]config.ClusterConfig) []string {
 
 func guidedWarnYARN(cfg *config.Config, w io.Writer) {
 	if len(cfg.YARN.BaseURLs) == 0 {
-		fmt.Fprintln(w, "spark-cli: guided preflight warning: yarn.base_urls is empty; diagnose will run EventLog rules but live YARN/thread probes need a YARN gateway URL")
+		writePreflightEvent(w, "GUIDED_PREFLIGHT_YARN_MISSING", "warn", "yarn.base_urls is empty; diagnose will run EventLog rules but live YARN/thread probes need a YARN gateway URL", nil)
 		return
 	}
-	fmt.Fprintf(w, "spark-cli: guided preflight found %d YARN base URL(s) for live probes\n", len(cfg.YARN.BaseURLs))
+	writePreflightEvent(w, "GUIDED_PREFLIGHT_YARN_FOUND", "info", fmt.Sprintf("guided preflight found %d YARN base URL(s) for live probes", len(cfg.YARN.BaseURLs)), map[string]any{"count": len(cfg.YARN.BaseURLs)})
+}
+
+func writePreflightEvent(w io.Writer, code, level, message string, fields map[string]any) {
+	cerrors.WriteEventJSON(w, cerrors.Event{
+		Code:    code,
+		Level:   level,
+		Message: message,
+		Fields:  fields,
+	})
 }
 
 func runYARNLogs(ctx context.Context, opts Options, cfg *config.Config) int {

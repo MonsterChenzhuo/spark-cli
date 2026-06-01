@@ -81,7 +81,7 @@ Exceptions:
 
 ## Errors
 
-Errors go to **stderr** as `{"error": {"code": "...", "message": "...", "hint": "..."}}`. Exit codes:
+Errors go to **stderr** as `{"error": {"code": "...", "message": "...", "hint": "..."}}`. Non-error progress/warnings use `{"event": {"code": "...", "level": "...", "message": "...", "fields": {...}}}`. Exit codes:
 - `0` success
 - `1` internal error (file a bug)
 - `2` user error (bad flag, app not found, ambiguous)

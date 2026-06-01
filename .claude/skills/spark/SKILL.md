@@ -24,7 +24,7 @@ The user must provide a Spark `applicationId` (e.g. `application_1735000000_0001
      spark-cli config cluster add <name> --log-dirs <shs://...|hdfs://...|file://...> --yarn-base-urls <url> --activate
      ```
    - If multiple clusters exist and none is selected, choose with `--cluster <name>` after confirming the intended physical cluster.
-   - `spark-cli diagnose <appId> --guided` enforces this SOP: it auto-selects the only configured cluster, fails when multiple clusters exist without a selection, and writes preflight notes to stderr. stdout remains the normal `diagnose` envelope, so agents should parse stdout only.
+   - `spark-cli diagnose <appId> --guided` enforces this SOP: it auto-selects the only configured cluster, fails when multiple clusters exist without a selection, and writes preflight notes to stderr as `{"event":...}` JSON lines. stdout remains the normal `diagnose` envelope.
 
 1. **Always run guided diagnose first**:
    ```
@@ -106,7 +106,7 @@ Exceptions:
 
 ## Errors
 
-Errors go to **stderr** as `{"error": {"code": "...", "message": "...", "hint": "..."}}`. Exit codes:
+Errors go to **stderr** as `{"error": {"code": "...", "message": "...", "hint": "..."}}`. Non-error progress/warnings use `{"event": {"code": "...", "level": "...", "message": "...", "fields": {...}}}`. Exit codes:
 - `0` success
 - `1` internal error (file a bug)
 - `2` user error (bad flag, app not found, ambiguous)
@@ -121,7 +121,7 @@ Errors go to **stderr** as `{"error": {"code": "...", "message": "...", "hint": 
 - `--format json` — default `json`; non-json formats return FLAG_INVALID
 - `--top N` — for `slow-stages` / `data-skew` / `gc-pressure` / `native-io`
 - `--dry-run` — locate the log without parsing (fast sanity check)
-- `--guided` — for `diagnose`, confirm/select a named cluster before reading EventLogs; preflight notes go to stderr and stdout remains the diagnose envelope
+- `--guided` — for `diagnose`, confirm/select a named cluster before reading EventLogs; preflight notes go to stderr as `{"event":...}` JSON lines and stdout remains the diagnose envelope
 - `--cache-dir <path>` — persistent cache dir (default `~/.cache/spark-cli`); cached runs report `parsed_events: 0`
 - `--no-cache` — bypass the parsed-application cache for this invocation (no read, no write)
 - `--shs-timeout <duration>` — HTTP timeout for `shs://` / `shs+https://` log-dirs (default `5m`;生产 zip 几个 GB 是常态,失败时 hint 直接告知此参数)

@@ -33,8 +33,8 @@ func TestGuidedDiagnoseFlagWiresThroughRootCommand(t *testing.T) {
 	if !strings.Contains(stdout.String(), logPath) {
 		t.Fatalf("stdout did not resolve through guided flag:\n%s", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), `selected only configured cluster "prod"`) {
-		t.Fatalf("stderr missing guided selection note:\n%s", stderr.String())
+	if !stderrHasEvent(stderr.String(), "GUIDED_PREFLIGHT_CLUSTER_SELECTED", "cluster", "prod") {
+		t.Fatalf("stderr missing guided selection event:\n%s", stderr.String())
 	}
 }
 
@@ -105,6 +105,30 @@ func hasNamedFlag(flags []struct {
 }, name string) bool {
 	for _, flag := range flags {
 		if flag.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func stderrHasEvent(text, code, field, value string) bool {
+	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var got struct {
+			Event *struct {
+				Code   string         `json:"code"`
+				Fields map[string]any `json:"fields"`
+			} `json:"event"`
+		}
+		if err := json.Unmarshal([]byte(line), &got); err != nil || got.Event == nil {
+			return false
+		}
+		if got.Event.Code != code {
+			continue
+		}
+		if gotField, ok := got.Event.Fields[field].(string); ok && gotField == value {
 			return true
 		}
 	}

@@ -8,6 +8,7 @@
 - **场景信封新增 `contract_version: 1`**:下游 agent 可先判断契约版本,再按字段解析,为后续不兼容 JSON 变更留出口。
 - **`spark-cli --help` 与 `spark-cli help <command>` 改为输出 JSON 命令元数据**,并禁用 Cobra shell `completion` 命令,保证成功 stdout 始终机器可读。
 - **`config init` 改为非交互**:写入配置后返回 JSON 元数据,不再从 stdin 读取提示输入。
+- **非错误 stderr 改为 JSON event**:guided 预检说明、SHS 下载进度、cache warning 现在按行输出 `{"event":{"code","level","message","fields"}}`,不再输出自然语言文本;错误仍保持 `{"error":...}`。
 - **release/install 同时覆盖两套 agent skill**:归档包含 `.agents/skills/spark/SKILL.md` 与 `.claude/skills/spark/SKILL.md`;`scripts/install.sh` 默认通过 `AGENTS_SKILL_DIR` 与 `CLAUDE_SKILL_DIR` 镜像两边,`SKILL_DIR` 作为旧 Claude 目录别名保留。
 
 ### Spark 配置诊断
@@ -25,7 +26,7 @@
 
 - **新增命名集群配置**:可在 `config.yaml` 用 `active_cluster` 与 `clusters` 把 Spark History Server EventLog 来源和 YARN RM/gateway URL 沉淀为同一个本地集群单元,避免 SHS 与 YARN 手动分别传参时串到不同集群。
 - **新增 root flag `--cluster <name>`**:单次命令选择一个已配置集群。默认应用 `active_cluster`;显式 `--log-dirs`、`--yarn-base-urls`、`--shs-timeout` 仍会在集群选择后覆盖,适合临时调试。
-- **新增 `diagnose --guided` SOP 预检**:读取 EventLog 前先确认集群选择。只有一个 cluster 时自动选择;多个 cluster 但没有 `--cluster` / `active_cluster` 时返回错误;完全没有 source 时给出 `config cluster add ... --activate` 指引;stdout 仍保持原 `diagnose` JSON 信封,预检说明只写 stderr。
+- **新增 `diagnose --guided` SOP 预检**:读取 EventLog 前先确认集群选择。只有一个 cluster 时自动选择;多个 cluster 但没有 `--cluster` / `active_cluster` 时返回错误;完全没有 source 时给出 `config cluster add ... --activate` 指引;stdout 仍保持原 `diagnose` JSON 信封,预检说明以 JSON event 写 stderr。
 - **新增 `spark-cli config cluster add|list`**:用于写入和查看本地命名集群。示例:`config cluster add prod --log-dirs shs://... --yarn-base-urls http://... --activate` 会新增或更新 profile,并可设为默认集群。
 - **SHS/YARN profile 支持 HTTPS gateway**:`--log-dirs` 新增 `shs+https://host[:port][/path]`;`tls.insecure_skip_verify`、`SPARK_CLI_TLS_INSECURE_SKIP_VERIFY`、`--tls-insecure-skip-verify` 以及 `config cluster add --tls-insecure-skip-verify` 用于自签证书内网 gateway。
 - **`spark-cli config show` 展示 `active_cluster`、`selected_cluster`、`clusters`**:JSON 中能看到当前有效配置来自哪个集群,便于 agent 流程确认 `log_dirs` / `yarn.base_urls` 的来源。
@@ -105,7 +106,7 @@ CLI / 接口:
 ### UX 与诊断覆盖度修复(基于真实作业反馈)
 
 - **SHS 默认 timeout 60s → 5m**,且 timeout 错误统一升级成结构化 `LOG_UNREADABLE`,`hint` 直接告知 `--shs-timeout` / `SPARK_CLI_SHS_TIMEOUT`。生产 EventLog zip 几个 GB 是常态,旧默认 60s 让首次诊断直接撞墙、再去翻文档。
-- **SHS 首次下载在 stderr 打进度**:`bundleFor` 在 HTTP 拉取前打 `spark-cli: downloading EventLog zip from SHS for <app> (timeout 5m0s; set SPARK_CLI_QUIET=1 to silence) ...`,完成后打 `ready in <duration>`。`SPARK_CLI_QUIET=1` 全局静默(供脚本/测试)。即使 cache 命中,Locator 仍要拉 zip 判 V1/V2 layout,这条提示消除"CLI 是不是挂了"的误判。
+- **SHS 首次下载在 stderr 打进度**:`bundleFor` 在 HTTP 拉取前输出 `SHS_DOWNLOAD_START` JSON event,完成后输出 `SHS_DOWNLOAD_READY` JSON event。`SPARK_CLI_QUIET=1` 全局静默(供脚本/测试)。即使 cache 命中,Locator 仍要拉 zip 判 V1/V2 layout,这条提示消除"CLI 是不是挂了"的误判。
 - **`sql_executions` map 过滤 callsite 噪音**。`isCallSiteDescription` 现在还匹配 `org.apache.spark.SparkContext.getCallSite(SparkContext.scala:2205)` 这种 DataFrame 提交常见形态;`BuildSQLExecutionMap` 把 fallback 后仍是 callsite 的条目剔除,所有条目都是噪音时整个 map 走 `omitempty` 缺失。今天复现的 sparkETL 应用从 81 行 callsite 噪音直接坍缩为 0;slow-stages 信封从 ~30 KB 缩到几 KB。
 - **`data_skew` 新增任务时长紧致闸门**:`p99/p50 < 1.5` 时规则直接报 `ok`(`data-skew` 行 verdict 降到 `mild`),不论 `input_skew_factor` 多大。常见伪倾斜:某个 task 接近 0ms 把 `input_skew_factor` 拉到几千,但所有任务时长其实非常一致 —— 这种"warn"白白消耗用户注意力。极端 `p99/p50 ≥ 20` 仍跨越任何闸门保留 critical。
 - **`diagnose.summary.findings_wall_coverage`** —— 所有非 ok finding 涉及 stage 的 wall_share 加和(按 stage_id 去重,每 stage 取最大值)。直接告诉调用方"finding 解释了多少 wall";低于约 0.05 时几乎所有 wall 都不在 finding 范围内,通常是作业结构 / driver 端等待问题,agent 应跳到 `app-summary.top_busy_stages` 而非继续下钻 finding。`app.DurationMs == 0` 时整段缺失。

@@ -8,7 +8,7 @@ Guidance for Codex (and other AI agents) working in this repository.
 
 ## 顶层契约
 
-每条 EventLog 场景命令 (`app-summary` / `spark-conf` / `slow-stages` / `data-skew` / `gc-pressure` / `native-io` / `diagnose`) 和 live 诊断命令 (`yarn-logs` / `driver-thread-dump` / `paimon-diagnostics`) 在 stdout 输出**一个** `scenario.Envelope` JSON 对象;顶层必须带 `contract_version: 1`。工具类命令 (`config show` / `config cluster add|list` / `cache list|clear` / `self-update` / `version` / `--help`) 在 stdout 输出命令专用 JSON 对象;`completion` 已禁用。成功 stdout 不支持 table / markdown / text。错误统一走 stderr,格式 `{"error":{"code","message","hint"}}`,退出码 `0/1/2/3`。改动任何场景或输出层时**不要破坏这个信封形状** —— `tests/e2e/e2e_test.go` 是契约守门人。
+每条 EventLog 场景命令 (`app-summary` / `spark-conf` / `slow-stages` / `data-skew` / `gc-pressure` / `native-io` / `diagnose`) 和 live 诊断命令 (`yarn-logs` / `driver-thread-dump` / `paimon-diagnostics`) 在 stdout 输出**一个** `scenario.Envelope` JSON 对象;顶层必须带 `contract_version: 1`。工具类命令 (`config show` / `config cluster add|list` / `cache list|clear` / `self-update` / `version` / `--help`) 在 stdout 输出命令专用 JSON 对象;`completion` 已禁用。成功 stdout 不支持 table / markdown / text。stderr 也必须按行 JSON:错误格式 `{"error":{"code","message","hint"}}`,非错误进度/告警格式 `{"event":{"code","level","message","hint?","fields?"}}`;退出码 `0/1/2/3`。改动任何场景或输出层时**不要破坏这个信封形状** —— `tests/e2e/e2e_test.go` 是契约守门人。
 
 特例:
 - envelope 顶层 `contract_version` 当前固定为 `1`;新增不兼容 JSON 契约时先设计版本迁移,并同步 e2e / README / skills / CHANGELOG
@@ -169,7 +169,7 @@ HDFS 用户名优先级 (高 → 低): `--hdfs-user` flag → `SPARK_CLI_HDFS_US
 - timeout 类错误(`url.Error.Timeout()` / `context.DeadlineExceeded` / 字符串兜底)由 `SHS.wrapTimeout` 升级成结构化 `cerrors.Error{Code: LOG_UNREADABLE, Hint: "increase --shs-timeout (current: ...) ..."}`;非 timeout 错误维持原 `fmt.Errorf` 包装。改造时新增的 net/http 调用点都要走 `wrapTimeout`,否则用户撞墙后看不到 hint
 - zip body 落盘策略:`SHSOptions.CacheDir` 非空时**一律走磁盘**到 `<CacheDir>/shs/<host>/<appID>_<lastUpdated>.zip`(tmp + rename 原子写,attempt 更新时 sweep 同 prefix 旧文件);CacheDir 空(--no-cache)时小 zip(≤ 256 MiB 且 Content-Length 已知)走内存,大 zip 落 system temp 由 `SHS.Close()` 清理
 - 同一 appID 的 zip **跨 CLI 调用复用**:首次 CLI 落盘到 cache,后续 CLI 实例 `bundleFor` 仅发 metadata JSON 调用拿 lastUpdated → 命中本地 zip 直接读盘(实测 warm 命令 < 1s)
-- 首次为某 appID 走 `bundleFor` 时,会往 `s.stderr`(默认 `os.Stderr`)打两行 `spark-cli: downloading EventLog zip from SHS for <id> ...` / `spark-cli: SHS zip for <id> ready in <duration>`。**这条提示放在 cache 之前**(因为缓存命中也要 zip 来判 V1/V2 layout),改造时**不要**把 `Locator.Resolve` 移到 cache 之后
+- 首次为某 appID 走 `bundleFor` 时,会往 `s.stderr`(默认 `os.Stderr`)打两行 JSON event:`SHS_DOWNLOAD_START` / `SHS_DOWNLOAD_READY`。**这条提示放在 cache 之前**(因为缓存命中也要 zip 来判 V1/V2 layout),改造时**不要**把 `Locator.Resolve` 移到 cache 之后
 - 静默控制由 `SHSOptions.Quiet` 决定,值由 `cmd/scenarios.resolveQuiet` 综合 `--no-progress` flag、`SPARK_CLI_QUIET`(`1/true` 静默 / `0/false` 不静默 / 未设走 stdout TTY 检测)算出 —— **agent 重定向 stdout 时默认静默,交互终端默认显示**;NewSHS 内部不再自己读 env
 
 **关键约束**:

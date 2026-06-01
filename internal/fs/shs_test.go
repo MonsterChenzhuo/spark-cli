@@ -142,6 +142,37 @@ func shsHTTPSBase(srv *httptest.Server) string {
 	return "shs+https://" + u.Host
 }
 
+func TestSHSProgressWritesJSONEvents(t *testing.T) {
+	appID := "application_progress_1"
+	apps := map[string]*shsApp{
+		appID: {
+			Attempts: []shsAttempt{{AttemptID: "1", LastUpdatedEpoch: 100}},
+			zips: map[string][]byte{
+				"1": buildZip(t, map[string][]byte{appID: []byte("{}\n")}),
+			},
+		},
+	}
+	srv := newSHSTestServer(t, apps, nil, 0, false)
+	defer srv.Close()
+
+	base := shsBase(srv)
+	s := NewSHS(base, 5*time.Second, SHSOptions{Quiet: false})
+	defer func() { _ = s.Close() }()
+	var stderr bytes.Buffer
+	s.stderr = &stderr
+
+	if _, err := s.List(base, appID); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	events := parseSHSProgressEvents(t, stderr.String())
+	if !hasSHSProgressEvent(events, "SHS_DOWNLOAD_START", appID) {
+		t.Fatalf("stderr missing SHS_DOWNLOAD_START event:\n%s", stderr.String())
+	}
+	if !hasSHSProgressEvent(events, "SHS_DOWNLOAD_READY", appID) {
+		t.Fatalf("stderr missing SHS_DOWNLOAD_READY event:\n%s", stderr.String())
+	}
+}
+
 func TestSHSHTTPSWithInsecureSkipVerify(t *testing.T) {
 	appID := "application_https_1"
 	apps := map[string]*shsApp{
@@ -171,6 +202,44 @@ func TestSHSHTTPSWithInsecureSkipVerify(t *testing.T) {
 	if _, err := s.Open(uris[0]); err != nil {
 		t.Fatalf("Open HTTPS SHS URI: %v", err)
 	}
+}
+
+type shsProgressEvent struct {
+	Code   string         `json:"code"`
+	Fields map[string]any `json:"fields"`
+}
+
+func parseSHSProgressEvents(t *testing.T, text string) []shsProgressEvent {
+	t.Helper()
+	var events []shsProgressEvent
+	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var got struct {
+			Event *shsProgressEvent `json:"event"`
+		}
+		if err := json.Unmarshal([]byte(line), &got); err != nil {
+			t.Fatalf("stderr line should be JSON event: %v\n%s", err, line)
+		}
+		if got.Event == nil {
+			t.Fatalf("stderr line missing event envelope: %s", line)
+		}
+		events = append(events, *got.Event)
+	}
+	return events
+}
+
+func hasSHSProgressEvent(events []shsProgressEvent, code, appID string) bool {
+	for _, event := range events {
+		if event.Code != code {
+			continue
+		}
+		if got, ok := event.Fields["app_id"].(string); ok && got == appID {
+			return true
+		}
+	}
+	return false
 }
 
 func TestSHSPreservesGatewayPathPrefix(t *testing.T) {

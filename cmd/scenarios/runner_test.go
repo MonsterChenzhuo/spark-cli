@@ -165,8 +165,9 @@ func TestGuidedDiagnoseSelectsOnlyConfiguredCluster(t *testing.T) {
 	if !strings.Contains(stdout.String(), logPath) {
 		t.Fatalf("stdout did not use only configured cluster:\n%s", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), `selected only configured cluster "prod"`) {
-		t.Fatalf("stderr missing guided selection note:\n%s", stderr.String())
+	events := parseStderrEvents(t, stderr.String())
+	if !hasStderrEvent(events, "GUIDED_PREFLIGHT_CLUSTER_SELECTED", "cluster", "prod") {
+		t.Fatalf("stderr missing guided selection event:\n%s", stderr.String())
 	}
 }
 
@@ -422,4 +423,44 @@ func writeRunnerJSON(t *testing.T, w http.ResponseWriter, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		t.Fatal(err)
 	}
+}
+
+type stderrEvent struct {
+	Code   string         `json:"code"`
+	Level  string         `json:"level"`
+	Fields map[string]any `json:"fields"`
+}
+
+func parseStderrEvents(t *testing.T, text string) []stderrEvent {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	events := make([]stderrEvent, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var got struct {
+			Event *stderrEvent `json:"event"`
+		}
+		if err := json.Unmarshal([]byte(line), &got); err != nil {
+			t.Fatalf("stderr line should be JSON event: %v\n%s", err, line)
+		}
+		if got.Event == nil {
+			t.Fatalf("stderr line missing event envelope: %s", line)
+		}
+		events = append(events, *got.Event)
+	}
+	return events
+}
+
+func hasStderrEvent(events []stderrEvent, code, field, value string) bool {
+	for _, event := range events {
+		if event.Code != code {
+			continue
+		}
+		if got, ok := event.Fields[field].(string); ok && got == value {
+			return true
+		}
+	}
+	return false
 }

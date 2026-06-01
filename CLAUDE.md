@@ -8,7 +8,7 @@ Guidance for Claude Code (and other AI agents) working in this repository.
 
 ## 顶层契约
 
-每条 EventLog 场景命令 (`app-summary` / `spark-conf` / `slow-stages` / `data-skew` / `gc-pressure` / `native-io` / `diagnose`) 和 live 诊断命令 (`yarn-logs` / `driver-thread-dump` / `paimon-diagnostics`) 在 stdout 输出**一个** `scenario.Envelope` JSON 对象;顶层必须带 `contract_version: 1`。工具类命令 (`config show` / `config cluster add|list` / `cache list|clear` / `self-update` / `version` / `--help`) 在 stdout 输出命令专用 JSON 对象;`completion` 已禁用。成功 stdout 不支持 table / markdown / text。错误统一走 stderr,格式 `{"error":{"code","message","hint"}}`,退出码 `0/1/2/3`。改动任何场景或输出层时**不要破坏这个信封形状** —— `tests/e2e/e2e_test.go` 是契约守门人。
+每条 EventLog 场景命令 (`app-summary` / `spark-conf` / `slow-stages` / `data-skew` / `gc-pressure` / `native-io` / `diagnose`) 和 live 诊断命令 (`yarn-logs` / `driver-thread-dump` / `paimon-diagnostics`) 在 stdout 输出**一个** `scenario.Envelope` JSON 对象;顶层必须带 `contract_version: 1`。工具类命令 (`config show` / `config cluster add|list` / `cache list|clear` / `self-update` / `version` / `--help`) 在 stdout 输出命令专用 JSON 对象;`completion` 已禁用。成功 stdout 不支持 table / markdown / text。stderr 也必须按行 JSON:错误格式 `{"error":{"code","message","hint"}}`,非错误进度/告警格式 `{"event":{"code","level","message","hint?","fields?"}}`;退出码 `0/1/2/3`。改动任何场景或输出层时**不要破坏这个信封形状** —— `tests/e2e/e2e_test.go` 是契约守门人。
 
 特例:
 - envelope 顶层 `contract_version` 当前固定为 `1`;新增不兼容 JSON 契约时先设计版本迁移,并同步 e2e / README / skills / CHANGELOG
@@ -19,7 +19,7 @@ Guidance for Claude Code (and other AI agents) working in this repository.
 - **`data_skew` finding 在多 stage 命中时**,evidence 含 `similar_stages: [{stage_id, wall_share, skew_factor}]`(按 wall_share 倒序最多 4 条)。primary `stage_id` 选 wall_share 最大的(平局回退 skew_factor),`top_findings_by_impact` 与 `findings_wall_coverage` 都会跨 primary + similar_stages 聚合 —— agent 直接读 evidence 就能看到完整多 stage 列表,不必再回头跑 `data-skew`。
 - `slow-stages` / `data-skew` 信封顶层带 `sql_executions: map[int64]string`,key 是 `sql_execution_id`、value 是 description。**默认按 `--sql-detail=truncate` 截到前 500 个 rune,过长追加 `...(truncated, total <N> chars)`**;`--sql-detail=full` 还原原始 SQL,`--sql-detail=none` 整段 omit(也可 `SPARK_CLI_SQL_DETAIL` / yaml `sql.detail` 覆盖)。对 DataFrame 作业自动回退到 details 首行;若 description / details 都是 callsite 占位形态则该条整行过滤。row 内只保 `sql_execution_id`,**不再带** `sql_description` 字段 —— 切走重复嵌入,把 JSON 体积从几十 KB 压到几 KB。所有条目都是 callsite 噪音时整段 map 走 `omitempty` 缺失;app-summary / gc-pressure / diagnose 不带这个字段
 - `native-io` 解析 Paimon `SparkListenerNativeIOEvent`,同时支持顶层 `native_io_*` 字段和旧版内嵌 `eventJson`。`summary` 给 event/operation 数、reader/export/error 数、total rows/bytes/duration、`top_phases`、`top_operations`;`data` 按 `duration_ms` 倒序输出 `--top` 条 native IO 事件,包含 Spark 上下文、文件/object 字段、吞吐、memory、原始数值 `metrics` 和 `verdict`。
-- `diagnose --guided` 是诊断 SOP 入口:先做命名集群预检,只有一个 cluster 时自动选择,多个 cluster 未选择时返回 `FLAG_INVALID`,没有 cluster/log_dirs 时返回带 `config cluster add ... --activate` 的 `CONFIG_MISSING` hint。预检说明只写 stderr,stdout 仍然是原 `diagnose` 的单一 JSON envelope,不要把 stderr 当机器可解析输出。
+- `diagnose --guided` 是诊断 SOP 入口:先做命名集群预检,只有一个 cluster 时自动选择,多个 cluster 未选择时返回 `FLAG_INVALID`,没有 cluster/log_dirs 时返回带 `config cluster add ... --activate` 的 `CONFIG_MISSING` hint。预检说明以 `{"event":...}` JSON 行写 stderr,stdout 仍然是原 `diagnose` 的单一 JSON envelope。
 - `app-summary` 的 `data` row 同时带 **三个** stage 切面,**永远要三个一起看**才不漏瓶颈:`top_stages_by_duration[]`(按 wall 倒序,包含 driver-side 等待 stage),`top_busy_stages[]`(过滤 `busy_ratio > 0.8` 后按 `busy_ratio * duration` 倒序,真正 executor 吃 CPU 的热点),**`top_io_bound_stages[]`**(`busy_ratio < 0.8` 但 `spill_disk_gb >= 0.5` 或 `shuffle_read_gb >= 1.0` 的 stage,按 wall_share 倒序 limit 3)。`top_io_bound_stages` 是 `top_busy_stages` 的互补切面 —— spill 主导的 stage executor 都在等盘,busy_ratio 被压得很低,`top_busy_stages` 阈值看不到但才是真瓶颈(实测 stage spill 9.86 GB / busy_ratio 0.048,只看 top_busy_stages 完全错过)。
 - `slow-stages` row 三档 `*_mb_per_task`(`input_mb_per_task` / `shuffle_read_mb_per_task` / `shuffle_write_mb_per_task`)。读侧 / 写侧 / source-scan stage 分别看对应字段判 partition 粒度,`NumTasks=0` 时三个一律 0
 
@@ -78,7 +78,7 @@ HTTPS gateway 的 SHS 要写 `shs+https://host[:port][/path]`;若内网证书是
 
 1. 先跑 `spark-cli config cluster list` 与 `spark-cli config show`,确认 `active_cluster` / `selected_cluster` / `log_dirs` / `yarn.base_urls`。
 2. 没有集群时,先 `spark-cli config cluster add <name> --log-dirs ... --yarn-base-urls ... --activate` 录入;多个集群但未选时,必须让用户确认目标集群并用 `--cluster <name>`。
-3. 再跑 `spark-cli diagnose <appId> --guided`。`--guided` 不改 stdout envelope,只在 stderr 输出预检说明;agent 解析 stdout 即可。
+3. 再跑 `spark-cli diagnose <appId> --guided`。`--guided` 不改 stdout envelope,只在 stderr 输出 `{"event":...}` 预检事件。
 
 ## 开发约定
 
@@ -177,7 +177,7 @@ HDFS 用户名优先级 (高 → 低): `--hdfs-user` flag → `SPARK_CLI_HDFS_US
 - timeout 类错误(`url.Error.Timeout()` / `context.DeadlineExceeded` / 字符串兜底)由 `SHS.wrapTimeout` 升级成结构化 `cerrors.Error{Code: LOG_UNREADABLE, Hint: "increase --shs-timeout (current: ...) ..."}`;非 timeout 错误维持原 `fmt.Errorf` 包装。改造时新增的 net/http 调用点都要走 `wrapTimeout`,否则用户撞墙后看不到 hint
 - zip body 落盘策略:`SHSOptions.CacheDir` 非空时**一律走磁盘**到 `<CacheDir>/shs/<host>/<appID>_<lastUpdated>.zip`(tmp + rename 原子写,attempt 更新时 sweep 同 prefix 旧文件);CacheDir 空(--no-cache)时小 zip(≤ 256 MiB 且 Content-Length 已知)走内存,大 zip 落 system temp 由 `SHS.Close()` 清理
 - 同一 appID 的 zip **跨 CLI 调用复用**:首次 CLI 落盘到 cache,后续 CLI 实例 `bundleFor` 仅发 metadata JSON 调用拿 lastUpdated → 命中本地 zip 直接读盘(实测 warm 命令 < 1s)
-- 首次为某 appID 走 `bundleFor` 时,会往 `s.stderr`(默认 `os.Stderr`)打两行 `spark-cli: downloading EventLog zip from SHS for <id> ...` / `spark-cli: SHS zip for <id> ready in <duration>`。**这条提示放在 cache 之前**(因为缓存命中也要 zip 来判 V1/V2 layout),改造时**不要**把 `Locator.Resolve` 移到 cache 之后
+- 首次为某 appID 走 `bundleFor` 时,会往 `s.stderr`(默认 `os.Stderr`)打两行 JSON event:`SHS_DOWNLOAD_START` / `SHS_DOWNLOAD_READY`。**这条提示放在 cache 之前**(因为缓存命中也要 zip 来判 V1/V2 layout),改造时**不要**把 `Locator.Resolve` 移到 cache 之后
 - 静默控制由 `SHSOptions.Quiet` 决定,值由 `cmd/scenarios.resolveQuiet` 综合 `--no-progress` flag、`SPARK_CLI_QUIET`(`1/true` 静默 / `0/false` 不静默 / 未设走 stdout TTY 检测)算出 —— **agent 重定向 stdout 时默认静默,交互终端默认显示**;NewSHS 内部不再自己读 env
 
 **关键约束**:

@@ -11,6 +11,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
+	cerrors "github.com/opay-bigdata/spark-cli/internal/errors"
 	"github.com/opay-bigdata/spark-cli/internal/eventlog"
 	"github.com/opay-bigdata/spark-cli/internal/fs"
 	"github.com/opay-bigdata/spark-cli/internal/model"
@@ -195,5 +196,9 @@ func DefaultDir() string {
 var cliVersion = "dev"
 
 func warn(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "warn: cache "+format+"\n", args...)
+	cerrors.WriteEventJSON(os.Stderr, cerrors.Event{
+		Code:    "CACHE_WARNING",
+		Level:   "warn",
+		Message: fmt.Sprintf("cache "+format, args...),
+	})
 }
