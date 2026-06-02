@@ -1,11 +1,11 @@
 # spark-cli
 
-A single-binary CLI for diagnosing Apache Spark application performance from EventLogs. Designed for autonomous AI agents: successful stdout is JSON-only, with structured stderr errors for recovery.
+A single-binary CLI for diagnosing Apache Spark application performance from EventLogs. Designed for autonomous AI agents: successful stdout is JSON-only, stderr is newline-delimited JSON (`{"error":...}` or `{"event":...}`) for recovery and progress.
 
 ## Quick start
 
 ```bash
-spark-cli diagnose application_1735000000_0001
+spark-cli diagnose application_1735000000_0001 --guided
 ```
 
 If `diagnose` flags `data_skew`:
@@ -80,7 +80,7 @@ hdfs:
   user: hadoop
   conf_dir: /etc/hadoop/conf           # optional; auto-discovered via HADOOP_CONF_DIR / HADOOP_HOME if empty
 shs:
-  timeout: 5m  # default; production EventLog zips often need minutes — first-fetch progress is printed to stderr (silence with SPARK_CLI_QUIET=1)
+  timeout: 5m  # default; production EventLog zips often need minutes — first fetch emits SHS_DOWNLOAD_START / SHS_DOWNLOAD_READY JSON events on stderr (silence with SPARK_CLI_QUIET=1)
 tls:
   insecure_skip_verify: false  # set true only for HTTPS gateways with self-signed certificates
 yarn:
@@ -122,12 +122,39 @@ spark-cli config cluster add id \
   --yarn-base-urls https://gateway.example.com/component/Yarn/ResourceManager/25 \
   --tls-insecure-skip-verify
 spark-cli config cluster list
-spark-cli --cluster prod diagnose application_1772605260987_35693
+spark-cli --cluster prod diagnose application_1772605260987_35693 --guided
 ```
 
 `active_cluster` is used by default. `--cluster <name>` selects another local
 profile for one invocation. Explicit `--log-dirs` / `--yarn-base-urls` flags
 still win after cluster selection for ad-hoc debugging.
+
+### Diagnostic SOP
+
+For production triage, use the guided path so cluster selection is confirmed
+before the EventLog is read:
+
+```bash
+spark-cli config cluster list
+spark-cli config show
+spark-cli diagnose application_1772605260987_35693 --guided
+```
+
+If no cluster is configured, record one first:
+
+```bash
+spark-cli config cluster add prod \
+  --log-dirs shs://history.example.com:18081 \
+  --yarn-base-urls http://203.123.81.20:7765/gateway/hadoop-prod/yarn \
+  --activate
+```
+
+`--guided` keeps stdout as the normal `diagnose` JSON envelope. Preflight events
+go to stderr as `{"event":...}` JSON lines: it selects the only configured cluster automatically, fails when
+multiple clusters exist and none is selected, and warns when `yarn.base_urls` is
+missing so live YARN/thread probes will need a URL later. See
+[`docs/examples/diagnostic-sop.md`](docs/examples/diagnostic-sop.md) for the
+full agent workflow.
 
 ### HDFS configuration
 
@@ -158,7 +185,7 @@ spark-cli diagnose application_1771556836054_861265 \
 - Use `shs://` for HTTP endpoints and `shs+https://` for HTTPS gateways. Basic Auth, Bearer token, and Kerberos are still unsupported.
 - For private HTTPS gateways with self-signed certificates, explicitly set `tls.insecure_skip_verify: true`, `SPARK_CLI_TLS_INSECURE_SKIP_VERIFY=true`, or pass `--tls-insecure-skip-verify`. This setting applies to SHS and YARN gateway clients.
 - Timeout precedence (highest → lowest): `--shs-timeout` flag → `SPARK_CLI_SHS_TIMEOUT` env → `shs.timeout` in YAML → default `5m`. Timeout errors return `LOG_UNREADABLE` with a `hint` naming the flag — no need to grep docs after the first failure.
-- Progress lines (`spark-cli: downloading EventLog zip from SHS ...` / `ready in <duration>`) follow `--no-progress` flag → `SPARK_CLI_QUIET` env (`1/true` 静默, `0/false` 强制显示) → stdout TTY 检测;**agent 重定向 stdout 时默认静默,交互终端默认显示**。
+- Progress events (`{"event":{"code":"SHS_DOWNLOAD_START",...}}` / `SHS_DOWNLOAD_READY`) follow `--no-progress` flag → `SPARK_CLI_QUIET` env (`1/true` 静默, `0/false` 强制显示) → stdout TTY 检测;**agent 重定向 stdout 时默认静默,交互终端默认显示**。
 - **Persistent on-disk zip cache** (since v0.x): the downloaded zip is written to `<cache_dir>/shs/<host>/<appID>_<lastUpdated>.zip` (atomic tmp+rename) and reused across CLI invocations. Subsequent commands on the same appID only fetch the cheap metadata JSON to compare `lastUpdated`; on a hit the zip is read from disk. Stale attempts (older `lastUpdated` for the same appID) are swept on each successful download. `--no-cache` falls back to a one-shot system tempfile.
 - Zip bodies up to 256 MiB without disk caching are decoded in memory; with disk caching enabled the response always lands on disk via tmp+rename.
 - `shs://` / `shs+https://` support gateway path prefixes, for example
@@ -288,13 +315,15 @@ default. Common diagnostic flags include `--top N`, `--dry-run`, `--log-dirs`,
 `--yarn-log-types`, `--executor-id`, and `--sql-detail truncate|full|none`
 (default `truncate` — first 500 runes of the SQL description with a
 `...(truncated, total <N> chars)` marker; `full` keeps the original; `none`
-omits the entire `sql_executions` map). Shell completion output is disabled so
-successful stdout stays JSON-only.
+omits the entire `sql_executions` map). `--guided` is diagnose-only:
+`spark-cli diagnose <appId> --guided`. Other commands reject it with
+`FLAG_INVALID` instead of silently ignoring the flag. Shell completion output
+is disabled so successful stdout stays JSON-only.
 
 ## For AI agents
 
 The repo ships `.agents/skills/spark/SKILL.md` and `.claude/skills/spark/SKILL.md`.
-Agent clients load the matching skill to follow the diagnose-first workflow.
+Agent clients load the matching skill to follow the cluster-confirmation SOP and guided diagnose-first workflow.
 
 ## Output contract
 
@@ -329,7 +358,7 @@ Per-scenario extras:
 - `app-summary` surfaces executor request config (`dynamic_allocation_enabled`, `configured_executor_instances`, `executor_cores`, `executor_memory`, `executor_memory_overhead`) next to observed executor counts, then returns three orthogonal stage views: `top_stages_by_duration` (raw wall, includes driver-side waits), `top_busy_stages` (`busy_ratio > 0.8` only — true CPU hotspots), and `top_io_bound_stages` (`busy_ratio < 0.8` but `spill >= 0.5 GB` or `shuffle_read >= 1 GB` — IO-stalled stages that `top_busy_stages` filters out). **All three together** prevent missing the real bottleneck.
 - `slow-stages` and `data-skew` return `sql_executions: {<id>: <description>}` at the top level — rows reference it via `sql_execution_id`. Descriptions are **truncated to the first 500 runes by default** (use `--sql-detail=full` to restore the original). Callsite-only entries (DataFrame jobs whose description and details are both `org.apache.spark.SparkContext.getCallSite(...)` placeholders) are filtered; if every entry would be noise the entire map is omitted.
 
-Errors → stderr as `{"error":{"code":..., "message":..., "hint":...}}`. Exit codes: `0` success · `1` internal · `2` user · `3` IO.
+Errors → stderr as `{"error":{"code":..., "message":..., "hint":...}}`; non-error progress/warnings use `{"event":{"code":..., "level":..., "message":..., "fields":...}}`. Exit codes: `0` success · `1` internal · `2` user · `3` IO.
 
 ## Supported EventLog formats
 

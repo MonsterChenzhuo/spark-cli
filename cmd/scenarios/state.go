@@ -27,6 +27,7 @@ type globalState struct {
 	Top                   int
 	DryRun                bool
 	NoProgress            bool
+	Guided                bool
 	ExitCode              int
 }
 

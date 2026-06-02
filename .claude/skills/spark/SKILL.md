@@ -5,7 +5,7 @@ description: Use when investigating Spark application performance, slow stages, 
 
 # Spark Performance Diagnostics
 
-You have access to `spark-cli`, a single-binary CLI that parses Spark EventLogs and emits JSON envelopes. Always start with `diagnose` — it runs all rules at once.
+You have access to `spark-cli`, a single-binary CLI that parses Spark EventLogs and emits JSON envelopes. Always confirm the cluster first, then start with guided `diagnose` — it runs all rules at once while keeping stdout as one JSON envelope.
 
 ## Required input
 
@@ -13,9 +13,22 @@ The user must provide a Spark `applicationId` (e.g. `application_1735000000_0001
 
 ## Workflow
 
-1. **Always run diagnose first**:
+0. **Confirm cluster before reading EventLogs**:
    ```
-   spark-cli diagnose <appId>
+   spark-cli config cluster list
+   spark-cli config show
+   ```
+   Check `active_cluster`, `selected_cluster`, `clusters`, `log_dirs`, and `yarn.base_urls`.
+   - If no cluster is configured and `log_dirs` is empty, ask the user for the Spark History Server / HDFS EventLog source and YARN gateway, then record it with:
+     ```
+     spark-cli config cluster add <name> --log-dirs <shs://...|hdfs://...|file://...> --yarn-base-urls <url> --activate
+     ```
+   - If multiple clusters exist and none is selected, choose with `--cluster <name>` after confirming the intended physical cluster.
+   - `spark-cli diagnose <appId> --guided` enforces this SOP: it auto-selects the only configured cluster, fails when multiple clusters exist without a selection, and writes preflight notes to stderr as `{"event":...}` JSON lines. stdout remains the normal `diagnose` envelope.
+
+1. **Always run guided diagnose first**:
+   ```
+   spark-cli diagnose <appId> --guided
    ```
    Read `summary.critical` and `summary.warn`. Even `severity: "ok"` rows are meaningful — they confirm a check ran. **优先看 `summary.top_findings_by_impact`**(按 `wall_share` 倒序的 `[{rule_id, severity, wall_share}]`)—— 这个数组直接告诉你哪个 finding 占整作业耗时最多,不要再自己心算。`app.DurationMs == 0`(没 ApplicationEnd 事件)或 finding 没 `stage_id` 关联时这段会缺失(omitempty)。**先看 `summary.findings_wall_coverage`**(所有非 ok finding 涉及 stage 占应用 wall 的总比例,按 stage_id 去重 + cap 1.0)—— **当它 < 0.05** 时,瓶颈基本不在 finding 列表里(常见为作业结构碎片化 / driver-side 等待 / 太多 action),应当**直接跳到 `app-summary` 看 `top_busy_stages` / `top_io_bound_stages` / `stages_total` / `jobs_total`**,而不是继续逐条下钻 finding。
    **severity 是诊断置信度,不是 ROI 优先级**:`disk_spill warn (wall_share 0.5)` 实际比 `data_skew critical (wall_share 0.05)` 更值得修;按 severity 字符串排优先级会错位,永远以 `top_findings_by_impact` 为准。
@@ -93,7 +106,7 @@ Exceptions:
 
 ## Errors
 
-Errors go to **stderr** as `{"error": {"code": "...", "message": "...", "hint": "..."}}`. Exit codes:
+Errors go to **stderr** as `{"error": {"code": "...", "message": "...", "hint": "..."}}`. Non-error progress/warnings use `{"event": {"code": "...", "level": "...", "message": "...", "fields": {...}}}`. Exit codes:
 - `0` success
 - `1` internal error (file a bug)
 - `2` user error (bad flag, app not found, ambiguous)
@@ -108,6 +121,7 @@ Errors go to **stderr** as `{"error": {"code": "...", "message": "...", "hint": 
 - `--format json` — default `json`; non-json formats return FLAG_INVALID
 - `--top N` — for `slow-stages` / `data-skew` / `gc-pressure` / `native-io`
 - `--dry-run` — locate the log without parsing (fast sanity check)
+- `--guided` — **diagnose-only**; confirm/select a named cluster before reading EventLogs. Preflight notes go to stderr as `{"event":...}` JSON lines and stdout remains the diagnose envelope. Other commands reject `--guided` with `FLAG_INVALID` instead of silently ignoring it.
 - `--cache-dir <path>` — persistent cache dir (default `~/.cache/spark-cli`); cached runs report `parsed_events: 0`
 - `--no-cache` — bypass the parsed-application cache for this invocation (no read, no write)
 - `--shs-timeout <duration>` — HTTP timeout for `shs://` / `shs+https://` log-dirs (default `5m`;生产 zip 几个 GB 是常态,失败时 hint 直接告知此参数)
@@ -116,7 +130,7 @@ Errors go to **stderr** as `{"error": {"code": "...", "message": "...", "hint": 
 - `--yarn-log-types <type,type>` — for `yarn-logs`, select log files such as `stderr,gc.log.0.current`; `gc` expands common GC log names. Use with `--executor-id <id>` when heartbeat timeout may actually be executor Full GC.
 - `--executor-id <id>` — for `driver-thread-dump`, targets Spark executor threads (empty defaults to driver); for `paimon-diagnostics`, chooses which executor's Paimon thread-dump JSON to fetch (empty defaults to driver); for `yarn-logs`, filters through Spark UI executors API and fetches that executor's container logs when available.
 - `--sql-detail truncate|full|none` — `sql_executions` 中 description 的呈现:**默认 truncate**(前 500 个 rune,过长加 `...(truncated, total <N> chars)` 标记),`full` 还原原始 SQL,`none` 整段 omit。也可用 `SPARK_CLI_SQL_DETAIL` 环境变量 / yaml `sql.detail` 覆盖。
-- `--no-progress` — 不打 SHS zip 下载进度提示(优先级高于 SPARK_CLI_QUIET 与 TTY 检测)。
+- `--no-progress` — 不输出 SHS zip `SHS_DOWNLOAD_START` / `SHS_DOWNLOAD_READY` JSON 进度事件(优先级高于 SPARK_CLI_QUIET 与 TTY 检测)。
 - `--tls-insecure-skip-verify` — HTTPS SHS/YARN gateway 使用自签证书时跳过证书校验;也可用 `SPARK_CLI_TLS_INSECURE_SKIP_VERIFY=true` 或 yaml `tls.insecure_skip_verify: true`。只在确认是内网可信 gateway 时使用。
 - SHS zip 持久化:同一 appID 的 zip 在 `<cache_dir>/shs/<host>/<appID>_<lastUpdated>.zip` 复用,attempt 更新时旧文件自动 sweep;`--no-cache` 旁路。
 - `SPARK_CLI_QUIET` — `1`/`true` 强制静默,`0`/`false` 强制保留进度,**未设时按 stdout 是否 TTY 自动决定**(管道 / 重定向 / agent 调用默认静默,交互终端默认显示)。
