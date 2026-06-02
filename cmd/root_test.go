@@ -187,6 +187,40 @@ func TestUtilityInvalidFormatsReturnJSONHints(t *testing.T) {
 	}
 }
 
+func TestRunWithRoutesCacheWarningsToProvidedStderr(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("SPARK_CLI_CONFIG_DIR", configDir)
+
+	logDir := t.TempDir()
+	src, err := os.ReadFile(filepath.Join("..", "tests", "testdata", "tiny_app.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(logDir, "application_1_1"), src, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	blocker := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SPARK_CLI_CACHE_DIR", filepath.Join(blocker, "child"))
+
+	var stdout, stderr bytes.Buffer
+	rc := RunWith(context.Background(), []string{
+		"app-summary", "application_1_1", "--log-dirs", "file://" + logDir,
+	}, &stdout, &stderr)
+	if rc != 0 {
+		t.Fatalf("rc=%d stderr=%s stdout=%s", rc, stderr.String(), stdout.String())
+	}
+	if stdout.Len() == 0 {
+		t.Fatal("stdout should still contain scenario envelope")
+	}
+	if !stderrHasEvent(stderr.String(), "CACHE_WARNING", "", "") {
+		t.Fatalf("stderr missing routed cache warning:\n%s", stderr.String())
+	}
+}
+
 func hasNamedCommand(commands []struct {
 	Name string `json:"name"`
 }, name string) bool {
@@ -225,6 +259,9 @@ func stderrHasEvent(text, code, field, value string) bool {
 		}
 		if got.Event.Code != code {
 			continue
+		}
+		if field == "" {
+			return true
 		}
 		if gotField, ok := got.Event.Fields[field].(string); ok && gotField == value {
 			return true

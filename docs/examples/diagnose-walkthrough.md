@@ -2,10 +2,12 @@
 
 Below is a transcript an AI agent would produce after the user reports "etl_daily ran 3× longer than usual yesterday."
 
-## 1. Run diagnose
+## 1. Confirm cluster and run diagnose
 
 ```bash
-$ spark-cli diagnose application_1735000000_0001
+$ spark-cli config cluster list --format json
+$ spark-cli config show --format json
+$ spark-cli diagnose application_1735000000_0001 --guided
 ```
 ```json
 {

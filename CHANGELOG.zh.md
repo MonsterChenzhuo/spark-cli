@@ -9,6 +9,7 @@
 - **`spark-cli --help` 与 `spark-cli help <command>` 改为输出 JSON 命令元数据**,并禁用 Cobra shell `completion` 命令,保证成功 stdout 始终机器可读。
 - **`config init` 改为非交互**:写入配置后返回 JSON 元数据,不再从 stdin 读取提示输入。
 - **非错误 stderr 改为 JSON event**:guided 预检说明、SHS 下载进度、cache warning 现在按行输出 `{"event":{"code","level","message","fields"}}`,不再输出自然语言文本;错误仍保持 `{"error":...}`。
+- **嵌入式调用方现在也能收到 `CACHE_WARNING`**:`cmd.RunWith(...)` / `runner.Run(...)` 传入的 stderr writer 不再被 cache 层绕过;cache mkdir/损坏告警会和 guided 预检、SHS 进度一样按 JSON event 落到调用方 buffer。
 - **工具命令 `--format` 错误保留可执行 `use json` hint**:直接包级调用和 root CLI 包装都会返回 `FLAG_INVALID`,不再退化成泛化 help 提示。
 - **`--guided` 改为 diagnose 专属 flag**:root help 不再暴露它,`spark-cli diagnose <appId> --guided` 仍按原 SOP 工作;其他命令误传时会直接返回 `FLAG_INVALID`,不再静默忽略。
 - **agent 文档增加 SHS 进度口径守门**:README 与内置 skill 现在明确描述 `SHS_DOWNLOAD_START` / `SHS_DOWNLOAD_READY` JSON event,不再沿用文本进度提示说法。

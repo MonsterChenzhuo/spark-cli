@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/opay-bigdata/spark-cli/internal/config"
+	cerrors "github.com/opay-bigdata/spark-cli/internal/errors"
 )
 
 type clusterFile struct {
@@ -60,14 +62,14 @@ func newClusterAddCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := strings.TrimSpace(args[0])
 			if name == "" {
-				return fmt.Errorf("cluster name cannot be empty")
+				return cerrors.New(cerrors.CodeFlagInvalid, "cluster name cannot be empty", "pass a non-empty cluster name")
 			}
 			if strings.TrimSpace(logDirs) == "" {
-				return fmt.Errorf("--log-dirs is required")
+				return cerrors.New(cerrors.CodeFlagInvalid, "--log-dirs is required", "pass --log-dirs shs://history:18081 or another EventLog source")
 			}
 			if shsTimeout != "" {
 				if _, err := time.ParseDuration(shsTimeout); err != nil {
-					return fmt.Errorf("invalid --shs-timeout %q: %w", shsTimeout, err)
+					return cerrors.New(cerrors.CodeFlagInvalid, fmt.Sprintf("invalid --shs-timeout %q: %v", shsTimeout, err), "use a Go duration such as 5m or 30s")
 				}
 			}
 			file, path, err := readClusterFile()
@@ -130,7 +132,7 @@ func newClusterListCmd() *cobra.Command {
 			case "", "json":
 				return renderClusterListJSON(cmd.OutOrStdout(), file)
 			default:
-				return fmt.Errorf("unknown --format %q (use json)", format)
+				return cerrors.New(cerrors.CodeFlagInvalid, "unknown --format "+strconv.Quote(format), "use json")
 			}
 		},
 	}

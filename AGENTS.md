@@ -210,6 +210,7 @@ HDFS 用户名优先级 (高 → 低): `--hdfs-user` flag → `SPARK_CLI_HDFS_US
 - V2: `{URI, max(part_mtime), sum(part_size), part_count}` 任一变化触发 miss
 - `.inprogress` 日志整体跳过缓存(不读不写)
 - `--no-cache` 旁路缓存(不读不写),仍可与 `--cache-dir` 共存(后者只决定写盘位置,本次执行依然不写)
+- cache 的 `CACHE_WARNING` / 损坏文件告警必须写到调用方传入的 stderr writer(例如 `cmd.RunWith(...)` / `runner.Run(...)` 的 buffer),**不要**直接写进程级 `os.Stderr`,否则 agent harness 会漏收 JSON event
 
 **Schema 版本**: `internal/cache/envelope.go` 的 `currentSchemaVersion` 是手动维护的整型常量。**字段加/删** gob 天然容忍,**不需要** bump;**字段改类型或重命名时**必须 bump,否则用户拿到的是用零值/老结构填充的 `*Application`。bump 后旧缓存自动作废重建,对用户透明。
 

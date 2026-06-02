@@ -9,6 +9,7 @@
 - **`spark-cli --help` and `spark-cli help <command>` now emit JSON command metadata**, and the Cobra shell `completion` command is disabled to keep successful stdout machine-readable.
 - **`config init` is non-interactive** and returns JSON metadata after writing the config, removing stdin prompts from agent workflows.
 - **Non-error stderr is JSON events.** Guided preflight notes, SHS download progress, and cache warnings now emit newline-delimited `{"event":{"code","level","message","fields"}}` records instead of human text; errors remain `{"error":...}`.
+- **Embedded callers now receive `CACHE_WARNING` on their provided stderr writer.** Cache mkdir/corruption warnings no longer bypass `cmd.RunWith(...)` / `runner.Run(...)` via process-global `os.Stderr`, so agent harnesses can capture the same JSON events they expect from guided preflight and SHS progress.
 - **Utility `--format` errors now preserve the actionable `use json` hint** through direct package calls and the root CLI wrapper, instead of degrading to the generic help hint.
 - **`--guided` is now diagnose-only.** Root help no longer advertises it, `spark-cli diagnose <appId> --guided` still works, and other commands now fail fast with `FLAG_INVALID` instead of silently ignoring a mistyped SOP flag.
 - **Agent docs now guard SHS progress wording** so README and bundled skills describe `SHS_DOWNLOAD_START` / `SHS_DOWNLOAD_READY` JSON events, not text progress lines.

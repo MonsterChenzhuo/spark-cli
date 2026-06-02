@@ -35,6 +35,14 @@ type Error struct {
 	Hint    string `json:"hint,omitempty"`
 }
 
+type Event struct {
+	Code    string         `json:"code"`
+	Level   string         `json:"level"`
+	Message string         `json:"message"`
+	Hint    string         `json:"hint,omitempty"`
+	Fields  map[string]any `json:"fields,omitempty"`
+}
+
 func New(code Code, msg, hint string) *Error {
 	return &Error{Code: code, Message: msg, Hint: hint}
 }
@@ -68,6 +76,10 @@ type envelope struct {
 	Error *Error `json:"error"`
 }
 
+type eventEnvelope struct {
+	Event *Event `json:"event"`
+}
+
 func WriteJSON(w io.Writer, err error) {
 	if err == nil {
 		return
@@ -77,6 +89,18 @@ func WriteJSON(w io.Writer, err error) {
 		e = &Error{Code: CodeInternal, Message: err.Error()}
 	}
 	b, _ := json.Marshal(envelope{Error: e})
+	_, _ = w.Write(b)
+	_, _ = w.Write([]byte("\n"))
+}
+
+func WriteEventJSON(w io.Writer, event Event) {
+	if w == nil {
+		return
+	}
+	if event.Level == "" {
+		event.Level = "info"
+	}
+	b, _ := json.Marshal(eventEnvelope{Event: &event})
 	_, _ = w.Write(b)
 	_, _ = w.Write([]byte("\n"))
 }

@@ -417,9 +417,18 @@ func (s *SHS) bundleFor(host, appID string) (*shsBundle, error) {
 		}
 	}
 	if zr == nil {
-		// 提示一行,免得用户看着 CLI 静默卡几分钟以为挂了。生产 zip 几 GB 是常态。
+		// 进度事件避免用户看着 CLI 静默卡几分钟以为挂了。生产 zip 几 GB 是常态。
 		if s.stderr != nil {
-			fmt.Fprintf(s.stderr, "spark-cli: downloading EventLog zip from SHS for %s (timeout %s; set SPARK_CLI_QUIET=1 to silence) ...\n", appID, s.timeout)
+			cerrors.WriteEventJSON(s.stderr, cerrors.Event{
+				Code:    "SHS_DOWNLOAD_START",
+				Level:   "info",
+				Message: fmt.Sprintf("downloading EventLog zip from SHS for %s", appID),
+				Hint:    "set SPARK_CLI_QUIET=1 or pass --no-progress to silence progress events",
+				Fields: map[string]any{
+					"app_id":     appID,
+					"timeout_ms": s.timeout.Milliseconds(),
+				},
+			})
 		}
 		zipStart := time.Now()
 		var err error
@@ -428,7 +437,16 @@ func (s *SHS) bundleFor(host, appID string) (*shsBundle, error) {
 			return nil, err
 		}
 		if s.stderr != nil {
-			fmt.Fprintf(s.stderr, "spark-cli: SHS zip for %s ready in %s\n", appID, time.Since(zipStart).Round(time.Millisecond))
+			duration := time.Since(zipStart).Round(time.Millisecond)
+			cerrors.WriteEventJSON(s.stderr, cerrors.Event{
+				Code:    "SHS_DOWNLOAD_READY",
+				Level:   "info",
+				Message: fmt.Sprintf("SHS zip for %s ready", appID),
+				Fields: map[string]any{
+					"app_id":      appID,
+					"duration_ms": duration.Milliseconds(),
+				},
+			})
 		}
 		// 落盘到 cacheDir 时,扫掉同 host/appID 但旧 lastUpdated 的 sibling
 		if cachePath != "" && tmpPath == "" {

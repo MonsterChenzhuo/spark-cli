@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/opay-bigdata/spark-cli/internal/config"
+	cerrors "github.com/opay-bigdata/spark-cli/internal/errors"
 )
 
 func TestClusterAddWritesConfig(t *testing.T) {
@@ -180,5 +182,9 @@ func TestClusterListRejectsTextFormat(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `unknown --format "text"`) {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	var ce *cerrors.Error
+	if !errors.As(err, &ce) || ce.Code != cerrors.CodeFlagInvalid {
+		t.Fatalf("error should be FLAG_INVALID, got %#v", err)
 	}
 }
