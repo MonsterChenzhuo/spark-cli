@@ -264,23 +264,47 @@ func taskEndFromEvent(e *evtTaskEnd) model.TaskEnd {
 	var m model.TaskMetrics
 	if e.TaskMetrics != nil {
 		m.RunMs = e.TaskMetrics.ExecutorRunTime
+		m.ExecutorCPUMs = e.TaskMetrics.ExecutorCPUTime / 1_000_000
+		m.ExecutorDeserializeMs = e.TaskMetrics.ExecutorDeserializeTime
+		m.ResultSerializationMs = e.TaskMetrics.ResultSerializationTime
+		m.GettingResultMs = gettingResultMs(e.TaskInfo.GettingResultTime, e.TaskInfo.FinishTime)
 		m.GCMs = e.TaskMetrics.JVMGCTime
 		m.InputBytes = e.TaskMetrics.InputMetrics.BytesRead
-		m.ShuffleReadBytes = e.TaskMetrics.ShuffleReadMetrics.RemoteBytesRead + e.TaskMetrics.ShuffleReadMetrics.LocalBytesRead
+		m.InputRecords = e.TaskMetrics.InputMetrics.RecordsRead
+		m.OutputBytes = e.TaskMetrics.OutputMetrics.BytesWritten
+		m.OutputRecords = e.TaskMetrics.OutputMetrics.RecordsWritten
+		m.ShuffleLocalBytesRead = e.TaskMetrics.ShuffleReadMetrics.LocalBytesRead
+		m.ShuffleRemoteBytesRead = e.TaskMetrics.ShuffleReadMetrics.RemoteBytesRead
+		m.ShuffleReadBytes = m.ShuffleRemoteBytesRead + m.ShuffleLocalBytesRead
+		m.ShuffleTotalBlocksFetched = e.TaskMetrics.ShuffleReadMetrics.TotalBlocksFetched
+		m.ShuffleLocalBlocksFetched = e.TaskMetrics.ShuffleReadMetrics.LocalBlocksFetched
+		m.ShuffleRemoteBlocksFetched = e.TaskMetrics.ShuffleReadMetrics.RemoteBlocksFetched
+		m.ShuffleRecordsRead = e.TaskMetrics.ShuffleReadMetrics.TotalRecordsRead
 		m.ShuffleWriteBytes = e.TaskMetrics.ShuffleWriteMetrics.BytesWritten
+		m.ShuffleWriteRecords = e.TaskMetrics.ShuffleWriteMetrics.RecordsWritten
 		m.SpillDisk = e.TaskMetrics.DiskBytesSpilled
 		m.SpillMem = e.TaskMetrics.MemoryBytesSpilled
+		m.ResultSizeBytes = e.TaskMetrics.ResultSize
+		m.PeakExecutionMemoryBytes = e.TaskMetrics.PeakExecutionMemory
 	}
 	return model.TaskEnd{
-		StageID:    e.StageID,
-		Attempt:    e.StageAttemptID,
-		ExecutorID: e.TaskInfo.ExecutorID,
-		Failed:     e.TaskInfo.Failed,
-		Killed:     e.TaskInfo.Killed,
-		LaunchMs:   e.TaskInfo.LaunchTime,
-		FinishMs:   e.TaskInfo.FinishTime,
-		Metrics:    m,
+		StageID:     e.StageID,
+		Attempt:     e.StageAttemptID,
+		ExecutorID:  e.TaskInfo.ExecutorID,
+		Failed:      e.TaskInfo.Failed,
+		Killed:      e.TaskInfo.Killed,
+		Speculative: e.TaskInfo.Speculative,
+		LaunchMs:    e.TaskInfo.LaunchTime,
+		FinishMs:    e.TaskInfo.FinishTime,
+		Metrics:     m,
 	}
+}
+
+func gettingResultMs(start, finish int64) int64 {
+	if start == 0 || finish <= start {
+		return 0
+	}
+	return finish - start
 }
 
 func nativeIOFromEvent(e *evtNativeIO) model.NativeIOEvent {

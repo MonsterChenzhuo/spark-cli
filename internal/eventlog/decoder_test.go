@@ -54,6 +54,36 @@ func TestDecodeTinyApp(t *testing.T) {
 	}
 }
 
+func TestDecodeTaskEndSparkMeasureAIMetrics(t *testing.T) {
+	body := strings.Join([]string{
+		`{"Event":"SparkListenerApplicationStart","App Name":"metrics","App ID":"application_metrics","Timestamp":0,"User":"alice"}`,
+		`{"Event":"SparkListenerExecutorAdded","Timestamp":1,"Executor ID":"1","Executor Info":{"Host":"worker-1","Total Cores":4}}`,
+		`{"Event":"SparkListenerStageSubmitted","Stage Info":{"Stage ID":3,"Stage Attempt ID":0,"Stage Name":"shuffle","Number of Tasks":1,"Submission Time":10}}`,
+		`{"Event":"SparkListenerTaskEnd","Stage ID":3,"Stage Attempt ID":0,"Task Info":{"Task ID":1,"Executor ID":"1","Host":"worker-1","Launch Time":1000,"Finish Time":2000,"Speculative":true,"Getting Result Time":1900,"Failed":false,"Killed":false},"Task Metrics":{"Executor Run Time":600,"Executor CPU Time":420000000,"Executor Deserialize Time":50,"Executor Deserialize CPU Time":3000000,"Result Serialization Time":25,"JVM GC Time":5,"Result Size":4096,"Peak Execution Memory":134217728,"Input Metrics":{"Bytes Read":1024,"Records Read":10},"Output Metrics":{"Bytes Written":2048,"Records Written":4},"Shuffle Read Metrics":{"Remote Bytes Read":900,"Local Bytes Read":100,"Fetch Wait Time":30,"Total Blocks Fetched":9,"Local Blocks Fetched":1,"Remote Blocks Fetched":8,"Total Records Read":99},"Shuffle Write Metrics":{"Shuffle Bytes Written":4096,"Shuffle Write Time":7000000,"Shuffle Records Written":7}}}`,
+	}, "\n")
+	app := model.NewApplication()
+	_, err := Decode(strings.NewReader(body), model.NewAggregator(app))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := app.Stages[model.StageKey{ID: 3, Attempt: 0}]
+	if st.TotalExecutorCPUMs != 420 {
+		t.Fatalf("TotalExecutorCPUMs=%d want 420", st.TotalExecutorCPUMs)
+	}
+	if st.TotalGettingResultMs != 100 {
+		t.Fatalf("TotalGettingResultMs=%d want 100", st.TotalGettingResultMs)
+	}
+	if st.TotalSchedulerDelayMs != 225 {
+		t.Fatalf("TotalSchedulerDelayMs=%d want 225", st.TotalSchedulerDelayMs)
+	}
+	if st.SpeculativeTasks != 1 || st.TotalShuffleRemoteBlocksFetched != 8 {
+		t.Fatalf("speculative/remote blocks wrong: %+v", st)
+	}
+	if st.TotalShuffleWriteBytes != 4096 || st.TotalShuffleWriteRecords != 7 {
+		t.Fatalf("shuffle write bytes/records=%d/%d want 4096/7", st.TotalShuffleWriteBytes, st.TotalShuffleWriteRecords)
+	}
+}
+
 func TestDecodeAllowsTruncatedTailForIncompleteLogs(t *testing.T) {
 	body := strings.Join([]string{
 		`{"Event":"SparkListenerApplicationStart","App Name":"tail","App ID":"application_tail","Timestamp":1000,"User":"alice"}`,

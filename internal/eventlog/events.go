@@ -104,19 +104,24 @@ type evtTaskEnd struct {
 	StageID        int `json:"Stage ID"`
 	StageAttemptID int `json:"Stage Attempt ID"`
 	TaskInfo       struct {
-		TaskID     int    `json:"Task ID"`
-		ExecutorID string `json:"Executor ID"`
-		Host       string `json:"Host"`
-		LaunchTime int64  `json:"Launch Time"`
-		FinishTime int64  `json:"Finish Time"`
-		Failed     bool   `json:"Failed"`
-		Killed     bool   `json:"Killed"`
+		TaskID            int    `json:"Task ID"`
+		ExecutorID        string `json:"Executor ID"`
+		Host              string `json:"Host"`
+		LaunchTime        int64  `json:"Launch Time"`
+		FinishTime        int64  `json:"Finish Time"`
+		GettingResultTime int64  `json:"Getting Result Time"`
+		Speculative       bool   `json:"Speculative"`
+		Failed            bool   `json:"Failed"`
+		Killed            bool   `json:"Killed"`
 	} `json:"Task Info"`
 	TaskMetrics *struct {
 		ExecutorRunTime         int64 `json:"Executor Run Time"`
 		ExecutorCPUTime         int64 `json:"Executor CPU Time"`
 		ExecutorDeserializeTime int64 `json:"Executor Deserialize Time"`
 		JVMGCTime               int64 `json:"JVM GC Time"`
+		ResultSerializationTime int64 `json:"Result Serialization Time"`
+		ResultSize              int64 `json:"Result Size"`
+		PeakExecutionMemory     int64 `json:"Peak Execution Memory"`
 		MemoryBytesSpilled      int64 `json:"Memory Bytes Spilled"`
 		DiskBytesSpilled        int64 `json:"Disk Bytes Spilled"`
 		InputMetrics            struct {
@@ -128,10 +133,13 @@ type evtTaskEnd struct {
 			RecordsWritten int64 `json:"Records Written"`
 		} `json:"Output Metrics"`
 		ShuffleReadMetrics struct {
-			RemoteBytesRead  int64 `json:"Remote Bytes Read"`
-			LocalBytesRead   int64 `json:"Local Bytes Read"`
-			FetchWaitTime    int64 `json:"Fetch Wait Time"`
-			TotalRecordsRead int64 `json:"Total Records Read"`
+			RemoteBytesRead     int64 `json:"Remote Bytes Read"`
+			LocalBytesRead      int64 `json:"Local Bytes Read"`
+			FetchWaitTime       int64 `json:"Fetch Wait Time"`
+			TotalBlocksFetched  int64 `json:"Total Blocks Fetched"`
+			LocalBlocksFetched  int64 `json:"Local Blocks Fetched"`
+			RemoteBlocksFetched int64 `json:"Remote Blocks Fetched"`
+			TotalRecordsRead    int64 `json:"Total Records Read"`
 		} `json:"Shuffle Read Metrics"`
 		ShuffleWriteMetrics struct {
 			BytesWritten   int64 `json:"Shuffle Bytes Written"`
