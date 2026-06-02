@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### SparkMeasure AI 指标
+
+- **吸收 sparkMeasure 中可由 EventLog 还原的指标语义**:模型现在从 `SparkListenerTaskEnd` 聚合 executor CPU、scheduler delay、result size、peak execution memory、records、shuffle block、本地/远端 shuffle bytes 和 speculative task 数。
+- **`app-summary` 新增紧凑 AI 分流字段**:`avg_active_tasks`、`executor_cpu_ratio`、`scheduler_delay_ratio`、`remote_shuffle_read_ratio`、`speculative_tasks`、`peak_execution_memory_gb`。
+- **`slow-stages` 新增 stage 级 AI 归因字段**:scheduler delay、executor CPU ratio、remote shuffle ratio、shuffle blocks/records、peak execution memory、speculative tasks。
+- **`diagnose` 新增 `scheduler_delay` / `remote_shuffle` / `speculative_tasks` 规则**,evidence 带 `stage_id` / `wall_share`,让 agent 按 wall impact 决定下一步下钻,而不是按 severity 文本排序。
+
 ### AI-only JSON 契约
 
 - **不兼容变更 — 成功 stdout 只输出 JSON**:EventLog 场景命令和 live 诊断命令只接受 `--format json`;`table`、`markdown`、text 输出会返回 `FLAG_INVALID`。工具类命令(`config`、`cache`、`self-update`、`version`)也默认输出命令专用 JSON。

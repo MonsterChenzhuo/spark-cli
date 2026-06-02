@@ -19,7 +19,9 @@ Guidance for Codex (and other AI agents) working in this repository.
 - **`data_skew` finding 在多 stage 命中时**,evidence 含 `similar_stages: [{stage_id, wall_share, skew_factor}]`(按 wall_share 倒序最多 4 条)。primary `stage_id` 选 wall_share 最大的(平局回退 skew_factor),`top_findings_by_impact` 与 `findings_wall_coverage` 都会跨 primary + similar_stages 聚合 —— agent 直接读 evidence 就能看到完整多 stage 列表,不必再回头跑 `data-skew`。
 - `slow-stages` / `data-skew` 信封顶层带 `sql_executions: map[int64]string`,key 是 `sql_execution_id`、value 是 description。**默认按 `--sql-detail=truncate` 截到前 500 个 rune,过长追加 `...(truncated, total <N> chars)`**;`--sql-detail=full` 还原原始 SQL,`--sql-detail=none` 整段 omit(也可 `SPARK_CLI_SQL_DETAIL` / yaml `sql.detail` 覆盖)。对 DataFrame 作业自动回退到 details 首行;若 description / details 都是 callsite 占位形态则该条整行过滤。row 内只保 `sql_execution_id`,**不再带** `sql_description` 字段 —— 切走重复嵌入,把 JSON 体积从几十 KB 压到几 KB。所有条目都是 callsite 噪音时整段 map 走 `omitempty` 缺失;app-summary / gc-pressure / diagnose 不带这个字段
 - `app-summary` 的 `data` row 同时带 **三个** stage 切面,**永远要三个一起看**才不漏瓶颈:`top_stages_by_duration[]`(按 wall 倒序,包含 driver-side 等待 stage),`top_busy_stages[]`(过滤 `busy_ratio > 0.8` 后按 `busy_ratio * duration` 倒序,真正 executor 吃 CPU 的热点),**`top_io_bound_stages[]`**(`busy_ratio < 0.8` 但 `spill_disk_gb >= 0.5` 或 `shuffle_read_gb >= 1.0` 的 stage,按 wall_share 倒序 limit 3)。`top_io_bound_stages` 是 `top_busy_stages` 的互补切面 —— spill 主导的 stage executor 都在等盘,busy_ratio 被压得很低,`top_busy_stages` 阈值看不到但才是真瓶颈(实测 stage spill 9.86 GB / busy_ratio 0.048,只看 top_busy_stages 完全错过)。
-- `slow-stages` row 三档 `*_mb_per_task`(`input_mb_per_task` / `shuffle_read_mb_per_task` / `shuffle_write_mb_per_task`)。读侧 / 写侧 / source-scan stage 分别看对应字段判 partition 粒度,`NumTasks=0` 时三个一律 0
+- `app-summary` 还输出面向 AI 分流的全局比例:`avg_active_tasks`、`executor_cpu_ratio`、`scheduler_delay_ratio`、`remote_shuffle_read_ratio`、`speculative_tasks`、`peak_execution_memory_gb`。这些字段用于先判断瓶颈属于 CPU 忙、调度等待、远端 shuffle、speculative straggler 还是内存压力,不要把它们写成人类报表式说明。
+- `slow-stages` row 三档 `*_mb_per_task`(`input_mb_per_task` / `shuffle_read_mb_per_task` / `shuffle_write_mb_per_task`)。读侧 / 写侧 / source-scan stage 分别看对应字段判 partition 粒度,`NumTasks=0` 时三个一律 0。row 同时带 AI 归因字段:`executor_cpu_ratio`、`scheduler_delay_ms`、`scheduler_delay_ratio`、`remote_shuffle_read_ratio`、`shuffle_remote_blocks`、`shuffle_total_blocks`、records 计数、`peak_execution_memory_gb`、`speculative_tasks`;这些字段与 `wall_share` 一起看,按 ROI 决定下钻。
+- `diagnose` 新增 `scheduler_delay` / `remote_shuffle` / `speculative_tasks` finding,都按 `wall_share` 选 primary stage。它们是 AI 分流信号:调度等待先查 executor 供给 / locality / 小 task,远端 shuffle 先查数据本地性 / executor 丢失 / 网络, speculative 先查慢节点 / 数据倾斜 / GC 抖动。
 - `--guided` **只允许**给 `diagnose` 使用。实现上它是 `diagnose` 子命令本地 flag,不会出现在 root / 其他子命令 help 里；对其他命令误传 `--guided` 时,应返回 `FLAG_INVALID` 而不是静默忽略,避免 agent 误以为 SOP 已生效
 
 ## 仓库布局
@@ -35,7 +37,7 @@ Guidance for Codex (and other AI agents) working in this repository.
 | `internal/model/` | Application/Stage/Executor/Job 聚合模型 + Aggregator |
 | `internal/stats/` | t-digest 分位数封装 |
 | `internal/scenario/` | 场景纯函数 + Envelope 类型 |
-| `internal/rules/` | Rule 接口 + 6 条规则 (skew/gc/spill/failed/tiny/idle_stage) |
+| `internal/rules/` | Rule 接口 + 10 条规则 (skew/gc/spill/scheduler_delay/remote_shuffle/speculative/failed/tiny/idle/executor_supply) |
 | `internal/output/` | JSON formatter |
 | `tests/e2e/` | 通过 `cmd.RunWith` 跑全场景 + 错误路径 |
 | `tests/testdata/tiny_app.json` | 10 行合成 EventLog,所有 E2E 共用 |

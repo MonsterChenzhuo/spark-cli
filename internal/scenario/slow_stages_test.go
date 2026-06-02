@@ -102,6 +102,64 @@ func TestSlowStagesEmitsBusyRatioAndPartitionSize(t *testing.T) {
 	}
 }
 
+func TestSlowStagesIncludesSparkMeasureAISignals(t *testing.T) {
+	app := model.NewApplication()
+	s := model.NewStage(1, 0, "ai-signals", 10, 0)
+	s.SubmitMs = 0
+	s.CompleteMs = 1_000
+	s.Status = "succeeded"
+	s.TotalRunMs = 600
+	s.TotalTaskDurationMs = 1_000
+	s.TotalExecutorCPUMs = 420
+	s.TotalSchedulerDelayMs = 315
+	s.TotalShuffleReadBytes = 1_000
+	s.TotalShuffleRemoteReadBytes = 900
+	s.TotalShuffleTotalBlocksFetched = 9
+	s.TotalShuffleRemoteBlocksFetched = 8
+	s.TotalInputRecords = 10
+	s.TotalOutputRecords = 4
+	s.TotalShuffleReadRecords = 99
+	s.TotalShuffleWriteRecords = 7
+	s.PeakExecutionMemoryBytes = 2 * 1024 * 1024 * 1024
+	s.SpeculativeTasks = 1
+	for i := 0; i < 10; i++ {
+		s.TaskDurations.Add(100)
+	}
+	app.Stages[model.StageKey{ID: 1}] = s
+
+	rows := SlowStages(app, 0)
+	if len(rows) != 1 {
+		t.Fatalf("rows=%d", len(rows))
+	}
+	if rows[0].ExecutorCPURatio != 0.7 {
+		t.Fatalf("executor_cpu_ratio=%v want 0.7", rows[0].ExecutorCPURatio)
+	}
+	if rows[0].SchedulerDelayMs != 315 {
+		t.Fatalf("scheduler_delay_ms=%d want 315", rows[0].SchedulerDelayMs)
+	}
+	if rows[0].SchedulerDelayRatio != 0.315 {
+		t.Fatalf("scheduler_delay_ratio=%v want 0.315", rows[0].SchedulerDelayRatio)
+	}
+	if rows[0].RemoteShuffleReadRatio != 0.9 {
+		t.Fatalf("remote_shuffle_read_ratio=%v want 0.9", rows[0].RemoteShuffleReadRatio)
+	}
+	if rows[0].ShuffleRemoteBlocks != 8 || rows[0].ShuffleTotalBlocks != 9 {
+		t.Fatalf("shuffle blocks remote/total=%d/%d want 8/9", rows[0].ShuffleRemoteBlocks, rows[0].ShuffleTotalBlocks)
+	}
+	if rows[0].RecordsRead != 10 || rows[0].RecordsWritten != 4 {
+		t.Fatalf("records read/written=%d/%d want 10/4", rows[0].RecordsRead, rows[0].RecordsWritten)
+	}
+	if rows[0].ShuffleRecordsRead != 99 || rows[0].ShuffleRecordsWritten != 7 {
+		t.Fatalf("shuffle records read/written=%d/%d want 99/7", rows[0].ShuffleRecordsRead, rows[0].ShuffleRecordsWritten)
+	}
+	if rows[0].PeakExecutionMemoryGB != 2 {
+		t.Fatalf("peak_execution_memory_gb=%v want 2", rows[0].PeakExecutionMemoryGB)
+	}
+	if rows[0].SpeculativeTasks != 1 {
+		t.Fatalf("speculative_tasks=%d want 1", rows[0].SpeculativeTasks)
+	}
+}
+
 func TestSlowStagesShuffleReadPerTaskZeroOnZeroTasks(t *testing.T) {
 	app := model.NewApplication()
 	s := model.NewStage(1, 0, "no-tasks", 0, 0)
