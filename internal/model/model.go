@@ -27,13 +27,28 @@ type Application struct {
 	TasksTotal  int64
 	TasksFailed int64
 
-	TotalInputBytes        int64
-	TotalOutputBytes       int64
-	TotalShuffleReadBytes  int64
-	TotalShuffleWriteBytes int64
-	TotalSpillDisk         int64
-	TotalRunMs             int64
-	TotalGCMs              int64
+	TotalInputBytes                 int64
+	TotalOutputBytes                int64
+	TotalShuffleReadBytes           int64
+	TotalShuffleWriteBytes          int64
+	TotalSpillDisk                  int64
+	TotalRunMs                      int64
+	TotalGCMs                       int64
+	TotalTaskDurationMs             int64
+	TotalExecutorCPUMs              int64
+	TotalSchedulerDelayMs           int64
+	TotalResultSizeBytes            int64
+	PeakExecutionMemoryBytes        int64
+	TotalInputRecords               int64
+	TotalOutputRecords              int64
+	TotalShuffleReadRecords         int64
+	TotalShuffleWriteRecords        int64
+	TotalShuffleLocalReadBytes      int64
+	TotalShuffleRemoteReadBytes     int64
+	TotalShuffleTotalBlocksFetched  int64
+	TotalShuffleLocalBlocksFetched  int64
+	TotalShuffleRemoteBlocksFetched int64
+	SpeculativeTasks                int64
 
 	// SparkConf is filled from SparkListenerEnvironmentUpdate's Spark Properties.
 	// Empty map until that event is observed.
@@ -126,14 +141,18 @@ type NativeIOEvent struct {
 }
 
 type Executor struct {
-	ID, Host        string
-	Cores           int
-	AddMs, RemoveMs int64
-	RemoveReason    string
-	TotalRunMs      int64
-	TotalGCMs       int64
-	TaskCount       int
-	FailedTaskCount int
+	ID, Host              string
+	Cores                 int
+	AddMs, RemoveMs       int64
+	RemoveReason          string
+	TotalRunMs            int64
+	TotalGCMs             int64
+	TotalTaskDurationMs   int64
+	TotalExecutorCPUMs    int64
+	TotalSchedulerDelayMs int64
+	SpeculativeTasks      int64
+	TaskCount             int
+	FailedTaskCount       int
 }
 
 type Job struct {
@@ -155,18 +174,36 @@ type Stage struct {
 	TaskDurations  *stats.Digest
 	TaskInputBytes *stats.Digest
 
-	TotalInputBytes        int64
-	TotalShuffleReadBytes  int64
-	TotalShuffleWriteBytes int64
-	TotalSpillDisk         int64
-	TotalSpillMem          int64
-	TotalGCMs              int64
-	TotalRunMs             int64
-	FailedTasks            int
-	KilledTasks            int
-	MaxTaskMs              int64
-	MinTaskMs              int64
-	MaxInputBytes          int64
+	TotalInputBytes                 int64
+	TotalShuffleReadBytes           int64
+	TotalShuffleWriteBytes          int64
+	TotalSpillDisk                  int64
+	TotalSpillMem                   int64
+	TotalGCMs                       int64
+	TotalRunMs                      int64
+	TotalTaskDurationMs             int64
+	TotalExecutorCPUMs              int64
+	TotalSchedulerDelayMs           int64
+	TotalResultSerializationMs      int64
+	TotalGettingResultMs            int64
+	MaxResultSizeBytes              int64
+	PeakExecutionMemoryBytes        int64
+	TotalInputRecords               int64
+	TotalOutputBytes                int64
+	TotalOutputRecords              int64
+	TotalShuffleReadRecords         int64
+	TotalShuffleWriteRecords        int64
+	TotalShuffleLocalReadBytes      int64
+	TotalShuffleRemoteReadBytes     int64
+	TotalShuffleTotalBlocksFetched  int64
+	TotalShuffleLocalBlocksFetched  int64
+	TotalShuffleRemoteBlocksFetched int64
+	SpeculativeTasks                int64
+	FailedTasks                     int
+	KilledTasks                     int
+	MaxTaskMs                       int64
+	MinTaskMs                       int64
+	MaxInputBytes                   int64
 }
 
 func NewStage(id, attempt int, name string, numTasks int, submitMs int64) *Stage {

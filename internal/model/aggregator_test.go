@@ -42,6 +42,66 @@ func TestOnTaskEndNegativeDurationClamped(t *testing.T) {
 	}
 }
 
+func TestOnTaskEndAggregatesSparkMeasureAIMetrics(t *testing.T) {
+	app := NewApplication()
+	a := NewAggregator(app)
+	a.OnExecutorAdded("1", "worker-1", 4, 0)
+	a.OnStageSubmitted(3, 0, "shuffle", 2, 0)
+	a.OnTaskEnd(TaskEnd{
+		StageID:     3,
+		Attempt:     0,
+		ExecutorID:  "1",
+		LaunchMs:    1000,
+		FinishMs:    2000,
+		Speculative: true,
+		Metrics: TaskMetrics{
+			RunMs:                      600,
+			ExecutorCPUMs:              420,
+			ExecutorDeserializeMs:      50,
+			ResultSerializationMs:      25,
+			GettingResultMs:            10,
+			ResultSizeBytes:            4096,
+			PeakExecutionMemoryBytes:   128 << 20,
+			InputRecords:               10,
+			OutputBytes:                2048,
+			OutputRecords:              4,
+			ShuffleLocalBytesRead:      100,
+			ShuffleRemoteBytesRead:     900,
+			ShuffleTotalBlocksFetched:  9,
+			ShuffleLocalBlocksFetched:  1,
+			ShuffleRemoteBlocksFetched: 8,
+			ShuffleRecordsRead:         99,
+			ShuffleWriteRecords:        7,
+		},
+	})
+	st := app.Stages[StageKey{ID: 3, Attempt: 0}]
+	if st.TotalTaskDurationMs != 1000 {
+		t.Fatalf("TotalTaskDurationMs=%d want 1000", st.TotalTaskDurationMs)
+	}
+	if st.TotalSchedulerDelayMs != 315 {
+		t.Fatalf("TotalSchedulerDelayMs=%d want 315", st.TotalSchedulerDelayMs)
+	}
+	if st.TotalExecutorCPUMs != 420 || app.TotalExecutorCPUMs != 420 {
+		t.Fatalf("executor cpu stage/app=%d/%d want 420/420", st.TotalExecutorCPUMs, app.TotalExecutorCPUMs)
+	}
+	if st.TotalShuffleReadBytes != 1000 || st.TotalShuffleRemoteReadBytes != 900 || st.TotalShuffleLocalReadBytes != 100 {
+		t.Fatalf("shuffle read bytes local/remote/total=%d/%d/%d", st.TotalShuffleLocalReadBytes, st.TotalShuffleRemoteReadBytes, st.TotalShuffleReadBytes)
+	}
+	if st.SpeculativeTasks != 1 || app.SpeculativeTasks != 1 {
+		t.Fatalf("speculative stage/app=%d/%d want 1/1", st.SpeculativeTasks, app.SpeculativeTasks)
+	}
+	if st.MaxResultSizeBytes != 4096 || st.PeakExecutionMemoryBytes != 128<<20 {
+		t.Fatalf("max result/peak memory=%d/%d", st.MaxResultSizeBytes, st.PeakExecutionMemoryBytes)
+	}
+	if app.TotalOutputBytes != 2048 || st.TotalOutputRecords != 4 || st.TotalShuffleReadRecords != 99 || st.TotalShuffleWriteRecords != 7 {
+		t.Fatalf("records/output aggregation wrong: appOutput=%d stage=%+v", app.TotalOutputBytes, st)
+	}
+	exec := app.Executors["1"]
+	if exec.TotalSchedulerDelayMs != 315 || exec.SpeculativeTasks != 1 {
+		t.Fatalf("executor aggregation wrong: %+v", exec)
+	}
+}
+
 func TestOnEnvironmentUpdateAccumulates(t *testing.T) {
 	app := NewApplication()
 	a := NewAggregator(app)
