@@ -80,7 +80,7 @@ hdfs:
   user: hadoop
   conf_dir: /etc/hadoop/conf           # optional; auto-discovered via HADOOP_CONF_DIR / HADOOP_HOME if empty
 shs:
-  timeout: 5m  # default; production EventLog zips often need minutes — first-fetch progress is printed to stderr (silence with SPARK_CLI_QUIET=1)
+  timeout: 5m  # default; production EventLog zips often need minutes — first fetch emits SHS_DOWNLOAD_START / SHS_DOWNLOAD_READY JSON events on stderr (silence with SPARK_CLI_QUIET=1)
 tls:
   insecure_skip_verify: false  # set true only for HTTPS gateways with self-signed certificates
 yarn:

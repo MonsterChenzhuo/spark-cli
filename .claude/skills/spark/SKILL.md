@@ -130,7 +130,7 @@ Errors go to **stderr** as `{"error": {"code": "...", "message": "...", "hint": 
 - `--yarn-log-types <type,type>` — for `yarn-logs`, select log files such as `stderr,gc.log.0.current`; `gc` expands common GC log names. Use with `--executor-id <id>` when heartbeat timeout may actually be executor Full GC.
 - `--executor-id <id>` — for `driver-thread-dump`, targets Spark executor threads (empty defaults to driver); for `paimon-diagnostics`, chooses which executor's Paimon thread-dump JSON to fetch (empty defaults to driver); for `yarn-logs`, filters through Spark UI executors API and fetches that executor's container logs when available.
 - `--sql-detail truncate|full|none` — `sql_executions` 中 description 的呈现:**默认 truncate**(前 500 个 rune,过长加 `...(truncated, total <N> chars)` 标记),`full` 还原原始 SQL,`none` 整段 omit。也可用 `SPARK_CLI_SQL_DETAIL` 环境变量 / yaml `sql.detail` 覆盖。
-- `--no-progress` — 不打 SHS zip 下载进度提示(优先级高于 SPARK_CLI_QUIET 与 TTY 检测)。
+- `--no-progress` — 不输出 SHS zip `SHS_DOWNLOAD_START` / `SHS_DOWNLOAD_READY` JSON 进度事件(优先级高于 SPARK_CLI_QUIET 与 TTY 检测)。
 - `--tls-insecure-skip-verify` — HTTPS SHS/YARN gateway 使用自签证书时跳过证书校验;也可用 `SPARK_CLI_TLS_INSECURE_SKIP_VERIFY=true` 或 yaml `tls.insecure_skip_verify: true`。只在确认是内网可信 gateway 时使用。
 - SHS zip 持久化:同一 appID 的 zip 在 `<cache_dir>/shs/<host>/<appID>_<lastUpdated>.zip` 复用,attempt 更新时旧文件自动 sweep;`--no-cache` 旁路。
 - `SPARK_CLI_QUIET` — `1`/`true` 强制静默,`0`/`false` 强制保留进度,**未设时按 stdout 是否 TTY 自动决定**(管道 / 重定向 / agent 调用默认静默,交互终端默认显示)。

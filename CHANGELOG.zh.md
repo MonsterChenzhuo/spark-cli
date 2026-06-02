@@ -10,6 +10,7 @@
 - **`config init` 改为非交互**:写入配置后返回 JSON 元数据,不再从 stdin 读取提示输入。
 - **非错误 stderr 改为 JSON event**:guided 预检说明、SHS 下载进度、cache warning 现在按行输出 `{"event":{"code","level","message","fields"}}`,不再输出自然语言文本;错误仍保持 `{"error":...}`。
 - **工具命令 `--format` 错误保留可执行 `use json` hint**:直接包级调用和 root CLI 包装都会返回 `FLAG_INVALID`,不再退化成泛化 help 提示。
+- **agent 文档增加 SHS 进度口径守门**:README 与内置 skill 现在明确描述 `SHS_DOWNLOAD_START` / `SHS_DOWNLOAD_READY` JSON event,不再沿用文本进度提示说法。
 - **release/install 同时覆盖两套 agent skill**:归档包含 `.agents/skills/spark/SKILL.md` 与 `.claude/skills/spark/SKILL.md`;`scripts/install.sh` 默认通过 `AGENTS_SKILL_DIR` 与 `CLAUDE_SKILL_DIR` 镜像两边,`SKILL_DIR` 作为旧 Claude 目录别名保留。
 
 ### Spark 配置诊断

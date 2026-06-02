@@ -10,6 +10,7 @@
 - **`config init` is non-interactive** and returns JSON metadata after writing the config, removing stdin prompts from agent workflows.
 - **Non-error stderr is JSON events.** Guided preflight notes, SHS download progress, and cache warnings now emit newline-delimited `{"event":{"code","level","message","fields"}}` records instead of human text; errors remain `{"error":...}`.
 - **Utility `--format` errors now preserve the actionable `use json` hint** through direct package calls and the root CLI wrapper, instead of degrading to the generic help hint.
+- **Agent docs now guard SHS progress wording** so README and bundled skills describe `SHS_DOWNLOAD_START` / `SHS_DOWNLOAD_READY` JSON events, not text progress lines.
 - **Release/install now covers both bundled agent skills.** Archives include `.agents/skills/spark/SKILL.md` and `.claude/skills/spark/SKILL.md`; `scripts/install.sh` mirrors both by default via `AGENTS_SKILL_DIR` and `CLAUDE_SKILL_DIR` (`SKILL_DIR` remains a legacy Claude alias).
 
 ### Spark configuration diagnostics
