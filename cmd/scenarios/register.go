@@ -33,6 +33,9 @@ func newScenarioCmd(name, short string) *cobra.Command {
 			return nil
 		},
 	}
+	if name == "diagnose" {
+		c.Flags().BoolVar(&state.Guided, "guided", state.Guided, "Run diagnose SOP preflight: confirm/select cluster before reading EventLogs")
+	}
 	return c
 }
 

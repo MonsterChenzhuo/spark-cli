@@ -315,8 +315,10 @@ default. Common diagnostic flags include `--top N`, `--dry-run`, `--guided`, `--
 `--yarn-log-types`, `--executor-id`, and `--sql-detail truncate|full|none`
 (default `truncate` — first 500 runes of the SQL description with a
 `...(truncated, total <N> chars)` marker; `full` keeps the original; `none`
-omits the entire `sql_executions` map). Shell completion output is disabled so
-successful stdout stays JSON-only.
+omits the entire `sql_executions` map). `--guided` is diagnose-only:
+`spark-cli diagnose <appId> --guided`. Other commands reject it with
+`FLAG_INVALID` instead of silently ignoring the flag. Shell completion output
+is disabled so successful stdout stays JSON-only.
 
 ## For AI agents
 

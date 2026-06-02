@@ -298,7 +298,9 @@ spark-cli paimon-diagnostics application_1772605260987_20765 \
 `--yarn-base-urls`、`--yarn-log-bytes`、`--yarn-log-types`、`--executor-id`、
 `--sql-detail truncate|full|none`(默认 `truncate` 把 SQL description 截到前
 500 个 rune 加 `...(truncated, total <N> chars)`;`full` 还原原始 SQL,`none`
-让整段 `sql_executions` 缺失)。Shell completion 输出已禁用,保证成功 stdout
+让整段 `sql_executions` 缺失)。`--guided` 只属于 `diagnose`:
+`spark-cli diagnose <appId> --guided`。其他命令误传时会直接返回
+`FLAG_INVALID`,不再静默忽略。Shell completion 输出已禁用,保证成功 stdout
 只保留 JSON。
 
 ## 给 AI agent

@@ -121,7 +121,7 @@ Errors go to **stderr** as `{"error": {"code": "...", "message": "...", "hint": 
 - `--format json` — default `json`; non-json formats return FLAG_INVALID
 - `--top N` — for `slow-stages` / `data-skew` / `gc-pressure` / `native-io`
 - `--dry-run` — locate the log without parsing (fast sanity check)
-- `--guided` — for `diagnose`, confirm/select a named cluster before reading EventLogs; preflight notes go to stderr as `{"event":...}` JSON lines and stdout remains the diagnose envelope
+- `--guided` — **diagnose-only**; confirm/select a named cluster before reading EventLogs. Preflight notes go to stderr as `{"event":...}` JSON lines and stdout remains the diagnose envelope. Other commands reject `--guided` with `FLAG_INVALID` instead of silently ignoring it.
 - `--cache-dir <path>` — persistent cache dir (default `~/.cache/spark-cli`); cached runs report `parsed_events: 0`
 - `--no-cache` — bypass the parsed-application cache for this invocation (no read, no write)
 - `--shs-timeout <duration>` — HTTP timeout for `shs://` / `shs+https://` log-dirs (default `5m`;生产 zip 几个 GB 是常态,失败时 hint 直接告知此参数)

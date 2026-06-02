@@ -11,6 +11,7 @@
 - **非错误 stderr 改为 JSON event**:guided 预检说明、SHS 下载进度、cache warning 现在按行输出 `{"event":{"code","level","message","fields"}}`,不再输出自然语言文本;错误仍保持 `{"error":...}`。
 - **嵌入式调用方现在也能收到 `CACHE_WARNING`**:`cmd.RunWith(...)` / `runner.Run(...)` 传入的 stderr writer 不再被 cache 层绕过;cache mkdir/损坏告警会和 guided 预检、SHS 进度一样按 JSON event 落到调用方 buffer。
 - **工具命令 `--format` 错误保留可执行 `use json` hint**:直接包级调用和 root CLI 包装都会返回 `FLAG_INVALID`,不再退化成泛化 help 提示。
+- **`--guided` 改为 diagnose 专属 flag**:root help 不再暴露它,`spark-cli diagnose <appId> --guided` 仍按原 SOP 工作;其他命令误传时会直接返回 `FLAG_INVALID`,不再静默忽略。
 - **agent 文档增加 SHS 进度口径守门**:README 与内置 skill 现在明确描述 `SHS_DOWNLOAD_START` / `SHS_DOWNLOAD_READY` JSON event,不再沿用文本进度提示说法。
 - **release/install 同时覆盖两套 agent skill**:归档包含 `.agents/skills/spark/SKILL.md` 与 `.claude/skills/spark/SKILL.md`;`scripts/install.sh` 默认通过 `AGENTS_SKILL_DIR` 与 `CLAUDE_SKILL_DIR` 镜像两边,`SKILL_DIR` 作为旧 Claude 目录别名保留。
 
@@ -30,6 +31,7 @@
 - **新增命名集群配置**:可在 `config.yaml` 用 `active_cluster` 与 `clusters` 把 Spark History Server EventLog 来源和 YARN RM/gateway URL 沉淀为同一个本地集群单元,避免 SHS 与 YARN 手动分别传参时串到不同集群。
 - **新增 root flag `--cluster <name>`**:单次命令选择一个已配置集群。默认应用 `active_cluster`;显式 `--log-dirs`、`--yarn-base-urls`、`--shs-timeout` 仍会在集群选择后覆盖,适合临时调试。
 - **新增 `diagnose --guided` SOP 预检**:读取 EventLog 前先确认集群选择。只有一个 cluster 时自动选择;多个 cluster 但没有 `--cluster` / `active_cluster` 时返回错误;完全没有 source 时给出 `config cluster add ... --activate` 指引;stdout 仍保持原 `diagnose` JSON 信封,预检说明以 JSON event 写 stderr。
+- **`--guided` 在 CLI 表面改为 diagnose 专属 flag**:`spark-cli diagnose --help` 会展示它,其他命令若误传 `--guided` 会直接返回 `FLAG_INVALID`,不再静默接受一个无效果参数。
 - **新增 `spark-cli config cluster add|list`**:用于写入和查看本地命名集群。示例:`config cluster add prod --log-dirs shs://... --yarn-base-urls http://... --activate` 会新增或更新 profile,并可设为默认集群。
 - **SHS/YARN profile 支持 HTTPS gateway**:`--log-dirs` 新增 `shs+https://host[:port][/path]`;`tls.insecure_skip_verify`、`SPARK_CLI_TLS_INSECURE_SKIP_VERIFY`、`--tls-insecure-skip-verify` 以及 `config cluster add --tls-insecure-skip-verify` 用于自签证书内网 gateway。
 - **`spark-cli config show` 展示 `active_cluster`、`selected_cluster`、`clusters`**:JSON 中能看到当前有效配置来自哪个集群,便于 agent 流程确认 `log_dirs` / `yarn.base_urls` 的来源。

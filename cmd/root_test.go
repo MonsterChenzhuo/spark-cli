@@ -38,6 +38,39 @@ func TestGuidedDiagnoseFlagWiresThroughRootCommand(t *testing.T) {
 	}
 }
 
+func TestGuidedFlagRejectedOutsideDiagnose(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "app-summary", args: []string{"app-summary", "application_1_14", "--guided", "--dry-run"}},
+		{name: "config-show", args: []string{"config", "show", "--guided"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			rc := RunWith(context.Background(), tc.args, &stdout, &stderr)
+			if rc != 2 {
+				t.Fatalf("rc=%d want 2 stderr=%s stdout=%s", rc, stderr.String(), stdout.String())
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout should be empty for invalid guided usage, got %s", stdout.String())
+			}
+			var got struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(stderr.Bytes(), &got); err != nil {
+				t.Fatalf("stderr should be JSON error: %v\n%s", err, stderr.String())
+			}
+			if got.Error.Code != "FLAG_INVALID" || !strings.Contains(got.Error.Message, "unknown flag: --guided") {
+				t.Fatalf("unexpected guided rejection: %s", stderr.String())
+			}
+		})
+	}
+}
+
 func TestHelpPrintsJSON(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	rc := RunWith(context.Background(), []string{"--help"}, &stdout, &stderr)
@@ -68,6 +101,32 @@ func TestHelpPrintsJSON(t *testing.T) {
 	}
 	if !hasNamedFlag(got.Flags, "format") {
 		t.Fatalf("help flags missing format: %+v", got.Flags)
+	}
+	if hasNamedFlag(got.Flags, "guided") {
+		t.Fatalf("root help should not expose diagnose-only guided flag: %+v", got.Flags)
+	}
+}
+
+func TestDiagnoseHelpIncludesGuidedFlag(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	rc := RunWith(context.Background(), []string{"diagnose", "--help"}, &stdout, &stderr)
+	if rc != 0 {
+		t.Fatalf("rc=%d stderr=%s", rc, stderr.String())
+	}
+	var got struct {
+		Name  string `json:"name"`
+		Flags []struct {
+			Name string `json:"name"`
+		} `json:"flags"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout should be json: %v\n%s", err, stdout.String())
+	}
+	if got.Name != "diagnose" {
+		t.Fatalf("unexpected help response: %+v", got)
+	}
+	if !hasNamedFlag(got.Flags, "guided") {
+		t.Fatalf("diagnose help should expose guided flag: %+v", got.Flags)
 	}
 }
 

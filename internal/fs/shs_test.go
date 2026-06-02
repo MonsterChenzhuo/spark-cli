@@ -7,6 +7,7 @@ import (
 	stderrors "errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -104,7 +105,16 @@ func newSHSTestServer(t *testing.T, apps map[string]*shsApp, counts *int64, dela
 		}
 		http.NotFound(w, r)
 	})
-	return httptest.NewServer(mux)
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp4: %v", err)
+	}
+	srv := &httptest.Server{
+		Listener: ln,
+		Config:   &http.Server{Handler: mux},
+	}
+	srv.Start()
+	return srv
 }
 
 func buildZip(t *testing.T, files map[string][]byte) []byte {
@@ -144,39 +154,22 @@ func shsHTTPSBase(srv *httptest.Server) string {
 
 func TestSHSProgressWritesJSONEvents(t *testing.T) {
 	appID := "application_progress_1"
-	base := "shs://history.example.com:18080"
-	zipBody := buildZip(t, map[string][]byte{appID: []byte("{}\n")})
+	apps := map[string]*shsApp{
+		appID: {
+			Attempts: []shsAttempt{{AttemptID: "1", LastUpdatedEpoch: 100}},
+			zips: map[string][]byte{
+				"1": buildZip(t, map[string][]byte{appID: []byte("{}\n")}),
+			},
+		},
+	}
+	srv := newSHSTestServer(t, apps, nil, 0, false)
+	defer srv.Close()
 
+	base := shsBase(srv)
 	s := NewSHS(base, 5*time.Second, SHSOptions{Quiet: false})
 	defer func() { _ = s.Close() }()
 	var stderr bytes.Buffer
 	s.stderr = &stderr
-	s.httpClient = &http.Client{
-		Timeout: 5 * time.Second,
-		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			switch req.URL.String() {
-			case "http://history.example.com:18080/api/v1/applications/" + appID:
-				body := `{"id":"` + appID + `","attempts":[{"attemptId":"1","lastUpdatedEpoch":100}]}`
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Header:     http.Header{"Content-Type": []string{"application/json"}},
-					Body:       io.NopCloser(strings.NewReader(body)),
-				}, nil
-			case "http://history.example.com:18080/api/v1/applications/" + appID + "/1/logs":
-				return &http.Response{
-					StatusCode:    http.StatusOK,
-					Header:        http.Header{"Content-Type": []string{"application/zip"}, "Content-Length": []string{fmt.Sprintf("%d", len(zipBody))}},
-					ContentLength: int64(len(zipBody)),
-					Body:          io.NopCloser(bytes.NewReader(zipBody)),
-				}, nil
-			default:
-				return &http.Response{
-					StatusCode: http.StatusNotFound,
-					Body:       io.NopCloser(strings.NewReader("not found")),
-				}, nil
-			}
-		}),
-	}
 
 	if _, err := s.List(base, appID); err != nil {
 		t.Fatalf("List: %v", err)
@@ -257,12 +250,6 @@ func hasSHSProgressEvent(events []shsProgressEvent, code, appID string) bool {
 		}
 	}
 	return false
-}
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return fn(req)
 }
 
 func TestSHSPreservesGatewayPathPrefix(t *testing.T) {
