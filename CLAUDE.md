@@ -21,7 +21,9 @@ Guidance for Claude Code (and other AI agents) working in this repository.
 - `native-io` 解析 Paimon `SparkListenerNativeIOEvent`,同时支持顶层 `native_io_*` 字段和旧版内嵌 `eventJson`。`summary` 给 event/operation 数、reader/export/error 数、total rows/bytes/duration、`top_phases`、`top_operations`;`data` 按 `duration_ms` 倒序输出 `--top` 条 native IO 事件,包含 Spark 上下文、文件/object 字段、吞吐、memory、原始数值 `metrics` 和 `verdict`。
 - `diagnose --guided` 是诊断 SOP 入口:先做命名集群预检,只有一个 cluster 时自动选择,多个 cluster 未选择时返回 `FLAG_INVALID`,没有 cluster/log_dirs 时返回带 `config cluster add ... --activate` 的 `CONFIG_MISSING` hint。预检说明以 `{"event":...}` JSON 行写 stderr,stdout 仍然是原 `diagnose` 的单一 JSON envelope。
 - `app-summary` 的 `data` row 同时带 **三个** stage 切面,**永远要三个一起看**才不漏瓶颈:`top_stages_by_duration[]`(按 wall 倒序,包含 driver-side 等待 stage),`top_busy_stages[]`(过滤 `busy_ratio > 0.8` 后按 `busy_ratio * duration` 倒序,真正 executor 吃 CPU 的热点),**`top_io_bound_stages[]`**(`busy_ratio < 0.8` 但 `spill_disk_gb >= 0.5` 或 `shuffle_read_gb >= 1.0` 的 stage,按 wall_share 倒序 limit 3)。`top_io_bound_stages` 是 `top_busy_stages` 的互补切面 —— spill 主导的 stage executor 都在等盘,busy_ratio 被压得很低,`top_busy_stages` 阈值看不到但才是真瓶颈(实测 stage spill 9.86 GB / busy_ratio 0.048,只看 top_busy_stages 完全错过)。
-- `slow-stages` row 三档 `*_mb_per_task`(`input_mb_per_task` / `shuffle_read_mb_per_task` / `shuffle_write_mb_per_task`)。读侧 / 写侧 / source-scan stage 分别看对应字段判 partition 粒度,`NumTasks=0` 时三个一律 0
+- `app-summary` 还输出面向 AI 分流的全局比例:`avg_active_tasks`、`executor_cpu_ratio`、`scheduler_delay_ratio`、`remote_shuffle_read_ratio`、`speculative_tasks`、`peak_execution_memory_gb`。这些字段用于先判断瓶颈属于 CPU 忙、调度等待、远端 shuffle、speculative straggler 还是内存压力,不要把它们写成人类报表式说明。
+- `slow-stages` row 三档 `*_mb_per_task`(`input_mb_per_task` / `shuffle_read_mb_per_task` / `shuffle_write_mb_per_task`)。读侧 / 写侧 / source-scan stage 分别看对应字段判 partition 粒度,`NumTasks=0` 时三个一律 0。row 同时带 AI 归因字段:`executor_cpu_ratio`、`scheduler_delay_ms`、`scheduler_delay_ratio`、`remote_shuffle_read_ratio`、`shuffle_remote_blocks`、`shuffle_total_blocks`、records 计数、`peak_execution_memory_gb`、`speculative_tasks`;这些字段与 `wall_share` 一起看,按 ROI 决定下钻。
+- `diagnose` 新增 `scheduler_delay` / `remote_shuffle` / `speculative_tasks` finding,都按 `wall_share` 选 primary stage。它们是 AI 分流信号:调度等待先查 executor 供给 / locality / 小 task,远端 shuffle 先查数据本地性 / executor 丢失 / 网络, speculative 先查慢节点 / 数据倾斜 / GC 抖动。
 
 ## 仓库布局
 
@@ -36,7 +38,7 @@ Guidance for Claude Code (and other AI agents) working in this repository.
 | `internal/model/` | Application/Stage/Executor/Job 聚合模型 + Aggregator |
 | `internal/stats/` | t-digest 分位数封装 |
 | `internal/scenario/` | 场景纯函数 + Envelope 类型 |
-| `internal/rules/` | Rule 接口 + 6 条规则 (skew/gc/spill/failed/tiny/idle_stage) |
+| `internal/rules/` | Rule 接口 + 10 条规则 (skew/gc/spill/scheduler_delay/remote_shuffle/speculative/failed/tiny/idle/executor_supply) |
 | `internal/output/` | JSON formatter |
 | `tests/e2e/` | 通过 `cmd.RunWith` 跑全场景 + 错误路径 |
 | `tests/testdata/tiny_app.json` | 10 行合成 EventLog,所有 E2E 共用 |

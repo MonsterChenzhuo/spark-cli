@@ -93,6 +93,41 @@ func TestAppSummaryIncludesExecutorRequestConfig(t *testing.T) {
 	}
 }
 
+func TestAppSummaryIncludesSparkMeasureAISignals(t *testing.T) {
+	app := model.NewApplication()
+	app.StartMs = 0
+	app.EndMs = 1_000
+	app.DurationMs = 1_000
+	app.TotalRunMs = 3_000
+	app.TotalTaskDurationMs = 1_000
+	app.TotalExecutorCPUMs = 1_260
+	app.TotalSchedulerDelayMs = 315
+	app.TotalShuffleReadBytes = 1_000
+	app.TotalShuffleRemoteReadBytes = 900
+	app.SpeculativeTasks = 1
+	app.PeakExecutionMemoryBytes = 2 * 1024 * 1024 * 1024
+
+	row := AppSummary(app)
+	if row.AvgActiveTasks < 2.99 || row.AvgActiveTasks > 3.01 {
+		t.Fatalf("avg_active_tasks=%v want ~3.0", row.AvgActiveTasks)
+	}
+	if row.ExecutorCPURatio < 0.41 || row.ExecutorCPURatio > 0.43 {
+		t.Fatalf("executor_cpu_ratio=%v want ~0.42", row.ExecutorCPURatio)
+	}
+	if row.SchedulerDelayRatio < 0.31 || row.SchedulerDelayRatio > 0.32 {
+		t.Fatalf("scheduler_delay_ratio=%v want ~0.315", row.SchedulerDelayRatio)
+	}
+	if row.RemoteShuffleReadRatio < 0.89 || row.RemoteShuffleReadRatio > 0.91 {
+		t.Fatalf("remote_shuffle_read_ratio=%v want ~0.9", row.RemoteShuffleReadRatio)
+	}
+	if row.SpeculativeTasks != 1 {
+		t.Fatalf("speculative_tasks=%d want 1", row.SpeculativeTasks)
+	}
+	if row.PeakExecutionMemoryGB != 2 {
+		t.Fatalf("peak_execution_memory_gb=%v want 2", row.PeakExecutionMemoryGB)
+	}
+}
+
 func TestAppSummaryTopStagesIncludeBusyRatio(t *testing.T) {
 	app := model.NewApplication()
 	app.MaxConcurrentExecutors = 10

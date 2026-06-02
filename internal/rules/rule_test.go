@@ -260,6 +260,77 @@ func TestSkewRuleStillSkipsTrueDriverSideIdleStage(t *testing.T) {
 	}
 }
 
+func TestSchedulerDelayRuleTriggers(t *testing.T) {
+	app := model.NewApplication()
+	app.DurationMs = 1_000_000
+	s := model.NewStage(1, 0, "scheduler-delay", 100, 0)
+	s.SubmitMs = 0
+	s.CompleteMs = 300_000
+	s.TotalTaskDurationMs = 200_000
+	s.TotalSchedulerDelayMs = 80_000
+	s.Status = "succeeded"
+	app.Stages[model.StageKey{ID: 1}] = s
+
+	f := SchedulerDelayRule{}.Eval(app)
+	if f.Severity == "ok" {
+		t.Fatalf("severity=ok want scheduler_delay finding")
+	}
+	if got, _ := f.Evidence["stage_id"].(int); got != 1 {
+		t.Fatalf("stage_id=%v want 1", got)
+	}
+	if got, _ := f.Evidence["scheduler_delay_ratio"].(float64); got != 0.4 {
+		t.Fatalf("scheduler_delay_ratio=%v want 0.4", got)
+	}
+}
+
+func TestRemoteShuffleRuleTriggers(t *testing.T) {
+	app := model.NewApplication()
+	app.DurationMs = 1_000_000
+	s := model.NewStage(2, 0, "remote-shuffle", 100, 0)
+	s.SubmitMs = 0
+	s.CompleteMs = 250_000
+	s.TotalShuffleReadBytes = 2 * 1024 * 1024 * 1024
+	s.TotalShuffleRemoteReadBytes = 1536 * 1024 * 1024
+	s.Status = "succeeded"
+	app.Stages[model.StageKey{ID: 2}] = s
+
+	f := RemoteShuffleRule{}.Eval(app)
+	if f.Severity == "ok" {
+		t.Fatalf("severity=ok want remote_shuffle finding")
+	}
+	if got, _ := f.Evidence["stage_id"].(int); got != 2 {
+		t.Fatalf("stage_id=%v want 2", got)
+	}
+	if got, _ := f.Evidence["remote_shuffle_read_ratio"].(float64); got != 0.75 {
+		t.Fatalf("remote_shuffle_read_ratio=%v want 0.75", got)
+	}
+}
+
+func TestSpeculativeTasksRuleTriggers(t *testing.T) {
+	app := model.NewApplication()
+	app.DurationMs = 1_000_000
+	s := model.NewStage(3, 0, "speculative", 100, 0)
+	s.SubmitMs = 0
+	s.CompleteMs = 200_000
+	s.SpeculativeTasks = 8
+	s.Status = "succeeded"
+	for i := 0; i < 100; i++ {
+		s.TaskDurations.Add(100)
+	}
+	app.Stages[model.StageKey{ID: 3}] = s
+
+	f := SpeculativeTasksRule{}.Eval(app)
+	if f.Severity == "ok" {
+		t.Fatalf("severity=ok want speculative_tasks finding")
+	}
+	if got, _ := f.Evidence["stage_id"].(int); got != 3 {
+		t.Fatalf("stage_id=%v want 3", got)
+	}
+	if got, _ := f.Evidence["speculative_ratio"].(float64); got != 0.08 {
+		t.Fatalf("speculative_ratio=%v want 0.08", got)
+	}
+}
+
 func TestSkewRuleSimilarStagesAbsentWhenSingleHit(t *testing.T) {
 	app := model.NewApplication()
 	app.DurationMs = 1_000_000

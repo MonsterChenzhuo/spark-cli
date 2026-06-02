@@ -9,11 +9,11 @@ import (
 func TestDiagnoseEmitsOKForNonTriggers(t *testing.T) {
 	app := model.NewApplication()
 	findings, sum := Diagnose(app)
-	if len(findings) != 7 {
-		t.Fatalf("findings=%d want 7", len(findings))
+	if len(findings) != 10 {
+		t.Fatalf("findings=%d want 10", len(findings))
 	}
-	if sum.OK != 7 {
-		t.Errorf("ok=%d want 7", sum.OK)
+	if sum.OK != 10 {
+		t.Errorf("ok=%d want 10", sum.OK)
 	}
 	if len(sum.TopFindingsByImpact) != 0 {
 		t.Errorf("top_findings_by_impact should be empty when no rules trigger, got %+v", sum.TopFindingsByImpact)

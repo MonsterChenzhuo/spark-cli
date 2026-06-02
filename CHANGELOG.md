@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### SparkMeasure AI metrics
+
+- **Absorbed EventLog-backed sparkMeasure metric semantics for AI agents.** The model now aggregates executor CPU time, scheduler delay, result size, peak execution memory, records, shuffle block counts, local/remote shuffle bytes, and speculative task counts from `SparkListenerTaskEnd`.
+- **`app-summary` adds compact AI routing fields**: `avg_active_tasks`, `executor_cpu_ratio`, `scheduler_delay_ratio`, `remote_shuffle_read_ratio`, `speculative_tasks`, and `peak_execution_memory_gb`.
+- **`slow-stages` adds per-stage AI attribution fields** including scheduler delay, executor CPU ratio, remote shuffle ratio, shuffle blocks/records, peak execution memory, and speculative task count.
+- **`diagnose` adds `scheduler_delay`, `remote_shuffle`, and `speculative_tasks` rules**, all tied to `stage_id` / `wall_share` so agents can route the next probe by wall impact instead of severity text.
+
 ### AI-only JSON contract
 
 - **BREAKING — successful stdout is JSON-only.** EventLog scenarios and live diagnostics only accept `--format json`; `table`, `markdown`, and text output paths now return `FLAG_INVALID`. Utility commands (`config`, `cache`, `self-update`, `version`) also emit command-specific JSON by default.

@@ -14,18 +14,30 @@ type SlowStageRow struct {
 	// WallShare = stage.duration / app.duration,直接给 agent ROI 信号,免得
 	// 再用 envelope.app_duration_ms 自己除。app.DurationMs == 0(没 ApplicationEnd
 	// 事件)时为 0。
-	WallShare      float64 `json:"wall_share"`
-	Tasks          int64   `json:"tasks"`
-	FailedTasks    int64   `json:"failed_tasks"`
-	P50TaskMs      int64   `json:"p50_task_ms"`
-	P99TaskMs      int64   `json:"p99_task_ms"`
-	InputGB        float64 `json:"input_gb"`
-	ShuffleReadGB  float64 `json:"shuffle_read_gb"`
-	ShuffleWriteGB float64 `json:"shuffle_write_gb"`
-	SpillDiskGB    float64 `json:"spill_disk_gb"`
-	GCMs           int64   `json:"gc_ms"`
-	GCRatio        float64 `json:"gc_ratio"`
-	BusyRatio      float64 `json:"busy_ratio"`
+	WallShare              float64 `json:"wall_share"`
+	Tasks                  int64   `json:"tasks"`
+	FailedTasks            int64   `json:"failed_tasks"`
+	P50TaskMs              int64   `json:"p50_task_ms"`
+	P99TaskMs              int64   `json:"p99_task_ms"`
+	InputGB                float64 `json:"input_gb"`
+	ShuffleReadGB          float64 `json:"shuffle_read_gb"`
+	ShuffleWriteGB         float64 `json:"shuffle_write_gb"`
+	SpillDiskGB            float64 `json:"spill_disk_gb"`
+	GCMs                   int64   `json:"gc_ms"`
+	GCRatio                float64 `json:"gc_ratio"`
+	BusyRatio              float64 `json:"busy_ratio"`
+	ExecutorCPURatio       float64 `json:"executor_cpu_ratio"`
+	SchedulerDelayMs       int64   `json:"scheduler_delay_ms"`
+	SchedulerDelayRatio    float64 `json:"scheduler_delay_ratio"`
+	RemoteShuffleReadRatio float64 `json:"remote_shuffle_read_ratio"`
+	ShuffleRemoteBlocks    int64   `json:"shuffle_remote_blocks"`
+	ShuffleTotalBlocks     int64   `json:"shuffle_total_blocks"`
+	RecordsRead            int64   `json:"records_read"`
+	RecordsWritten         int64   `json:"records_written"`
+	ShuffleRecordsRead     int64   `json:"shuffle_records_read"`
+	ShuffleRecordsWritten  int64   `json:"shuffle_records_written"`
+	PeakExecutionMemoryGB  float64 `json:"peak_execution_memory_gb"`
+	SpeculativeTasks       int64   `json:"speculative_tasks"`
 	// 三档 *_mb_per_task 让用户在不同侧的 stage 都能一眼看到分区粒度:
 	//   - shuffle-read 端 stage:看 shuffle_read_mb_per_task,过粗 → spill / OOM
 	//   - shuffle-write 端 stage(map / aggregate 写出):看 shuffle_write_mb_per_task
@@ -43,6 +55,10 @@ func SlowStagesColumns() []string {
 		"p50_task_ms", "p99_task_ms", "input_gb", "shuffle_read_gb",
 		"shuffle_write_gb", "spill_disk_gb", "gc_ms", "gc_ratio",
 		"busy_ratio",
+		"executor_cpu_ratio", "scheduler_delay_ms", "scheduler_delay_ratio",
+		"remote_shuffle_read_ratio", "shuffle_remote_blocks", "shuffle_total_blocks",
+		"records_read", "records_written", "shuffle_records_read", "shuffle_records_written",
+		"peak_execution_memory_gb", "speculative_tasks",
 		"input_mb_per_task", "shuffle_read_mb_per_task", "shuffle_write_mb_per_task",
 		"sql_execution_id",
 	}
@@ -57,26 +73,38 @@ func SlowStages(app *model.Application, top int) []SlowStageRow {
 		}
 		sqlID, _ := stageSQL(app, s.ID)
 		rows = append(rows, SlowStageRow{
-			StageID:               s.ID,
-			Attempt:               s.Attempt,
-			Name:                  s.Name,
-			DurationMs:            dur,
-			WallShare:             round3(dataSkewWallShare(s, app)),
-			Tasks:                 int64(s.TaskDurations.Count()),
-			FailedTasks:           int64(s.FailedTasks),
-			P50TaskMs:             int64(s.TaskDurations.Quantile(0.5)),
-			P99TaskMs:             int64(s.TaskDurations.Quantile(0.99)),
-			InputGB:               bytesToGB(s.TotalInputBytes),
-			ShuffleReadGB:         bytesToGB(s.TotalShuffleReadBytes),
-			ShuffleWriteGB:        bytesToGB(s.TotalShuffleWriteBytes),
-			SpillDiskGB:           bytesToGB(s.TotalSpillDisk),
-			GCMs:                  s.TotalGCMs,
-			GCRatio:               gcRatio(s.TotalGCMs, s.TotalRunMs),
-			BusyRatio:             stageBusyRatio(s, app.MaxConcurrentExecutors),
-			InputMBPerTask:        bytesPerTaskToMB(s.TotalInputBytes, s.NumTasks),
-			ShuffleReadMBPerTask:  bytesPerTaskToMB(s.TotalShuffleReadBytes, s.NumTasks),
-			ShuffleWriteMBPerTask: bytesPerTaskToMB(s.TotalShuffleWriteBytes, s.NumTasks),
-			SQLExecutionID:        sqlID,
+			StageID:                s.ID,
+			Attempt:                s.Attempt,
+			Name:                   s.Name,
+			DurationMs:             dur,
+			WallShare:              round3(dataSkewWallShare(s, app)),
+			Tasks:                  int64(s.TaskDurations.Count()),
+			FailedTasks:            int64(s.FailedTasks),
+			P50TaskMs:              int64(s.TaskDurations.Quantile(0.5)),
+			P99TaskMs:              int64(s.TaskDurations.Quantile(0.99)),
+			InputGB:                bytesToGB(s.TotalInputBytes),
+			ShuffleReadGB:          bytesToGB(s.TotalShuffleReadBytes),
+			ShuffleWriteGB:         bytesToGB(s.TotalShuffleWriteBytes),
+			SpillDiskGB:            bytesToGB(s.TotalSpillDisk),
+			GCMs:                   s.TotalGCMs,
+			GCRatio:                gcRatio(s.TotalGCMs, s.TotalRunMs),
+			BusyRatio:              stageBusyRatio(s, app.MaxConcurrentExecutors),
+			ExecutorCPURatio:       ratio(s.TotalExecutorCPUMs, s.TotalRunMs),
+			SchedulerDelayMs:       s.TotalSchedulerDelayMs,
+			SchedulerDelayRatio:    ratio(s.TotalSchedulerDelayMs, s.TotalTaskDurationMs),
+			RemoteShuffleReadRatio: ratio(s.TotalShuffleRemoteReadBytes, s.TotalShuffleReadBytes),
+			ShuffleRemoteBlocks:    s.TotalShuffleRemoteBlocksFetched,
+			ShuffleTotalBlocks:     s.TotalShuffleTotalBlocksFetched,
+			RecordsRead:            s.TotalInputRecords,
+			RecordsWritten:         s.TotalOutputRecords,
+			ShuffleRecordsRead:     s.TotalShuffleReadRecords,
+			ShuffleRecordsWritten:  s.TotalShuffleWriteRecords,
+			PeakExecutionMemoryGB:  bytesToGB(s.PeakExecutionMemoryBytes),
+			SpeculativeTasks:       s.SpeculativeTasks,
+			InputMBPerTask:         bytesPerTaskToMB(s.TotalInputBytes, s.NumTasks),
+			ShuffleReadMBPerTask:   bytesPerTaskToMB(s.TotalShuffleReadBytes, s.NumTasks),
+			ShuffleWriteMBPerTask:  bytesPerTaskToMB(s.TotalShuffleWriteBytes, s.NumTasks),
+			SQLExecutionID:         sqlID,
 		})
 	}
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].DurationMs > rows[j].DurationMs })

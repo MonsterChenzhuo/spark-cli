@@ -59,6 +59,12 @@ type AppSummaryRow struct {
 	TotalGCMs                   int64      `json:"total_gc_ms"`
 	TotalRunMs                  int64      `json:"total_run_ms"`
 	GCRatio                     float64    `json:"gc_ratio"`
+	AvgActiveTasks              float64    `json:"avg_active_tasks"`
+	ExecutorCPURatio            float64    `json:"executor_cpu_ratio"`
+	SchedulerDelayRatio         float64    `json:"scheduler_delay_ratio"`
+	RemoteShuffleReadRatio      float64    `json:"remote_shuffle_read_ratio"`
+	SpeculativeTasks            int64      `json:"speculative_tasks"`
+	PeakExecutionMemoryGB       float64    `json:"peak_execution_memory_gb"`
 	TopStagesByDuration         []TopStage `json:"top_stages_by_duration"`
 	// TopBusyStages 把 `top_stages_by_duration` 里 busy_ratio 接近 0 的 driver-side
 	// 等待 stage 过滤掉,只保留 busy_ratio > 0.8 且按 busy_ratio*duration 倒序的
@@ -85,6 +91,8 @@ func AppSummaryColumns() []string {
 		"total_shuffle_read_gb", "total_shuffle_write_gb",
 		"total_spill_disk_gb",
 		"total_gc_ms", "total_run_ms", "gc_ratio",
+		"avg_active_tasks", "executor_cpu_ratio", "scheduler_delay_ratio",
+		"remote_shuffle_read_ratio", "speculative_tasks", "peak_execution_memory_gb",
 		"top_stages_by_duration",
 		"top_busy_stages",
 		"top_io_bound_stages",
@@ -150,9 +158,17 @@ func AppSummary(app *model.Application) AppSummaryRow {
 		TotalSpillDiskGB:            bytesToGB(app.TotalSpillDisk),
 		TotalGCMs:                   app.TotalGCMs,
 		TotalRunMs:                  app.TotalRunMs,
+		ExecutorCPURatio:            ratio(app.TotalExecutorCPUMs, app.TotalRunMs),
+		SchedulerDelayRatio:         ratio(app.TotalSchedulerDelayMs, app.TotalTaskDurationMs),
+		RemoteShuffleReadRatio:      ratio(app.TotalShuffleRemoteReadBytes, app.TotalShuffleReadBytes),
+		SpeculativeTasks:            app.SpeculativeTasks,
+		PeakExecutionMemoryGB:       bytesToGB(app.PeakExecutionMemoryBytes),
 	}
 	if app.EndMs > app.StartMs {
 		row.DurationMs = app.EndMs - app.StartMs
+	}
+	if row.DurationMs > 0 {
+		row.AvgActiveTasks = ratio(app.TotalRunMs, row.DurationMs)
 	}
 	if app.TotalRunMs > 0 {
 		row.GCRatio = round3(float64(app.TotalGCMs) / float64(app.TotalRunMs))
@@ -308,6 +324,13 @@ func stageBusyRatio(s *model.Stage, maxExec int) float64 {
 const gb = 1024 * 1024 * 1024
 
 func bytesToGB(b int64) float64 { return round3(float64(b) / float64(gb)) }
+
+func ratio(num, den int64) float64 {
+	if den <= 0 {
+		return 0
+	}
+	return round3(float64(num) / float64(den))
+}
 
 func round3(f float64) float64 {
 	x := f * 1000
