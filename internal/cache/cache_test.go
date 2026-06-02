@@ -72,6 +72,22 @@ func TestPutDisabledIsNoop(t *testing.T) {
 	Disabled().Put(src, fs.NewLocal(), newApp("application_1_a"))
 }
 
+func TestNewWithWarningWriterRoutesMkdirFailure(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	c := NewWithWarningWriter(filepath.Join(blocker, "child"), &stderr)
+	if c.Enabled() {
+		t.Fatal("mkdir failure should disable cache")
+	}
+	if !bytes.Contains(stderr.Bytes(), []byte(`"CACHE_WARNING"`)) {
+		t.Fatalf("warning should be routed to provided writer, got %s", stderr.String())
+	}
+}
+
 func TestPutConcurrentSurvives(t *testing.T) {
 	srcDir := t.TempDir()
 	cacheDir := t.TempDir()

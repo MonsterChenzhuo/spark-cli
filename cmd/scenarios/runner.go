@@ -135,7 +135,7 @@ func Run(ctx context.Context, opts Options) int {
 	if err != nil {
 		return writeErr(opts.Stderr, err)
 	}
-	ch := buildCache(cfg, opts.NoCache)
+	ch := buildCache(cfg, opts.NoCache, opts.Stderr)
 
 	start := time.Now()
 	if cached, hit := ch.Get(src, fsys); hit {
@@ -346,7 +346,7 @@ func parseApp(fsys fs.FS, src eventlog.LogSource, appID string) (*model.Applicat
 // buildCache resolves the effective cache directory (config / env / flag chain
 // already merged into cfg.Cache.Dir) and returns a *cache.Cache. NoCache forces
 // Disabled; an empty cfg.Cache.Dir falls back to cache.DefaultDir().
-func buildCache(cfg *config.Config, noCache bool) *cache.Cache {
+func buildCache(cfg *config.Config, noCache bool, stderr io.Writer) *cache.Cache {
 	if noCache {
 		return cache.Disabled()
 	}
@@ -354,7 +354,7 @@ func buildCache(cfg *config.Config, noCache bool) *cache.Cache {
 	if dir == "" {
 		dir = cache.DefaultDir()
 	}
-	return cache.New(dir)
+	return cache.NewWithWarningWriter(dir, stderr)
 }
 
 func render(opts Options, env scenario.Envelope) int {

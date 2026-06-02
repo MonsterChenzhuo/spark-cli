@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/gob"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path"
@@ -22,23 +23,30 @@ import (
 type Cache struct {
 	dir     string
 	enabled bool
+	warnW   io.Writer
 }
 
 // New returns a Cache that writes under dir. Empty dir or MkdirAll failure
 // yields a Disabled cache (Get always misses, Put is a noop).
 func New(dir string) *Cache {
+	return NewWithWarningWriter(dir, os.Stderr)
+}
+
+// NewWithWarningWriter returns a Cache that emits JSON warning events to w.
+// Empty dir or MkdirAll failure yields a Disabled cache.
+func NewWithWarningWriter(dir string, w io.Writer) *Cache {
 	if dir == "" {
 		return Disabled()
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		warn("mkdir %s: %v", dir, err)
+		warn(w, "mkdir %s: %v", dir, err)
 		return Disabled()
 	}
-	return &Cache{dir: dir, enabled: true}
+	return &Cache{dir: dir, enabled: true, warnW: w}
 }
 
 // Disabled returns a no-op cache; Get always misses, Put always skips.
-func Disabled() *Cache { return &Cache{enabled: false} }
+func Disabled() *Cache { return &Cache{enabled: false, warnW: io.Discard} }
 
 // Enabled reports whether the cache is operational.
 func (c *Cache) Enabled() bool { return c.enabled }
@@ -83,7 +91,7 @@ func (c *Cache) Put(src eventlog.LogSource, fsys fs.FS, app *model.Application) 
 	}
 	key, ok := computeSourceKey(src, fsys)
 	if !ok {
-		warn("put: stat source failed")
+		c.warn("put: stat source failed")
 		return
 	}
 	env := cacheEnvelope{
@@ -97,39 +105,39 @@ func (c *Cache) Put(src eventlog.LogSource, fsys fs.FS, app *model.Application) 
 	var buf bytes.Buffer
 	zw, err := zstd.NewWriter(&buf)
 	if err != nil {
-		warn("put: zstd writer: %v", err)
+		c.warn("put: zstd writer: %v", err)
 		return
 	}
 	if err := gob.NewEncoder(zw).Encode(env); err != nil {
 		_ = zw.Close()
-		warn("put: gob encode: %v", err)
+		c.warn("put: gob encode: %v", err)
 		return
 	}
 	if err := zw.Close(); err != nil {
-		warn("put: zstd close: %v", err)
+		c.warn("put: zstd close: %v", err)
 		return
 	}
 
 	final := c.Path(src)
 	tmpf, err := os.CreateTemp(c.dir, filepath.Base(final)+".tmp.*")
 	if err != nil {
-		warn("put: create tmp: %v", err)
+		c.warn("put: create tmp: %v", err)
 		return
 	}
 	tmp := tmpf.Name()
 	if _, err := tmpf.Write(buf.Bytes()); err != nil {
 		_ = tmpf.Close()
 		_ = os.Remove(tmp)
-		warn("put: write %s: %v", tmp, err)
+		c.warn("put: write %s: %v", tmp, err)
 		return
 	}
 	if err := tmpf.Close(); err != nil {
 		_ = os.Remove(tmp)
-		warn("put: close %s: %v", tmp, err)
+		c.warn("put: close %s: %v", tmp, err)
 		return
 	}
 	if err := os.Rename(tmp, final); err != nil {
-		warn("put: rename %s -> %s: %v", tmp, final, err)
+		c.warn("put: rename %s -> %s: %v", tmp, final, err)
 		_ = os.Remove(tmp)
 	}
 }
@@ -154,18 +162,18 @@ func (c *Cache) Get(src eventlog.LogSource, fsys fs.FS) (*model.Application, boo
 	}
 	zr, err := zstd.NewReader(bytes.NewReader(raw))
 	if err != nil {
-		removeCorrupt(final, "zstd reader: %v", err)
+		c.removeCorrupt(final, "zstd reader: %v", err)
 		return nil, false
 	}
 	defer zr.Close()
 
 	var env cacheEnvelope
 	if err := gob.NewDecoder(zr).Decode(&env); err != nil {
-		removeCorrupt(final, "gob decode: %v", err)
+		c.removeCorrupt(final, "gob decode: %v", err)
 		return nil, false
 	}
 	if env.SchemaVersion != currentSchemaVersion {
-		removeCorrupt(final, "schemaVersion %d != %d", env.SchemaVersion, currentSchemaVersion)
+		c.removeCorrupt(final, "schemaVersion %d != %d", env.SchemaVersion, currentSchemaVersion)
 		return nil, false
 	}
 	if env.SourceKey != cur {
@@ -175,8 +183,8 @@ func (c *Cache) Get(src eventlog.LogSource, fsys fs.FS) (*model.Application, boo
 	return env.App, true
 }
 
-func removeCorrupt(p string, format string, args ...any) {
-	warn("get: "+format+"; removing %s", append(args, p)...)
+func (c *Cache) removeCorrupt(p string, format string, args ...any) {
+	c.warn("get: "+format+"; removing %s", append(args, p)...)
 	_ = os.Remove(p)
 }
 
@@ -195,10 +203,14 @@ func DefaultDir() string {
 // for debug info, so a default constant is fine for the in-tree case.
 var cliVersion = "dev"
 
-func warn(format string, args ...any) {
-	cerrors.WriteEventJSON(os.Stderr, cerrors.Event{
+func warn(w io.Writer, format string, args ...any) {
+	cerrors.WriteEventJSON(w, cerrors.Event{
 		Code:    "CACHE_WARNING",
 		Level:   "warn",
 		Message: fmt.Sprintf("cache "+format, args...),
 	})
+}
+
+func (c *Cache) warn(format string, args ...any) {
+	warn(c.warnW, format, args...)
 }
