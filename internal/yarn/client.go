@@ -141,6 +141,7 @@ func NewClientWithOptions(baseURLs []string, timeout time.Duration, opts ClientO
 }
 
 func (c *Client) FetchApplicationLogs(ctx context.Context, appID string, opts Options) (*Report, error) {
+	appID = canonicalAppID(appID)
 	if opts.TopContainers <= 0 {
 		opts.TopContainers = 5
 	}
@@ -165,6 +166,7 @@ func (c *Client) FetchApplicationLogs(ctx context.Context, appID string, opts Op
 }
 
 func (c *Client) FetchThreadDump(ctx context.Context, appID, executorID string) (*ThreadDumpReport, error) {
+	appID = canonicalAppID(appID)
 	if executorID == "" {
 		executorID = "driver"
 	}
@@ -407,6 +409,26 @@ func (c *Client) fetchContainers(ctx context.Context, base, appID string, attemp
 		})
 	}
 	return out, nil
+}
+
+// canonicalAppID 把可能带 attempt 后缀的 appID 还原成 YARN REST / Spark UI 认识的
+// 裸 application id。EventLog (尤其 SHS V2) 的文件名常被归一化成
+// `application_<ts>_<seq>_<attempt>`,直接拼进 `/ws/v1/cluster/apps/<id>` 会被
+// ResourceManager 以 400 拒绝。YARN 的 appID 永远是 `application_<ts>_<seq>` 两段,
+// 第三段是 attempt 计数器,必须剥掉。非法/非 application_ 形态原样返回。
+func canonicalAppID(appID string) string {
+	appID = strings.TrimSpace(appID)
+	const prefix = "application_"
+	if !strings.HasPrefix(appID, prefix) {
+		return appID
+	}
+	rest := strings.TrimPrefix(appID, prefix)
+	parts := strings.Split(rest, "_")
+	if len(parts) <= 2 {
+		return appID
+	}
+	// 只保留前两段 (<ts>_<seq>),丢弃 attempt 及之后任何后缀。
+	return prefix + parts[0] + "_" + parts[1]
 }
 
 func normalizeAttemptID(appID, attemptID string) string {

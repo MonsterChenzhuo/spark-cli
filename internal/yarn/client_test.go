@@ -10,6 +10,60 @@ import (
 	"time"
 )
 
+func TestCanonicalAppID(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		// 带 attempt 后缀 (EventLog / SHS V2 文件名归一化产物) → 剥成裸 appID
+		{"application_1765228031635_512717_1", "application_1765228031635_512717"},
+		{"application_1765228031635_512717_2", "application_1765228031635_512717"},
+		// 已是裸 appID → 原样
+		{"application_1765228031635_512717", "application_1765228031635_512717"},
+		// 多余后缀也一并剥掉,只保留前两段
+		{"application_1765228031635_512717_1_extra", "application_1765228031635_512717"},
+		// 前后空白
+		{"  application_1765228031635_512717_1  ", "application_1765228031635_512717"},
+		// 非 application_ 形态 → 原样
+		{"weird_id", "weird_id"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := canonicalAppID(tc.in); got != tc.want {
+			t.Errorf("canonicalAppID(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestFetchApplicationLogsStripsAttemptSuffix(t *testing.T) {
+	const bareAppID = "application_1772605260987_20682"
+	var gotPaths []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+bareAppID, func(w http.ResponseWriter, r *http.Request) {
+		gotPaths = append(gotPaths, r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{"app": map[string]any{"id": bareAppID, "state": "RUNNING"}})
+	})
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+bareAppID+"/appattempts", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"appAttempts": map[string]any{"appAttempt": []any{}}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := NewClient([]string{srv.URL + "/yarn"}, 5*time.Second)
+	// 传入带 attempt 后缀的 appID,client 必须用裸 appID 调 YARN REST,否则 RM 返回 400。
+	rep, err := c.FetchApplicationLogs(context.Background(), bareAppID+"_1", Options{})
+	if err != nil {
+		t.Fatalf("FetchApplicationLogs: %v", err)
+	}
+	if rep.App.ID != bareAppID {
+		t.Errorf("app id = %q, want %q", rep.App.ID, bareAppID)
+	}
+	for _, p := range gotPaths {
+		if strings.Contains(p, bareAppID+"_1") {
+			t.Errorf("request path %q still contains attempt suffix", p)
+		}
+	}
+}
+
 func TestFetchApplicationLogsBuildsContainerLogURLsBehindGateway(t *testing.T) {
 	const appID = "application_1772605260987_20682"
 	mux := http.NewServeMux()

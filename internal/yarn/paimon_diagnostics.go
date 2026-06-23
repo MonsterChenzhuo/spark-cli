@@ -22,6 +22,7 @@ type PaimonDiagnosticsReport struct {
 }
 
 func (c *Client) FetchPaimonDiagnostics(ctx context.Context, appID, executorID string) (*PaimonDiagnosticsReport, error) {
+	appID = canonicalAppID(appID)
 	if executorID == "" {
 		executorID = "driver"
 	}
