@@ -45,6 +45,13 @@ type Aggregator struct {
 
 func NewAggregator(app *Application) *Aggregator { return &Aggregator{app: app} }
 
+type taskDerivedMetrics struct {
+	runMs            int64
+	taskDurationMs   int64
+	schedulerDelayMs int64
+	shuffleReadBytes int64
+}
+
 func (a *Aggregator) OnAppStart(id, name, user string, ts int64) {
 	a.app.ID = id
 	a.app.Name = name
@@ -178,33 +185,57 @@ func (a *Aggregator) OnTaskEnd(t TaskEnd) {
 		s = NewStage(t.StageID, t.Attempt, "", 0, 0)
 		a.app.Stages[k] = s
 	}
-	dur := t.Metrics.RunMs
-	if dur == 0 && t.FinishMs > t.LaunchMs {
-		dur = t.FinishMs - t.LaunchMs
-	}
-	if dur < 0 {
-		dur = 0
-	}
+	d := deriveTaskMetrics(t)
+	addStageTaskMetrics(s, t, d)
+	addAppTaskMetrics(a.app, t, d)
+	addExecutorTaskMetrics(a.app.Executors[t.ExecutorID], t, d)
+}
+
+func deriveTaskMetrics(t TaskEnd) taskDerivedMetrics {
 	taskDuration := t.FinishMs - t.LaunchMs
 	if taskDuration < 0 {
 		taskDuration = 0
-	}
-	schedulerDelay := taskDuration - t.Metrics.RunMs - t.Metrics.ExecutorDeserializeMs -
-		t.Metrics.ResultSerializationMs - t.Metrics.GettingResultMs
-	if schedulerDelay < 0 {
-		schedulerDelay = 0
 	}
 	shuffleReadBytes := t.Metrics.ShuffleReadBytes
 	if shuffleReadBytes == 0 {
 		shuffleReadBytes = t.Metrics.ShuffleLocalBytesRead + t.Metrics.ShuffleRemoteBytesRead
 	}
+	return taskDerivedMetrics{
+		runMs:            taskRunMs(t),
+		taskDurationMs:   taskDuration,
+		schedulerDelayMs: schedulerDelayMs(t, taskDuration),
+		shuffleReadBytes: shuffleReadBytes,
+	}
+}
+
+func taskRunMs(t TaskEnd) int64 {
+	runMs := t.Metrics.RunMs
+	if runMs == 0 && t.FinishMs > t.LaunchMs {
+		runMs = t.FinishMs - t.LaunchMs
+	}
+	if runMs < 0 {
+		return 0
+	}
+	return runMs
+}
+
+func schedulerDelayMs(t TaskEnd, taskDuration int64) int64 {
+	delay := taskDuration - t.Metrics.RunMs - t.Metrics.ExecutorDeserializeMs -
+		t.Metrics.ResultSerializationMs - t.Metrics.GettingResultMs
+	if delay < 0 {
+		return 0
+	}
+	return delay
+}
+
+func addStageTaskMetrics(s *Stage, t TaskEnd, d taskDerivedMetrics) {
 	firstTask := s.TaskDurations.Count() == 0
-	s.TaskDurations.Add(float64(dur))
+	s.TaskDurations.Add(float64(d.runMs))
 	s.TaskInputBytes.Add(float64(t.Metrics.InputBytes))
-	s.TotalRunMs += dur
-	s.TotalTaskDurationMs += taskDuration
+	s.TotalRunMs += d.runMs
+	s.TotalTaskDurationMs += d.taskDurationMs
 	s.TotalExecutorCPUMs += t.Metrics.ExecutorCPUMs
-	s.TotalSchedulerDelayMs += schedulerDelay
+	s.TotalSchedulerDelayMs += d.schedulerDelayMs
 	s.TotalResultSerializationMs += t.Metrics.ResultSerializationMs
 	s.TotalGettingResultMs += t.Metrics.GettingResultMs
 	s.TotalGCMs += t.Metrics.GCMs
@@ -212,7 +243,7 @@ func (a *Aggregator) OnTaskEnd(t TaskEnd) {
 	s.TotalInputRecords += t.Metrics.InputRecords
 	s.TotalOutputBytes += t.Metrics.OutputBytes
 	s.TotalOutputRecords += t.Metrics.OutputRecords
-	s.TotalShuffleReadBytes += shuffleReadBytes
+	s.TotalShuffleReadBytes += d.shuffleReadBytes
 	s.TotalShuffleWriteBytes += t.Metrics.ShuffleWriteBytes
 	s.TotalShuffleLocalReadBytes += t.Metrics.ShuffleLocalBytesRead
 	s.TotalShuffleRemoteReadBytes += t.Metrics.ShuffleRemoteBytesRead
@@ -229,11 +260,11 @@ func (a *Aggregator) OnTaskEnd(t TaskEnd) {
 	if t.Metrics.PeakExecutionMemoryBytes > s.PeakExecutionMemoryBytes {
 		s.PeakExecutionMemoryBytes = t.Metrics.PeakExecutionMemoryBytes
 	}
-	if dur > s.MaxTaskMs {
-		s.MaxTaskMs = dur
+	if d.runMs > s.MaxTaskMs {
+		s.MaxTaskMs = d.runMs
 	}
-	if firstTask || dur < s.MinTaskMs {
-		s.MinTaskMs = dur
+	if firstTask || d.runMs < s.MinTaskMs {
+		s.MinTaskMs = d.runMs
 	}
 	if t.Metrics.InputBytes > s.MaxInputBytes {
 		s.MaxInputBytes = t.Metrics.InputBytes
@@ -247,52 +278,57 @@ func (a *Aggregator) OnTaskEnd(t TaskEnd) {
 	if t.Speculative {
 		s.SpeculativeTasks++
 	}
+}
 
-	a.app.TasksTotal++
+func addAppTaskMetrics(app *Application, t TaskEnd, d taskDerivedMetrics) {
+	app.TasksTotal++
 	if t.Failed {
-		a.app.TasksFailed++
+		app.TasksFailed++
 	}
-	a.app.TotalRunMs += dur
-	a.app.TotalTaskDurationMs += taskDuration
-	a.app.TotalExecutorCPUMs += t.Metrics.ExecutorCPUMs
-	a.app.TotalSchedulerDelayMs += schedulerDelay
-	a.app.TotalGCMs += t.Metrics.GCMs
-	a.app.TotalInputBytes += t.Metrics.InputBytes
-	a.app.TotalInputRecords += t.Metrics.InputRecords
-	a.app.TotalOutputBytes += t.Metrics.OutputBytes
-	a.app.TotalOutputRecords += t.Metrics.OutputRecords
-	a.app.TotalShuffleReadBytes += shuffleReadBytes
-	a.app.TotalShuffleWriteBytes += t.Metrics.ShuffleWriteBytes
-	a.app.TotalShuffleLocalReadBytes += t.Metrics.ShuffleLocalBytesRead
-	a.app.TotalShuffleRemoteReadBytes += t.Metrics.ShuffleRemoteBytesRead
-	a.app.TotalShuffleTotalBlocksFetched += t.Metrics.ShuffleTotalBlocksFetched
-	a.app.TotalShuffleLocalBlocksFetched += t.Metrics.ShuffleLocalBlocksFetched
-	a.app.TotalShuffleRemoteBlocksFetched += t.Metrics.ShuffleRemoteBlocksFetched
-	a.app.TotalShuffleReadRecords += t.Metrics.ShuffleRecordsRead
-	a.app.TotalShuffleWriteRecords += t.Metrics.ShuffleWriteRecords
-	a.app.TotalSpillDisk += t.Metrics.SpillDisk
-	if t.Metrics.ResultSizeBytes > a.app.TotalResultSizeBytes {
-		a.app.TotalResultSizeBytes = t.Metrics.ResultSizeBytes
+	app.TotalRunMs += d.runMs
+	app.TotalTaskDurationMs += d.taskDurationMs
+	app.TotalExecutorCPUMs += t.Metrics.ExecutorCPUMs
+	app.TotalSchedulerDelayMs += d.schedulerDelayMs
+	app.TotalGCMs += t.Metrics.GCMs
+	app.TotalInputBytes += t.Metrics.InputBytes
+	app.TotalInputRecords += t.Metrics.InputRecords
+	app.TotalOutputBytes += t.Metrics.OutputBytes
+	app.TotalOutputRecords += t.Metrics.OutputRecords
+	app.TotalShuffleReadBytes += d.shuffleReadBytes
+	app.TotalShuffleWriteBytes += t.Metrics.ShuffleWriteBytes
+	app.TotalShuffleLocalReadBytes += t.Metrics.ShuffleLocalBytesRead
+	app.TotalShuffleRemoteReadBytes += t.Metrics.ShuffleRemoteBytesRead
+	app.TotalShuffleTotalBlocksFetched += t.Metrics.ShuffleTotalBlocksFetched
+	app.TotalShuffleLocalBlocksFetched += t.Metrics.ShuffleLocalBlocksFetched
+	app.TotalShuffleRemoteBlocksFetched += t.Metrics.ShuffleRemoteBlocksFetched
+	app.TotalShuffleReadRecords += t.Metrics.ShuffleRecordsRead
+	app.TotalShuffleWriteRecords += t.Metrics.ShuffleWriteRecords
+	app.TotalSpillDisk += t.Metrics.SpillDisk
+	if t.Metrics.ResultSizeBytes > app.TotalResultSizeBytes {
+		app.TotalResultSizeBytes = t.Metrics.ResultSizeBytes
 	}
-	if t.Metrics.PeakExecutionMemoryBytes > a.app.PeakExecutionMemoryBytes {
-		a.app.PeakExecutionMemoryBytes = t.Metrics.PeakExecutionMemoryBytes
+	if t.Metrics.PeakExecutionMemoryBytes > app.PeakExecutionMemoryBytes {
+		app.PeakExecutionMemoryBytes = t.Metrics.PeakExecutionMemoryBytes
 	}
 	if t.Speculative {
-		a.app.SpeculativeTasks++
+		app.SpeculativeTasks++
 	}
+}
 
-	if e, ok := a.app.Executors[t.ExecutorID]; ok {
-		e.TotalRunMs += dur
-		e.TotalTaskDurationMs += taskDuration
-		e.TotalExecutorCPUMs += t.Metrics.ExecutorCPUMs
-		e.TotalSchedulerDelayMs += schedulerDelay
-		e.TotalGCMs += t.Metrics.GCMs
-		e.TaskCount++
-		if t.Failed {
-			e.FailedTaskCount++
-		}
-		if t.Speculative {
-			e.SpeculativeTasks++
-		}
+func addExecutorTaskMetrics(e *Executor, t TaskEnd, d taskDerivedMetrics) {
+	if e == nil {
+		return
+	}
+	e.TotalRunMs += d.runMs
+	e.TotalTaskDurationMs += d.taskDurationMs
+	e.TotalExecutorCPUMs += t.Metrics.ExecutorCPUMs
+	e.TotalSchedulerDelayMs += d.schedulerDelayMs
+	e.TotalGCMs += t.Metrics.GCMs
+	e.TaskCount++
+	if t.Failed {
+		e.FailedTaskCount++
+	}
+	if t.Speculative {
+		e.SpeculativeTasks++
 	}
 }
