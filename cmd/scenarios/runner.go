@@ -147,6 +147,7 @@ func Run(ctx context.Context, opts Options) int {
 			return writeErr(opts.Stderr, err)
 		}
 		if opts.Scenario == "diagnose" {
+			warnNoStageSignal(opts, &env, cached)
 			attachYARN(ctx, opts, cfg, &env, 0)
 		}
 		return render(opts, env)
@@ -165,9 +166,28 @@ func Run(ctx context.Context, opts Options) int {
 		return writeErr(opts.Stderr, err)
 	}
 	if opts.Scenario == "diagnose" {
+		warnNoStageSignal(opts, &env, app)
 		attachYARN(ctx, opts, cfg, &env, 0)
 	}
 	return render(opts, env)
+}
+
+// warnNoStageSignal 在 diagnose 读到一个还没有任何 stage 信号的 EventLog 时,
+// 往 stderr 打一条 event 提示。常见于 .inprogress 日志且应用卡在第一个 job 之前
+// (executor 起不来 / driver-side 等待):所有规则都会返回 ok,但这不是"健康",
+// 而是"日志里根本没有可分析的 stage/task"。不提示的话 summary.ok:10 会误导 agent
+// 以为作业正常,这里明确把它和"live 探测才看得到问题"区分开。
+func warnNoStageSignal(opts Options, env *scenario.Envelope, app *model.Application) {
+	if app == nil || len(app.Stages) > 0 {
+		return
+	}
+	writePreflightEvent(opts.Stderr, "DIAGNOSE_NO_STAGE_SIGNAL", "warn",
+		"EventLog has no stage/task signal yet; all rules report ok because there is nothing to analyze, not because the app is healthy",
+		map[string]any{
+			"incomplete":    env.Incomplete,
+			"parsed_events": env.ParsedEvents,
+			"hint":          "app likely stuck before its first job (executors not starting / driver-side wait); probe live with `spark-cli yarn-logs <appId>` and `spark-cli driver-thread-dump <appId>`",
+		})
 }
 
 func prepareConfig(opts Options) (*config.Config, error) {

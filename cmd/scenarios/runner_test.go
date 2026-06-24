@@ -136,6 +136,70 @@ clusters:
 	}
 }
 
+func TestDiagnoseWarnsWhenNoStageSignal(t *testing.T) {
+	dir := t.TempDir()
+	// 一个只有 ApplicationStart、没有任何 stage/task 的日志 —— 对应"卡在第一个 job
+	// 之前"的现场。所有规则都会 ok,但应提示这不是健康。
+	logPath := filepath.Join(dir, "application_1_99")
+	body := `{"Event":"SparkListenerApplicationStart","App Name":"stuck","App ID":"application_1_99","Timestamp":1000,"User":"alice"}` + "\n"
+	if err := os.WriteFile(logPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	rc := Run(context.Background(), Options{
+		Scenario: "diagnose",
+		AppID:    "application_1_99",
+		LogDirs:  []string{"file://" + dir},
+		Format:   "json",
+		NoCache:  true,
+		Stdout:   &stdout,
+		Stderr:   &stderr,
+	})
+	if rc != 0 {
+		t.Fatalf("rc=%d stderr=%s", rc, stderr.String())
+	}
+	events := parseStderrEvents(t, stderr.String())
+	found := false
+	for _, e := range events {
+		if e.Code == "DIAGNOSE_NO_STAGE_SIGNAL" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected DIAGNOSE_NO_STAGE_SIGNAL event, stderr=%s", stderr.String())
+	}
+}
+
+func TestDiagnoseNoWarningWhenStagesPresent(t *testing.T) {
+	dir := t.TempDir()
+	src, err := os.ReadFile(filepath.Join("..", "..", "tests", "testdata", "tiny_app.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(dir, "application_1_a")
+	if err := os.WriteFile(logPath, src, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	rc := Run(context.Background(), Options{
+		Scenario: "diagnose",
+		AppID:    "application_1_a",
+		LogDirs:  []string{"file://" + dir},
+		Format:   "json",
+		NoCache:  true,
+		Stdout:   &stdout,
+		Stderr:   &stderr,
+	})
+	if rc != 0 {
+		t.Fatalf("rc=%d stderr=%s", rc, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "DIAGNOSE_NO_STAGE_SIGNAL") {
+		t.Fatalf("should not warn no-stage-signal when stages exist, stderr=%s", stderr.String())
+	}
+}
+
 func TestGuidedDiagnoseSelectsOnlyConfiguredCluster(t *testing.T) {
 	configDir := t.TempDir()
 	t.Setenv("SPARK_CLI_CONFIG_DIR", configDir)

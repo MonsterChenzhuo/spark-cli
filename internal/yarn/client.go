@@ -475,7 +475,13 @@ func (c *Client) getJSON(ctx context.Context, u string, out any) error {
 }
 
 func sparkUIBaseURL(yarnBase, appID, trackingURL string) string {
-	if trackingURL != "" && trackingURL != "UNASSIGNED" && !isYARNAppPageURL(trackingURL, appID) {
+	// 只有当 trackingURL 的 host 与 yarnBase host 相同(同一已证明可达的主机)时才直接用它。
+	// RM 返回的 trackingURL 在 gateway 部署里常指向内网 AM 主机名
+	// (如华为 MRS 的 hw-id-...mrs-mteo.com:8088),本机 DNS 解析不了 ——
+	// 而 yarnBase 是刚刚成功拉到 app metadata 的 gateway,可达。host 不一致时
+	// 一律走 <yarnBase>/proxy/<appId>,强制路由到可达的 gateway proxy。
+	if trackingURL != "" && trackingURL != "UNASSIGNED" && !isYARNAppPageURL(trackingURL, appID) &&
+		sameHost(trackingURL, yarnBase) {
 		return strings.TrimRight(trackingURL, "/")
 	}
 	u, err := url.Parse(yarnBase)
@@ -486,6 +492,20 @@ func sparkUIBaseURL(yarnBase, appID, trackingURL string) string {
 	u.RawQuery = ""
 	u.Fragment = ""
 	return strings.TrimRight(u.String(), "/")
+}
+
+// sameHost 判断两个 URL 是否指向同一个 host:port。解析失败时回退到 false
+// (宁可走 gateway proxy 这条已证明可达的路径,也不冒险用解析不出的 trackingURL host)。
+func sameHost(a, b string) bool {
+	ua, err := url.Parse(a)
+	if err != nil {
+		return false
+	}
+	ub, err := url.Parse(b)
+	if err != nil {
+		return false
+	}
+	return ua.Host != "" && ua.Host == ub.Host
 }
 
 func isYARNAppPageURL(trackingURL, appID string) bool {

@@ -338,6 +338,44 @@ func TestFetchThreadDumpUsesYARNTrackingURL(t *testing.T) {
 	}
 }
 
+func TestFetchThreadDumpFallsBackToGatewayProxyWhenTrackingURLHostDiffers(t *testing.T) {
+	const appID = "application_1_4"
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// RM 返回一个指向内网 AM 主机名的 trackingUrl —— 本机解析不了的形态。
+	// client 必须忽略它,改走 <yarnBase>/proxy/<appId>(同 srv host,可达)。
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+appID, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"app": map[string]any{
+			"id":          appID,
+			"user":        "alice",
+			"trackingUrl": "http://hw-id-internal-node.mrs-mteo.com:8088/proxy/" + appID + "/",
+		}})
+	})
+	mux.HandleFunc("/yarn/proxy/"+appID+"/api/v1/applications/"+appID+"/executors/driver/threads", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, []map[string]any{{
+			"threadId":    1,
+			"threadName":  "main",
+			"threadState": "RUNNABLE",
+		}})
+	})
+
+	got, err := NewClient([]string{srv.URL + "/yarn"}, 5*time.Second).FetchThreadDump(context.Background(), appID, "driver")
+	if err != nil {
+		t.Fatalf("FetchThreadDump: %v", err)
+	}
+	if got.ThreadCount != 1 {
+		t.Fatalf("expected gateway-proxy fallback to fetch threads, got %+v", got)
+	}
+	if !strings.Contains(got.UIURL, "/yarn/proxy/"+appID) {
+		t.Errorf("ui_url = %q, want gateway proxy path (not internal tracking host)", got.UIURL)
+	}
+	if strings.Contains(got.UIURL, "mrs-mteo.com") {
+		t.Errorf("ui_url = %q still points at unreachable internal host", got.UIURL)
+	}
+}
+
 func TestFetchPaimonDiagnosticsReadsPaimonJSONEndpoints(t *testing.T) {
 	const appID = "application_1_11"
 	mux := http.NewServeMux()
