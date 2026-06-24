@@ -141,6 +141,7 @@ func NewClientWithOptions(baseURLs []string, timeout time.Duration, opts ClientO
 }
 
 func (c *Client) FetchApplicationLogs(ctx context.Context, appID string, opts Options) (*Report, error) {
+	appID = canonicalAppID(appID)
 	if opts.TopContainers <= 0 {
 		opts.TopContainers = 5
 	}
@@ -165,6 +166,7 @@ func (c *Client) FetchApplicationLogs(ctx context.Context, appID string, opts Op
 }
 
 func (c *Client) FetchThreadDump(ctx context.Context, appID, executorID string) (*ThreadDumpReport, error) {
+	appID = canonicalAppID(appID)
 	if executorID == "" {
 		executorID = "driver"
 	}
@@ -409,6 +411,26 @@ func (c *Client) fetchContainers(ctx context.Context, base, appID string, attemp
 	return out, nil
 }
 
+// canonicalAppID 把可能带 attempt 后缀的 appID 还原成 YARN REST / Spark UI 认识的
+// 裸 application id。EventLog (尤其 SHS V2) 的文件名常被归一化成
+// `application_<ts>_<seq>_<attempt>`,直接拼进 `/ws/v1/cluster/apps/<id>` 会被
+// ResourceManager 以 400 拒绝。YARN 的 appID 永远是 `application_<ts>_<seq>` 两段,
+// 第三段是 attempt 计数器,必须剥掉。非法/非 application_ 形态原样返回。
+func canonicalAppID(appID string) string {
+	appID = strings.TrimSpace(appID)
+	const prefix = "application_"
+	if !strings.HasPrefix(appID, prefix) {
+		return appID
+	}
+	rest := strings.TrimPrefix(appID, prefix)
+	parts := strings.Split(rest, "_")
+	if len(parts) <= 2 {
+		return appID
+	}
+	// 只保留前两段 (<ts>_<seq>),丢弃 attempt 及之后任何后缀。
+	return prefix + parts[0] + "_" + parts[1]
+}
+
 func normalizeAttemptID(appID, attemptID string) string {
 	attemptID = strings.TrimSpace(attemptID)
 	if attemptID == "" || strings.HasPrefix(attemptID, "appattempt_") {
@@ -453,7 +475,13 @@ func (c *Client) getJSON(ctx context.Context, u string, out any) error {
 }
 
 func sparkUIBaseURL(yarnBase, appID, trackingURL string) string {
-	if trackingURL != "" && trackingURL != "UNASSIGNED" && !isYARNAppPageURL(trackingURL, appID) {
+	// 只有当 trackingURL 的 host 与 yarnBase host 相同(同一已证明可达的主机)时才直接用它。
+	// RM 返回的 trackingURL 在 gateway 部署里常指向内网 AM 主机名
+	// (如华为 MRS 的 hw-id-...mrs-mteo.com:8088),本机 DNS 解析不了 ——
+	// 而 yarnBase 是刚刚成功拉到 app metadata 的 gateway,可达。host 不一致时
+	// 一律走 <yarnBase>/proxy/<appId>,强制路由到可达的 gateway proxy。
+	if trackingURL != "" && trackingURL != "UNASSIGNED" && !isYARNAppPageURL(trackingURL, appID) &&
+		sameHost(trackingURL, yarnBase) {
 		return strings.TrimRight(trackingURL, "/")
 	}
 	u, err := url.Parse(yarnBase)
@@ -464,6 +492,20 @@ func sparkUIBaseURL(yarnBase, appID, trackingURL string) string {
 	u.RawQuery = ""
 	u.Fragment = ""
 	return strings.TrimRight(u.String(), "/")
+}
+
+// sameHost 判断两个 URL 是否指向同一个 host:port。解析失败时回退到 false
+// (宁可走 gateway proxy 这条已证明可达的路径,也不冒险用解析不出的 trackingURL host)。
+func sameHost(a, b string) bool {
+	ua, err := url.Parse(a)
+	if err != nil {
+		return false
+	}
+	ub, err := url.Parse(b)
+	if err != nil {
+		return false
+	}
+	return ua.Host != "" && ua.Host == ub.Host
 }
 
 func isYARNAppPageURL(trackingURL, appID string) bool {

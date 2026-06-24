@@ -10,6 +10,60 @@ import (
 	"time"
 )
 
+func TestCanonicalAppID(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		// 带 attempt 后缀 (EventLog / SHS V2 文件名归一化产物) → 剥成裸 appID
+		{"application_1765228031635_512717_1", "application_1765228031635_512717"},
+		{"application_1765228031635_512717_2", "application_1765228031635_512717"},
+		// 已是裸 appID → 原样
+		{"application_1765228031635_512717", "application_1765228031635_512717"},
+		// 多余后缀也一并剥掉,只保留前两段
+		{"application_1765228031635_512717_1_extra", "application_1765228031635_512717"},
+		// 前后空白
+		{"  application_1765228031635_512717_1  ", "application_1765228031635_512717"},
+		// 非 application_ 形态 → 原样
+		{"weird_id", "weird_id"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := canonicalAppID(tc.in); got != tc.want {
+			t.Errorf("canonicalAppID(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestFetchApplicationLogsStripsAttemptSuffix(t *testing.T) {
+	const bareAppID = "application_1772605260987_20682"
+	var gotPaths []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+bareAppID, func(w http.ResponseWriter, r *http.Request) {
+		gotPaths = append(gotPaths, r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{"app": map[string]any{"id": bareAppID, "state": "RUNNING"}})
+	})
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+bareAppID+"/appattempts", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"appAttempts": map[string]any{"appAttempt": []any{}}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := NewClient([]string{srv.URL + "/yarn"}, 5*time.Second)
+	// 传入带 attempt 后缀的 appID,client 必须用裸 appID 调 YARN REST,否则 RM 返回 400。
+	rep, err := c.FetchApplicationLogs(context.Background(), bareAppID+"_1", Options{})
+	if err != nil {
+		t.Fatalf("FetchApplicationLogs: %v", err)
+	}
+	if rep.App.ID != bareAppID {
+		t.Errorf("app id = %q, want %q", rep.App.ID, bareAppID)
+	}
+	for _, p := range gotPaths {
+		if strings.Contains(p, bareAppID+"_1") {
+			t.Errorf("request path %q still contains attempt suffix", p)
+		}
+	}
+}
+
 func TestFetchApplicationLogsBuildsContainerLogURLsBehindGateway(t *testing.T) {
 	const appID = "application_1772605260987_20682"
 	mux := http.NewServeMux()
@@ -281,6 +335,44 @@ func TestFetchThreadDumpUsesYARNTrackingURL(t *testing.T) {
 	}
 	if got.Diagnosis == nil || got.Diagnosis.Category != "spark_sql_planning" {
 		t.Fatalf("diagnosis = %+v", got.Diagnosis)
+	}
+}
+
+func TestFetchThreadDumpFallsBackToGatewayProxyWhenTrackingURLHostDiffers(t *testing.T) {
+	const appID = "application_1_4"
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// RM 返回一个指向内网 AM 主机名的 trackingUrl —— 本机解析不了的形态。
+	// client 必须忽略它,改走 <yarnBase>/proxy/<appId>(同 srv host,可达)。
+	mux.HandleFunc("/yarn/ws/v1/cluster/apps/"+appID, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"app": map[string]any{
+			"id":          appID,
+			"user":        "alice",
+			"trackingUrl": "http://hw-id-internal-node.mrs-mteo.com:8088/proxy/" + appID + "/",
+		}})
+	})
+	mux.HandleFunc("/yarn/proxy/"+appID+"/api/v1/applications/"+appID+"/executors/driver/threads", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, []map[string]any{{
+			"threadId":    1,
+			"threadName":  "main",
+			"threadState": "RUNNABLE",
+		}})
+	})
+
+	got, err := NewClient([]string{srv.URL + "/yarn"}, 5*time.Second).FetchThreadDump(context.Background(), appID, "driver")
+	if err != nil {
+		t.Fatalf("FetchThreadDump: %v", err)
+	}
+	if got.ThreadCount != 1 {
+		t.Fatalf("expected gateway-proxy fallback to fetch threads, got %+v", got)
+	}
+	if !strings.Contains(got.UIURL, "/yarn/proxy/"+appID) {
+		t.Errorf("ui_url = %q, want gateway proxy path (not internal tracking host)", got.UIURL)
+	}
+	if strings.Contains(got.UIURL, "mrs-mteo.com") {
+		t.Errorf("ui_url = %q still points at unreachable internal host", got.UIURL)
 	}
 }
 
